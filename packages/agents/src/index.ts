@@ -90,6 +90,74 @@ export class ProcessAgentAdapter implements AgentAdapter {
   }
 }
 
+
+export interface QwenCodePresetOptions {
+  command?: string;
+  model?: string;
+  approvalMode?: "default" | "auto-edit" | "auto" | "yolo";
+  outputFormat?: "json" | "stream-json" | "text";
+  extraArgs?: string[];
+  env?: Record<string, string | undefined>;
+  timeoutMs?: number;
+}
+
+export function createQwenCodeAdapter(
+  options: QwenCodePresetOptions = {},
+): ProcessAgentAdapter {
+  const args = [
+    "--prompt",
+    "{prompt}",
+    "--output-format",
+    options.outputFormat ?? "json",
+  ];
+
+  if (options.model) args.push("--model", options.model);
+  if (options.approvalMode && options.approvalMode !== "default") {
+    args.push("--approval-mode", options.approvalMode);
+  }
+  if (options.extraArgs?.length) args.push(...options.extraArgs);
+
+  return new ProcessAgentAdapter({
+    name: "qwen-code",
+    command: options.command ?? "qwen",
+    args,
+    timeoutMs: options.timeoutMs,
+    env: options.env,
+  });
+}
+
+export interface OpenCodePresetOptions {
+  command?: string;
+  model?: string;
+  agent?: string;
+  autoApprove?: boolean;
+  format?: "default" | "json";
+  extraArgs?: string[];
+  env?: Record<string, string | undefined>;
+  timeoutMs?: number;
+}
+
+export function createOpenCodeAdapter(
+  options: OpenCodePresetOptions = {},
+): ProcessAgentAdapter {
+  const args = ["run"];
+
+  if (options.format) args.push("--format", options.format);
+  if (options.model) args.push("--model", options.model);
+  if (options.agent) args.push("--agent", options.agent);
+  if (options.autoApprove) args.push("--auto");
+  if (options.extraArgs?.length) args.push(...options.extraArgs);
+  args.push("{prompt}");
+
+  return new ProcessAgentAdapter({
+    name: "opencode",
+    command: options.command ?? "opencode",
+    args,
+    timeoutMs: options.timeoutMs,
+    env: options.env,
+  });
+}
+
 export interface WorktreeHandle {
   id: string;
   repoRoot: string;
@@ -283,6 +351,79 @@ export async function runIsolatedAgent(
     }
     throw error;
   }
+}
+
+
+export interface PromotionOptions {
+  branchName?: string;
+  commitMessage?: string;
+  authorName?: string;
+  authorEmail?: string;
+}
+
+export interface PromotionResult {
+  branch: string;
+  commit: string;
+  changedFiles: string[];
+}
+
+function safeBranchSegment(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-/.]+|[-/.]+$/g, "");
+  return normalized || "candidate";
+}
+
+export async function promoteVerifiedRun(
+  result: IsolatedAgentRunResult,
+  options: PromotionOptions = {},
+): Promise<PromotionResult> {
+  if (!result.success) {
+    throw new Error("Cannot promote an unsuccessful agent run");
+  }
+  if (
+    !result.verification ||
+    result.verification.exitCode !== 0 ||
+    result.verification.timedOut
+  ) {
+    throw new Error("Cannot promote a run without passing verification");
+  }
+  if (!result.workspaceRetained || !(await workspaceExists(result.workspace.path))) {
+    throw new Error("Cannot promote a cleaned or missing worktree");
+  }
+  if (result.changes.changedFiles.length === 0) {
+    throw new Error("Cannot promote a run with no changed files");
+  }
+
+  const branch =
+    options.branchName ??
+    `lattice/${safeBranchSegment(result.execution.agent)}-${result.workspace.id.slice(0, 8)}`;
+
+  await gitOrThrow(result.workspace.path, ["switch", "-c", branch]);
+  await gitOrThrow(result.workspace.path, ["add", "-A"]);
+
+  const commitArgs = [
+    "-c",
+    `user.name=${options.authorName ?? "Lattice"}`,
+    "-c",
+    `user.email=${options.authorEmail ?? "lattice@localhost"}`,
+    "commit",
+    "-m",
+    options.commitMessage ?? `Lattice verified candidate from ${result.execution.agent}`,
+  ];
+  await gitOrThrow(result.workspace.path, commitArgs);
+
+  const commit = (
+    await gitOrThrow(result.workspace.path, ["rev-parse", "HEAD"])
+  ).stdout.trim();
+
+  return {
+    branch,
+    commit,
+    changedFiles: [...result.changes.changedFiles],
+  };
 }
 
 function evidence(
