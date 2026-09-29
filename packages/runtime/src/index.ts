@@ -7,6 +7,10 @@ import {
   type CleanupPolicy,
 } from "@lattice/agents";
 import type { RunTaskOptions } from "@lattice/core";
+import type {
+  AutonomyMode,
+  DecisionReviewer,
+} from "@lattice/search";
 import {
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
@@ -54,6 +58,13 @@ export interface VerifyConfig {
 
 export interface LatticeConfig {
   mode?: RuntimeMode;
+  autonomy?: {
+    mode?: AutonomyMode;
+    minConfidence?: number;
+    maxNormalizedEntropy?: number;
+    reviewHighCost?: boolean;
+    reviewQuestionWarnings?: boolean;
+  };
   model?: ModelEndpointConfig;
   models?: {
     decision?: ModelEndpointConfig;
@@ -64,6 +75,8 @@ export interface LatticeConfig {
   search?: {
     maxRounds?: number;
     candidatesPerRound?: number;
+    topK?: number;
+    parallelism?: number;
   };
   workspace?: {
     cleanup?: CleanupPolicy;
@@ -105,6 +118,21 @@ export function parseLatticeConfig(value: unknown): LatticeConfig {
   }
 
   const config: LatticeConfig = { mode };
+
+  if (value.autonomy !== undefined) {
+    if (!isObject(value.autonomy)) throw new Error("autonomy must be an object");
+    const autonomyMode = value.autonomy.mode ?? "autopilot";
+    if (
+      autonomyMode !== "autopilot" &&
+      autonomyMode !== "supervised" &&
+      autonomyMode !== "manual"
+    ) {
+      throw new Error(
+        "autonomy.mode must be 'autopilot', 'supervised', or 'manual'",
+      );
+    }
+    config.autonomy = value.autonomy as LatticeConfig["autonomy"];
+  }
 
   if (value.model !== undefined) config.model = validateModel(value.model, "model");
 
@@ -229,6 +257,7 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
 
 export function createRunTaskOptions(
   config: LatticeConfig,
+  hooks: { reviewer?: DecisionReviewer } = {},
 ): RunTaskOptions {
   const verifyCommand = config.verify
     ? {
@@ -298,12 +327,27 @@ export function createRunTaskOptions(
       }),
       maxRounds: config.search?.maxRounds,
       candidatesPerRound: config.search?.candidatesPerRound,
+      topK: config.search?.topK,
+      parallelism: config.search?.parallelism,
+      autonomy: {
+        mode: config.autonomy?.mode ?? "autopilot",
+        minConfidence: config.autonomy?.minConfidence,
+        maxNormalizedEntropy: config.autonomy?.maxNormalizedEntropy,
+        reviewHighCost: config.autonomy?.reviewHighCost,
+        reviewQuestionWarnings: config.autonomy?.reviewQuestionWarnings,
+      },
+      reviewer: hooks.reviewer,
     },
   };
 }
 
 export const EXAMPLE_CONFIG: LatticeConfig = {
   mode: "auto",
+  autonomy: {
+    mode: "supervised",
+    minConfidence: 0.72,
+    maxNormalizedEntropy: 0.72,
+  },
   model: {
     provider: "openai-compatible",
     baseUrl: "http://127.0.0.1:11434/v1",

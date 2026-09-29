@@ -7,7 +7,12 @@ import {
   runCommand,
   type CommandSpec,
 } from "@lattice/execution";
-import { runSearchLoop, type ExperimentExecutor } from "@lattice/search";
+import {
+  runSearchLoop,
+  type AutonomyPolicy,
+  type DecisionReviewer,
+  type ExperimentExecutor,
+} from "@lattice/search";
 import {
   TAP_VERSION,
   type EvidenceRef,
@@ -28,6 +33,10 @@ export interface RunTaskOptions {
     executor: ExperimentExecutor;
     maxRounds?: number;
     candidatesPerRound?: number;
+    topK?: number;
+    parallelism?: number;
+    autonomy?: AutonomyPolicy;
+    reviewer?: DecisionReviewer;
   };
 }
 
@@ -185,13 +194,21 @@ export async function runTask(
       executor: options.search.executor,
       maxRounds: options.search.maxRounds,
       candidatesPerRound: options.search.candidatesPerRound,
+      topK: options.search.topK,
+      parallelism: options.search.parallelism,
+      autonomy: options.search.autonomy,
+      reviewer: options.search.reviewer,
       onTrace: async (event) => {
-        if (event.type === "candidates.generated") {
+        if (event.type === "candidates.generated" || event.type === "decision.framed") {
           await log.append("decision.requested", {
             round: event.round,
-            candidates: event.candidates,
+            event,
           });
-        } else if (event.type === "decision.completed") {
+        } else if (
+          event.type === "decision.completed" ||
+          event.type === "decision.review.requested" ||
+          event.type === "decision.review.completed"
+        ) {
           await log.append("decision.completed", event);
         } else if (event.type === "experiment.started") {
           await log.append("tool.started", {

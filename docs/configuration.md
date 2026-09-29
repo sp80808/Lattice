@@ -121,3 +121,45 @@ They are thin wrappers over the generic process adapter.
 Verification is expressed as an executable plus an argument array. It is not interpreted through a shell.
 
 The config parser does not accept model-generated commands. Automatic mutation still happens in isolated worktrees, and successful candidates remain untrusted until the verifier passes.
+
+
+## Autonomy and human-in-the-loop
+
+```json
+{
+  "autonomy": {
+    "mode": "supervised",
+    "minConfidence": 0.72,
+    "maxNormalizedEntropy": 0.72,
+    "reviewHighCost": true,
+    "reviewQuestionWarnings": true
+  },
+  "search": {
+    "candidatesPerRound": 5,
+    "topK": 1,
+    "parallelism": 1
+  }
+}
+```
+
+Modes:
+
+- `autopilot`: proceed without routine human review after framing checks.
+- `supervised`: review low-confidence/high-entropy/high-cost or framing-warning decisions.
+- `manual`: review every bounded decision.
+
+The CLI provides the review surface when attached to a TTY. A required review in a non-interactive environment blocks instead of being auto-approved.
+
+For deliberate best-of-N search:
+
+```json
+{
+  "search": {
+    "candidatesPerRound": 6,
+    "topK": 2,
+    "parallelism": 2
+  }
+}
+```
+
+This keeps parallelism explicit and benchmarkable rather than silently multiplying agent cost.
