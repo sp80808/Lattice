@@ -32,6 +32,9 @@
       "path": "./packages/mining"
     },
     {
+      "path": "./packages/policy"
+    },
+    {
       "path": "./apps/cli"
     },
     {

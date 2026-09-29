@@ -8,6 +8,10 @@ import {
   mineLedger,
   writeMiningProposals,
 } from "@lattice/mining";
+import {
+  buildPolicySimulation,
+  formatPolicySimulation,
+} from "@lattice/policy";
 import type { DecisionReviewer } from "@lattice/search";
 import {
   createRunTaskOptions,
@@ -15,6 +19,45 @@ import {
 } from "@lattice/runtime";
 
 const args = process.argv.slice(2);
+
+if (args[0] === "policy-sim") {
+  const simArgs = args.slice(1);
+  const candidatePath = simArgs[0];
+  if (!candidatePath || candidatePath.startsWith("--")) {
+    console.error("policy-sim requires a candidate policy JSON path");
+    process.exit(2);
+  }
+
+  const json = simArgs.includes("--json");
+  const holdoutIndex = simArgs.indexOf("--holdout");
+  const holdout = holdoutIndex >= 0
+    ? Number(simArgs[holdoutIndex + 1] ?? "0.2")
+    : 0.2;
+  const againstIndex = simArgs.indexOf("--against");
+  const paths: string[] = [];
+  if (againstIndex >= 0) {
+    for (let index = againstIndex + 1; index < simArgs.length; index++) {
+      const value = simArgs[index]!;
+      if (value.startsWith("--")) break;
+      paths.push(value);
+    }
+  }
+
+  try {
+    const report = await buildPolicySimulation(
+      candidatePath,
+      paths,
+      holdout,
+    );
+    console.log(
+      json ? JSON.stringify(report, null, 2) : formatPolicySimulation(report),
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+  process.exit();
+}
 
 if (args[0] === "mine") {
   const mineArgs = args.slice(1);
@@ -95,6 +138,7 @@ if (!task) {
   console.log('Usage: lattice [--config path] "your coding task"');
   console.log("       lattice stats [--json] [run-file-or-directory ...]");
   console.log("       lattice mine [--json] [--out dir] [--rules N] [--tiles N] [run-path ...]");
+  console.log("       lattice policy-sim candidate.json [--against run-path ...] [--holdout 0.2] [--json]");
   console.log("");
   console.log("Autonomy modes: autopilot | supervised | manual");
   console.log("Config discovery:");

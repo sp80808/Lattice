@@ -22,6 +22,9 @@
     },
     {
       "path": "../../packages/mining"
+    },
+    {
+      "path": "../../packages/policy"
     }
   ],
   "include": [
