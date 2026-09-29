@@ -27,6 +27,27 @@ qwen --prompt "{prompt}" --output-format json
 
 The generic adapter exists so these presets remain thin compatibility layers rather than orchestration forks.
 
+## Built-in process presets
+
+Lattice now exposes thin preset factories for the current headless CLIs:
+
+```ts
+const qwen = createQwenCodeAdapter({
+  // default is conservative; explicitly opt into broader autonomy when wanted
+  approvalMode: "auto-edit",
+  outputFormat: "json",
+});
+
+const opencode = createOpenCodeAdapter({
+  format: "json",
+  autoApprove: false,
+});
+```
+
+Qwen Code's current headless surface supports `qwen --prompt/-p`, structured `--output-format`, and explicit approval modes. OpenCode's current non-interactive surface is `opencode run`, with JSON output and optional `--auto`.
+
+Lattice does **not** enable the broadest approval mode by default. A detached Git worktree protects repository state, but it is not a complete process/network sandbox.
+
 ## Worktree policy
 
 Each mutating subagent receives a detached worktree at the parent's pinned revision.
@@ -68,4 +89,10 @@ Add preset adapters only where they reduce setup friction:
 - Codex through ACP/App Server rather than scraping terminal output;
 - general ACP agent adapter.
 
-Then add patch promotion: a verified retained worktree should be convertible into a reviewable commit/patch and merged only after policy/approval.
+Verified patch promotion is now available through `promoteVerifiedRun`. It refuses to promote candidates that lack passing objective verification, creates a dedicated branch in the isolated worktree, stages all candidate changes, and creates a reviewable commit without moving the parent's checked-out branch.
+
+Next:
+- parallel top-k child scheduling;
+- branch/commit promotion policy in the parent orchestrator;
+- Qwen/OpenCode structured event parsing for cost/session metadata;
+- ACP-native Codex/Qwen integration instead of terminal-output parsing where possible.
