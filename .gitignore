@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.lattice/
+.DS_Store
+*.tsbuildinfo
