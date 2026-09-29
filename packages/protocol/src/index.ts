@@ -71,3 +71,65 @@ export interface RunResult {
   tap: TapPacket;
   eventLogPath: string;
 }
+
+
+export const UNKNOWN_CHOICE_ID = "__none__" as const;
+
+export type DecisionMode = "choice" | "rank" | "boolean" | "score";
+
+export interface DecisionChoice {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+export interface ProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+  latencyMs: number;
+}
+
+export interface ProviderIdentity {
+  provider: string;
+  model?: string;
+}
+
+export interface DecisionRequest {
+  state?: string;
+  question: string;
+  choices: DecisionChoice[];
+  mode?: DecisionMode;
+  allowUnknown?: boolean;
+}
+
+export interface DecisionResult {
+  selected: string[];
+  scores: Record<string, number>;
+  confidence?: number;
+  entropy?: number;
+  identity: ProviderIdentity;
+  usage: ProviderUsage;
+}
+
+export interface GeneratorRequest {
+  system?: string;
+  prompt: string;
+  context?: string[];
+  temperature?: number;
+}
+
+export interface GeneratorResult {
+  text: string;
+  identity: ProviderIdentity;
+  usage: ProviderUsage;
+}
+
+export interface DecisionProvider {
+  decide(request: DecisionRequest): Promise<DecisionResult>;
+}
+
+export interface GeneratorProvider {
+  generate(request: GeneratorRequest): Promise<GeneratorResult>;
+}
