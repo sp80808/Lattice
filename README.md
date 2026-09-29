@@ -104,6 +104,21 @@ Fastest path to an actionable prototype:
 
 See [docs/architecture.md](docs/architecture.md) and [docs/mvp.md](docs/mvp.md).
 
+## Prototype quick start
+
+The first runnable skeleton lives in the TypeScript workspace:
+
+```bash
+npm install
+npm run build
+node apps/cli/dist/index.js "inspect this repository"
+npm run daemon
+```
+
+The CLI creates a versioned TAP task packet and append-only JSONL run log under `.lattice/runs/`. The daemon exposes the same core through a minimal local HTTP API. Model providers and the evidence/search loop intentionally land in subsequent slices.
+
+The architecture deliberately uses open-source projects as jumping-off points rather than rebuilding commodity plumbing. See [open-source jumping-off points](docs/open-source-jumping-off-points.md).
+
 ## Status
 
-Bootstrap / architecture stage. APIs and representations are intentionally provisional until benchmarked.
+Early runnable bootstrap. APIs and representations are intentionally provisional until benchmarked.
