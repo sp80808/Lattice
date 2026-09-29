@@ -1,0 +1,1 @@
+{"id":"int-6127464104baa25f12069e2113867a55","kind":"field_change","created_at":"2026-09-29T15:43:43.944652Z","actor":"AI Track Generator","issue_id":"lat-1rj","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Verified: npm install ok, build EXIT 0, test 14/14 pass at origin/main c3b2d8c."}}
