@@ -124,6 +124,12 @@ function selectedChoice(
   return { label: selected };
 }
 
+interface SelectionStats {
+  support: number;
+  successes: number;
+  evidence: MiningEvidenceRef[];
+}
+
 interface RuleAccumulator {
   signature: string;
   decisionClass: string;
@@ -131,8 +137,7 @@ interface RuleAccumulator {
   optionLabels: string[];
   support: number;
   successes: number;
-  selections: Map<string, number>;
-  evidence: MiningEvidenceRef[];
+  selections: Map<string, SelectionStats>;
 }
 
 function mineRules(
@@ -174,18 +179,21 @@ function mineRules(
           support: 0,
           successes: 0,
           selections: new Map(),
-          evidence: [],
         };
         groups.set(signature, group);
       }
 
       group.support += 1;
       if (outcome.success) group.successes += 1;
-      group.selections.set(
-        choice.label,
-        (group.selections.get(choice.label) ?? 0) + 1,
-      );
-      group.evidence.push({
+
+      let selection = group.selections.get(choice.label);
+      if (!selection) {
+        selection = { support: 0, successes: 0, evidence: [] };
+        group.selections.set(choice.label, selection);
+      }
+      selection.support += 1;
+      if (outcome.success) selection.successes += 1;
+      selection.evidence.push({
         runId: run.runId,
         round: decision.round,
         frameId: decision.frameId,
@@ -196,31 +204,48 @@ function mineRules(
 
   const proposals: RuleProposal[] = [];
   for (const group of groups.values()) {
-    if (group.support < options.minRuleSupport) continue;
-    const successRate = group.successes / group.support;
-    if (successRate < options.minRuleSuccessRate) continue;
-
-    const rankedSelections = [...group.selections.entries()].sort(
-      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    const totalSuccessfulSelections = [...group.selections.values()].reduce(
+      (total, selection) => total + selection.successes,
+      0,
     );
-    const [dominantLabel, dominantCount] = rankedSelections[0] ?? [];
-    if (!dominantLabel || dominantCount === undefined) continue;
-    const dominantShare = dominantCount / group.support;
-    if (dominantShare < options.minDominantShare) continue;
+    if (totalSuccessfulSelections === 0) continue;
+
+    const rankedSelections = [...group.selections.entries()]
+      .map(([label, stats]) => ({
+        label,
+        ...stats,
+        successRate: stats.support ? stats.successes / stats.support : 0,
+        successShare: stats.successes / totalSuccessfulSelections,
+      }))
+      .filter(
+        (selection) =>
+          selection.support >= options.minRuleSupport &&
+          selection.successRate >= options.minRuleSuccessRate &&
+          selection.successShare >= options.minDominantShare,
+      )
+      .sort(
+        (a, b) =>
+          b.successes - a.successes ||
+          b.successRate - a.successRate ||
+          a.label.localeCompare(b.label),
+      );
+
+    const dominant = rankedSelections[0];
+    if (!dominant) continue;
 
     proposals.push({
-      id: `rule:${hash(group.signature)}`,
+      id: `rule:${hash(`${group.signature}::${normalize(dominant.label)}`)}`,
       state: "inferred",
       signature: group.signature,
       decisionClass: group.decisionClass,
       question: group.question,
       optionLabels: group.optionLabels,
-      action: { selectLabel: dominantLabel },
-      support: group.support,
-      successes: group.successes,
-      verifiedSuccessRate: successRate,
-      dominantSelectionShare: dominantShare,
-      evidence: group.evidence.slice(0, 50),
+      action: { selectLabel: dominant.label },
+      support: dominant.support,
+      successes: dominant.successes,
+      verifiedSuccessRate: dominant.successRate,
+      dominantSelectionShare: dominant.successShare,
+      evidence: dominant.evidence.slice(0, 50),
       promotion: {
         automatic: false,
         requiresHeldOutReplay: true,
