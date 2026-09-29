@@ -300,3 +300,46 @@ test("search blocks instead of guessing when decision selects unknown", async ()
   assert.equal(result.status, "blocked");
   assert.equal(result.selected.length, 0);
 });
+
+
+test("human reviewer can replace an insufficient-evidence decision", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: [UNKNOWN_CHOICE_ID],
+        scores: { inspect: 0.1, repro: 0.1, [UNKNOWN_CHOICE_ID]: 0.8 },
+        confidence: 0.8,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  let executed = "";
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    autonomy: { mode: "manual" },
+    reviewer: async () => ({
+      action: "replace",
+      selected: ["inspect"],
+      note: "human has repository context supporting inspection",
+    }),
+    executor: {
+      async execute(candidate) {
+        executed = candidate.id;
+        return {
+          candidateId: candidate.id,
+          status: "success",
+          terminal: true,
+          summary: "human override verified",
+          evidence: [],
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "solved");
+  assert.equal(executed, "inspect");
+});
