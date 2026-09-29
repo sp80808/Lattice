@@ -5,6 +5,8 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "composite": true,
+    "declaration": true,
+    "declarationMap": true,
     "sourceMap": true,
     "rootDir": "src",
     "outDir": "dist",
@@ -12,19 +14,10 @@
   },
   "references": [
     {
-      "path": "../../packages/core"
+      "path": "../protocol"
     },
     {
-      "path": "../../packages/runtime"
-    },
-    {
-      "path": "../../packages/analytics"
-    },
-    {
-      "path": "../../packages/mining"
-    },
-    {
-      "path": "../../packages/policy"
+      "path": "../ledger"
     }
   ],
   "include": [

@@ -20,6 +20,21 @@
       "path": "./packages/providers"
     },
     {
+      "path": "./packages/runtime"
+    },
+    {
+      "path": "./packages/ledger"
+    },
+    {
+      "path": "./packages/analytics"
+    },
+    {
+      "path": "./packages/mining"
+    },
+    {
+      "path": "./packages/policy"
+    },
+    {
       "path": "./apps/cli"
     },
     {

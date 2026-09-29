@@ -354,6 +354,165 @@ export async function runIsolatedAgent(
 }
 
 
+
+export interface ParallelAgentJob {
+  id: string;
+  task: AgentTask;
+  adapter: AgentAdapter;
+  verifyCommand?: CommandSpec;
+  cleanup?: CleanupPolicy;
+}
+
+export type ParallelAgentJobResult =
+  | {
+      id: string;
+      status: "fulfilled";
+      result: IsolatedAgentRunResult;
+    }
+  | {
+      id: string;
+      status: "rejected";
+      error: string;
+    }
+  | {
+      id: string;
+      status: "skipped";
+      reason: string;
+    };
+
+export interface ParallelAgentRunOptions {
+  repoRoot: string;
+  baseRevision?: string;
+  jobs: ParallelAgentJob[];
+  maxConcurrency?: number;
+  stopLaunchingAfterVerified?: boolean;
+  onJobStart?: (job: ParallelAgentJob) => void | Promise<void>;
+  onJobComplete?: (
+    result: ParallelAgentJobResult,
+  ) => void | Promise<void>;
+}
+
+async function pinnedRevision(
+  repoRoot: string,
+  requested?: string,
+): Promise<string> {
+  if (requested) return requested;
+  return (
+    await gitOrThrow(resolve(repoRoot), ["rev-parse", "HEAD"])
+  ).stdout.trim();
+}
+
+export async function runParallelAgents(
+  options: ParallelAgentRunOptions,
+): Promise<ParallelAgentJobResult[]> {
+  if (options.jobs.length === 0) return [];
+
+  const maxConcurrency = Math.max(
+    1,
+    Math.min(options.maxConcurrency ?? 2, options.jobs.length),
+  );
+  const baseRevision = await pinnedRevision(
+    options.repoRoot,
+    options.baseRevision,
+  );
+  const results: Array<ParallelAgentJobResult | undefined> = new Array(
+    options.jobs.length,
+  );
+
+  let cursor = 0;
+  let verifiedFound = false;
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      if (options.stopLaunchingAfterVerified && verifiedFound) return;
+
+      const index = cursor++;
+      if (index >= options.jobs.length) return;
+      const job = options.jobs[index]!;
+
+      if (options.stopLaunchingAfterVerified && verifiedFound) {
+        results[index] = {
+          id: job.id,
+          status: "skipped",
+          reason: "verified candidate already found",
+        };
+        continue;
+      }
+
+      await options.onJobStart?.(job);
+
+      try {
+        const result = await runIsolatedAgent({
+          repoRoot: options.repoRoot,
+          baseRevision,
+          task: job.task,
+          adapter: job.adapter,
+          verifyCommand: job.verifyCommand,
+          cleanup: job.cleanup,
+        });
+
+        const item: ParallelAgentJobResult = {
+          id: job.id,
+          status: "fulfilled",
+          result,
+        };
+        results[index] = item;
+
+        if (
+          result.success &&
+          result.verification?.exitCode === 0 &&
+          !result.verification.timedOut
+        ) {
+          verifiedFound = true;
+        }
+
+        await options.onJobComplete?.(item);
+      } catch (error) {
+        const item: ParallelAgentJobResult = {
+          id: job.id,
+          status: "rejected",
+          error: error instanceof Error ? error.message : String(error),
+        };
+        results[index] = item;
+        await options.onJobComplete?.(item);
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: maxConcurrency }, () => worker()),
+  );
+
+  for (let index = 0; index < options.jobs.length; index++) {
+    if (!results[index]) {
+      const job = options.jobs[index]!;
+      results[index] = {
+        id: job.id,
+        status: "skipped",
+        reason: verifiedFound
+          ? "verified candidate already found"
+          : "job was not scheduled",
+      };
+    }
+  }
+
+  return results as ParallelAgentJobResult[];
+}
+
+export function verifiedBatchResults(
+  results: ParallelAgentJobResult[],
+): Array<Extract<ParallelAgentJobResult, { status: "fulfilled" }>> {
+  return results.filter(
+    (
+      item,
+    ): item is Extract<ParallelAgentJobResult, { status: "fulfilled" }> =>
+      item.status === "fulfilled" &&
+      item.result.success &&
+      item.result.verification?.exitCode === 0 &&
+      !item.result.verification.timedOut,
+  );
+}
+
 export interface PromotionOptions {
   branchName?: string;
   commitMessage?: string;

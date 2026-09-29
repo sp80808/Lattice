@@ -91,8 +91,22 @@ Add preset adapters only where they reduce setup friction:
 
 Verified patch promotion is now available through `promoteVerifiedRun`. It refuses to promote candidates that lack passing objective verification, creates a dedicated branch in the isolated worktree, stages all candidate changes, and creates a reviewable commit without moving the parent's checked-out branch.
 
+## Bounded parallel scheduling
+
+`runParallelAgents` now provides a deliberately small worker-pool scheduler:
+
+- all children are pinned to the same base revision before launch;
+- concurrency is capped (default 2);
+- result ordering is deterministic even when completion order differs;
+- each child still gets its own detached worktree;
+- failures are normalized instead of crashing sibling jobs;
+- `stopLaunchingAfterVerified` can avoid starting queued expensive work once a verified candidate exists;
+- already-running children are allowed to finish for now rather than being killed unsafely.
+
+`verifiedBatchResults` filters the batch down to candidates backed by passing verification. Selection/ranking among multiple verified survivors remains a separate policy decision so the scheduler does not smuggle in arbitrary notions of "best".
+
 Next:
-- parallel top-k child scheduling;
+- cancellation/AbortSignal propagation for already-running children;
 - branch/commit promotion policy in the parent orchestrator;
 - Qwen/OpenCode structured event parsing for cost/session metadata;
 - ACP-native Codex/Qwen integration instead of terminal-output parsing where possible.
