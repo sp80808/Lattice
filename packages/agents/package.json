@@ -1,0 +1,18 @@
+{
+  "name": "@lattice/agents",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@lattice/execution": "0.0.1",
+    "@lattice/protocol": "0.0.1",
+    "@lattice/search": "0.0.1"
+  }
+}

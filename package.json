@@ -13,7 +13,7 @@
     "typecheck": "tsc -b --pretty false",
     "dev": "npm run build && node apps/cli/dist/index.js",
     "daemon": "npm run build && node apps/daemon/dist/index.js",
-    "test": "npm run build && node --test packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js"
+    "test": "npm run build && node --test packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js packages/agents/dist/index.test.js"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -20,6 +20,17 @@ test("runCommand captures objective process evidence", async () => {
   assert.equal(result.timedOut, false);
 });
 
+test("runCommand can provide stdin without enabling a shell", async () => {
+  const result = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.stdin.pipe(process.stdout)"],
+    stdin: "from-stdin",
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, "from-stdin");
+});
+
 test("collectRepositorySnapshot falls back to filesystem facts", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "lattice-exec-"));
   await writeFile(join(cwd, "alpha.ts"), "export const alpha = 1;\n");

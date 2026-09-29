@@ -9,6 +9,8 @@ export interface CommandSpec {
   cwd?: string;
   timeoutMs?: number;
   maxOutputBytes?: number;
+  stdin?: string;
+  env?: Record<string, string | undefined>;
 }
 
 export interface CommandResult {
@@ -60,9 +62,13 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     const child = spawn(spec.command, args, {
       cwd,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      env: { ...process.env, ...spec.env },
     });
+
+    if (spec.stdin !== undefined) {
+      child.stdin?.end(spec.stdin);
+    }
 
     let stdout = "";
     let stderr = "";

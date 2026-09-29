@@ -11,6 +11,9 @@
       "path": "./packages/search"
     },
     {
+      "path": "./packages/agents"
+    },
+    {
       "path": "./packages/core"
     },
     {
