@@ -420,6 +420,12 @@ function reviewReasons(
   if (mode === "autopilot") return [];
 
   const reasons: string[] = [];
+  if (
+    decision.selected.length === 0 ||
+    decision.selected[0] === UNKNOWN_CHOICE_ID
+  ) {
+    reasons.push("decision model selected insufficient evidence / none");
+  }
   const minConfidence = policy.minConfidence ?? 0.72;
   if (
     decision.confidence !== undefined &&
@@ -559,13 +565,6 @@ export async function runSearchLoop(
       .filter((id, index, all) => all.indexOf(id) === index)
       .slice(0, topK);
 
-    if (selectedIds.length === 0 || decision.selected[0] === UNKNOWN_CHOICE_ID) {
-      tap.uncertainties.push(
-        `round ${round}: decision layer could not justify any candidate`,
-      );
-      return { status: "blocked", rounds: round, tap, selected };
-    }
-
     let selectedCandidates = selectedIds
       .map((id) => candidates.find((candidate) => candidate.id === id))
       .filter((candidate): candidate is CandidateAction => Boolean(candidate));
@@ -647,6 +646,13 @@ export async function runSearchLoop(
       if (review.note) {
         tap.context.push(`r${round}:human-review:${review.note}`);
       }
+    }
+
+    if (selectedIds.length === 0) {
+      tap.uncertainties.push(
+        `round ${round}: decision layer could not justify any candidate`,
+      );
+      return { status: "blocked", rounds: round, tap, selected };
     }
 
     selected.push(...selectedIds);
