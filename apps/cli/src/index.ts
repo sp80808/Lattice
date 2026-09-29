@@ -3,6 +3,11 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { buildStatsReport, formatStatsReport } from "@lattice/analytics";
 import { runTask } from "@lattice/core";
+import {
+  formatMiningReport,
+  mineLedger,
+  writeMiningProposals,
+} from "@lattice/mining";
 import type { DecisionReviewer } from "@lattice/search";
 import {
   createRunTaskOptions,
@@ -10,6 +15,46 @@ import {
 } from "@lattice/runtime";
 
 const args = process.argv.slice(2);
+
+if (args[0] === "mine") {
+  const mineArgs = args.slice(1);
+  const json = mineArgs.includes("--json");
+  const valueAfter = (flag: string): string | undefined => {
+    const index = mineArgs.indexOf(flag);
+    return index >= 0 ? mineArgs[index + 1] : undefined;
+  };
+  const out = valueAfter("--out");
+  const maxRules = Number(valueAfter("--rules") ?? "5");
+  const maxTiles = Number(valueAfter("--tiles") ?? "5");
+  const minRuleSupport = Number(valueAfter("--min-support") ?? "3");
+  const consumed = new Set<string>();
+  for (const flag of ["--out", "--rules", "--tiles", "--min-support"]) {
+    const index = mineArgs.indexOf(flag);
+    if (index >= 0) {
+      consumed.add(flag);
+      if (mineArgs[index + 1]) consumed.add(mineArgs[index + 1]!);
+    }
+  }
+  consumed.add("--json");
+  const paths = mineArgs.filter((arg) => !consumed.has(arg));
+
+  try {
+    const report = await mineLedger(paths, {
+      maxRules,
+      maxTiles,
+      minRuleSupport,
+    });
+    if (out) {
+      const files = await writeMiningProposals(report, out);
+      if (!json) console.log(`wrote: ${files.join(", ")}`);
+    }
+    console.log(json ? JSON.stringify(report, null, 2) : formatMiningReport(report));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+  process.exit();
+}
 
 if (args[0] === "stats") {
   const statsArgs = args.slice(1);
@@ -49,6 +94,7 @@ if (!task) {
   console.log("");
   console.log('Usage: lattice [--config path] "your coding task"');
   console.log("       lattice stats [--json] [run-file-or-directory ...]");
+  console.log("       lattice mine [--json] [--out dir] [--rules N] [--tiles N] [run-path ...]");
   console.log("");
   console.log("Autonomy modes: autopilot | supervised | manual");
   console.log("Config discovery:");

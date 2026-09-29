@@ -1,5 +1,5 @@
 {
-  "name": "@lattice/analytics",
+  "name": "@lattice/ledger",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -11,7 +11,6 @@
     }
   },
   "dependencies": {
-    "@lattice/protocol": "0.0.1",
-    "@lattice/ledger": "0.0.1"
+    "@lattice/protocol": "0.0.1"
   }
 }

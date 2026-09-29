@@ -13,14 +13,7 @@
     "skipLibCheck": true
   },
   "references": [
-    {
-      "path": "../protocol"
-    },
-    {
-      "path": "../ledger"
-    }
+    { "path": "../ledger" }
   ],
-  "include": [
-    "src/**/*.ts"
-  ]
+  "include": ["src/**/*.ts"]
 }
