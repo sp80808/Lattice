@@ -11,6 +11,7 @@
     "@lattice/runtime": "0.0.1",
     "@lattice/analytics": "0.0.1",
     "@lattice/mining": "0.0.1",
-    "@lattice/policy": "0.0.1"
+    "@lattice/policy": "0.0.1",
+    "@lattice/research": "0.0.1"
   }
 }
