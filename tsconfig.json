@@ -1,9 +1,20 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/protocol" },
-    { "path": "./packages/core" },
-    { "path": "./apps/cli" },
-    { "path": "./apps/daemon" }
+    {
+      "path": "./packages/protocol"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/providers"
+    },
+    {
+      "path": "./apps/cli"
+    },
+    {
+      "path": "./apps/daemon"
+    }
   ]
 }
