@@ -10,6 +10,8 @@ import {
   createQwenCodeAdapter,
   promoteVerifiedRun,
   runIsolatedAgent,
+  runParallelAgents,
+  verifiedBatchResults,
   workspaceExists,
 } from "./index.js";
 
@@ -148,4 +150,91 @@ test("verified retained worktree can be promoted to a reviewable branch commit",
   });
   assert.equal(branch.exitCode, 0);
   assert.equal(branch.stdout.trim(), promoted.commit);
+});
+
+
+test("parallel agent scheduler pins one base revision and preserves result order", async () => {
+  const repo = await createRepo();
+  let active = 0;
+  let maxActive = 0;
+
+  const adapter = {
+    name: "parallel-fixture",
+    async run(task: { prompt: string }, workspace: string) {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+      await writeFile(join(workspace, task.prompt + ".txt"), task.prompt + "\n");
+      active -= 1;
+      return {
+        agent: "parallel-fixture",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 30,
+        timedOut: false,
+      };
+    },
+  };
+
+  const results = await runParallelAgents({
+    repoRoot: repo,
+    maxConcurrency: 2,
+    jobs: ["a", "b", "c"].map((id) => ({
+      id,
+      task: { prompt: id },
+      adapter,
+      verifyCommand: {
+        command: process.execPath,
+        args: ["-e", `process.exit(require('fs').existsSync('${id}.txt')?0:1)`],
+      },
+      cleanup: "always" as const,
+    })),
+  });
+
+  assert.deepEqual(results.map((item) => item.id), ["a", "b", "c"]);
+  assert.equal(maxActive, 2);
+  assert.equal(verifiedBatchResults(results).length, 3);
+
+  const bases = results
+    .filter((item) => item.status === "fulfilled")
+    .map((item) => item.result.workspace.baseRevision);
+  assert.equal(new Set(bases).size, 1);
+});
+
+test("scheduler can stop launching queued jobs after verified success", async () => {
+  const repo = await createRepo();
+  const adapter = new ProcessAgentAdapter({
+    name: "stop-fixture",
+    command: process.execPath,
+    args: [
+      "-e",
+      "require('fs').writeFileSync('winner.txt', process.argv[1])",
+      "{prompt}",
+    ],
+  });
+
+  const results = await runParallelAgents({
+    repoRoot: repo,
+    maxConcurrency: 1,
+    stopLaunchingAfterVerified: true,
+    jobs: ["winner", "later-1", "later-2"].map((id) => ({
+      id,
+      task: { prompt: id },
+      adapter,
+      verifyCommand: {
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.exit(require('fs').readFileSync('winner.txt','utf8')==='winner'?0:1)",
+        ],
+      },
+      cleanup: "always" as const,
+    })),
+  });
+
+  assert.equal(results[0]?.status, "fulfilled");
+  assert.equal(results[1]?.status, "skipped");
+  assert.equal(results[2]?.status, "skipped");
+  assert.equal(verifiedBatchResults(results).length, 1);
 });
