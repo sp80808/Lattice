@@ -49,6 +49,7 @@ export interface TapPacket {
 export type RunEventType =
   | "run.started"
   | "tap.created"
+  | "tap.updated"
   | "decision.requested"
   | "decision.completed"
   | "tool.started"

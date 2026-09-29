@@ -1,5 +1,5 @@
 {
-  "name": "@lattice/core",
+  "name": "@lattice/search",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -11,8 +11,6 @@
     }
   },
   "dependencies": {
-    "@lattice/protocol": "0.0.1",
-    "@lattice/execution": "0.0.1",
-    "@lattice/search": "0.0.1"
+    "@lattice/protocol": "0.0.1"
   }
 }
