@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { buildStatsReport, formatStatsReport } from "@lattice/analytics";
 import { runTask } from "@lattice/core";
 import type { DecisionReviewer } from "@lattice/search";
 import {
@@ -9,6 +10,21 @@ import {
 } from "@lattice/runtime";
 
 const args = process.argv.slice(2);
+
+if (args[0] === "stats") {
+  const statsArgs = args.slice(1);
+  const json = statsArgs.includes("--json");
+  const paths = statsArgs.filter((arg) => arg !== "--json");
+  try {
+    const report = await buildStatsReport(paths);
+    console.log(json ? JSON.stringify(report, null, 2) : formatStatsReport(report));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+  process.exit();
+}
+
 let configPath: string | undefined;
 const taskParts: string[] = [];
 
@@ -32,6 +48,7 @@ if (!task) {
   console.log("Lattice — generate less, choose cheaply, verify everything.");
   console.log("");
   console.log('Usage: lattice [--config path] "your coding task"');
+  console.log("       lattice stats [--json] [run-file-or-directory ...]");
   console.log("");
   console.log("Autonomy modes: autopilot | supervised | manual");
   console.log("Config discovery:");
