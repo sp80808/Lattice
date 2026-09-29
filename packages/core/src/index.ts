@@ -7,11 +7,14 @@ import {
   runCommand,
   type CommandSpec,
 } from "@lattice/execution";
+import { runSearchLoop, type ExperimentExecutor } from "@lattice/search";
 import {
   TAP_VERSION,
   type EvidenceRef,
   type RunEvent,
   type RunResult,
+  type DecisionProvider,
+  type GeneratorProvider,
   type TapPacket,
 } from "@lattice/protocol";
 
@@ -19,6 +22,13 @@ export interface RunTaskOptions {
   cwd?: string;
   latticeDir?: string;
   verifyCommand?: CommandSpec;
+  search?: {
+    generator: GeneratorProvider;
+    decision: DecisionProvider;
+    executor: ExperimentExecutor;
+    maxRounds?: number;
+    candidatesPerRound?: number;
+  };
 }
 
 class JsonlEventLog {
@@ -98,7 +108,7 @@ export async function runTask(
     repoSummary,
   );
 
-  const tap: TapPacket = {
+  let tap: TapPacket = {
     version: TAP_VERSION,
     runId,
     task: trimmed,
@@ -164,8 +174,47 @@ export async function runTask(
 
   await log.append("tap.created", tap);
 
-  const summary =
+  let summary =
     `Lattice grounded the task in ${tap.evidence.length} evidence record(s) before model reasoning.`;
+
+  if (options.search) {
+    const searchResult = await runSearchLoop({
+      tap,
+      generator: options.search.generator,
+      decision: options.search.decision,
+      executor: options.search.executor,
+      maxRounds: options.search.maxRounds,
+      candidatesPerRound: options.search.candidatesPerRound,
+      onTrace: async (event) => {
+        if (event.type === "candidates.generated") {
+          await log.append("decision.requested", {
+            round: event.round,
+            candidates: event.candidates,
+          });
+        } else if (event.type === "decision.completed") {
+          await log.append("decision.completed", event);
+        } else if (event.type === "experiment.started") {
+          await log.append("tool.started", {
+            tool: "experiment",
+            round: event.round,
+            candidate: event.candidate,
+          });
+        } else {
+          await log.append("tool.completed", {
+            tool: "experiment",
+            round: event.round,
+            outcome: event.outcome,
+          });
+        }
+      },
+    });
+
+    tap = searchResult.tap;
+    await log.append("tap.updated", tap);
+    summary =
+      `Lattice search ${searchResult.status} after ${searchResult.rounds} round(s); ` +
+      `${tap.evidence.length} evidence record(s) retained.`;
+  }
 
   await log.append("run.completed", { summary });
 
