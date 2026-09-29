@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
-    "@lattice/protocol": "0.0.1"
+    "@lattice/protocol": "0.0.1",
+    "@lattice/execution": "0.0.1"
   }
 }
