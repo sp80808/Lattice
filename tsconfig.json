@@ -23,6 +23,9 @@
       "path": "./packages/runtime"
     },
     {
+      "path": "./packages/analytics"
+    },
+    {
       "path": "./apps/cli"
     },
     {
