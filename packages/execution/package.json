@@ -1,5 +1,5 @@
 {
-  "name": "@lattice/core",
+  "name": "@lattice/execution",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -9,9 +9,5 @@
       "types": "./src/index.ts",
       "import": "./dist/index.js"
     }
-  },
-  "dependencies": {
-    "@lattice/protocol": "0.0.1",
-    "@lattice/execution": "0.0.1"
   }
 }
