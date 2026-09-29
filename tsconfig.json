@@ -23,7 +23,13 @@
       "path": "./packages/runtime"
     },
     {
+      "path": "./packages/ledger"
+    },
+    {
       "path": "./packages/analytics"
+    },
+    {
+      "path": "./packages/mining"
     },
     {
       "path": "./apps/cli"
