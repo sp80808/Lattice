@@ -109,7 +109,7 @@ test("search executes the selected candidate and stops on verified success", asy
     generator,
     decision,
     executor,
-    onTrace: (event) => trace.push(event),
+    onTrace: (event) => { trace.push(event); },
   });
 
   assert.equal(result.status, "solved");
