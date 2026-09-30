@@ -106,16 +106,29 @@ See [docs/architecture.md](docs/architecture.md) and [docs/mvp.md](docs/mvp.md).
 
 ## Prototype quick start
 
-The first runnable skeleton lives in the TypeScript workspace:
-
 ```bash
-npm install
-npm run build
-node apps/cli/dist/index.js "inspect this repository"
-npm run daemon
+scripts/bootstrap.sh --link                      # install, build, test; puts `lattice` on PATH
+cd /path/to/your/repo
+lattice init                                     # .lattice/config.json (local Qwen via Ollama; verifier auto-detected)
+lattice doctor                                   # checks models, worker agent, verifier
+lattice "fix the failing parser tests"
+lattice runs && lattice show latest
 ```
 
-The CLI creates a versioned TAP task packet and append-only JSONL run log under `.lattice/runs/`. The daemon exposes the same core through a minimal local HTTP API. Model providers and the evidence/search loop intentionally land in subsequent slices.
+No model yet? `lattice init --preset observe` records repository and test evidence only, and
+`node examples/embedded/offline-search-loop.mjs` runs the full search loop offline.
+
+Every run writes a versioned TAP task packet and an append-only JSONL event log under `.lattice/runs/`.
+
+| Surface | Entry point | Docs |
+|---|---|---|
+| CLI | `lattice run / init / doctor / runs / show / config / serve / mcp / stats / mine / policy-sim` | [docs/cli.md](docs/cli.md) |
+| HTTP daemon | `lattice serve` (127.0.0.1:4774) | [docs/sdk.md](docs/sdk.md) |
+| TypeScript SDK | `@lattice/sdk` | [docs/sdk.md](docs/sdk.md) |
+| Python SDK | `sdks/python` (`lattice_sdk`) | [sdks/python/README.md](sdks/python/README.md) |
+| MCP server | `lattice mcp` for Claude Code, Codex, Cursor, Gemini CLI | [docs/integrations.md](docs/integrations.md) |
+| Setup scripts | `scripts/bootstrap.sh`, `setup-provider.sh`, `setup-agents.sh` | [docs/integrations.md](docs/integrations.md) |
+| Examples | runnable demos, configs, client snippets | [examples/README.md](examples/README.md) |
 
 The architecture deliberately uses open-source projects as jumping-off points rather than rebuilding commodity plumbing. See [open-source jumping-off points](docs/open-source-jumping-off-points.md).
 

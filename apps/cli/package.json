@@ -7,8 +7,10 @@
     "lattice": "./dist/index.js"
   },
   "dependencies": {
-    "@lattice/core": "0.0.1",
-    "@lattice/runtime": "0.0.1",
+    "@lattice/service": "0.0.1",
+    "@lattice/server": "0.0.1",
+    "@lattice/mcp": "0.0.1",
+    "@lattice/protocol": "0.0.1",
     "@lattice/analytics": "0.0.1",
     "@lattice/mining": "0.0.1",
     "@lattice/policy": "0.0.1"

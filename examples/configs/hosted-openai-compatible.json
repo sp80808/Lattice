@@ -1,0 +1,13 @@
+{
+  "mode": "auto",
+  "autonomy": { "mode": "supervised" },
+  "model": {
+    "provider": "openai-compatible",
+    "baseUrl": "https://api.example.com/v1",
+    "model": "your-model-name",
+    "apiKeyEnv": "LATTICE_API_KEY"
+  },
+  "agent": { "preset": "opencode", "format": "json", "autoApprove": false },
+  "verify": { "command": "python3", "args": ["-m", "pytest", "-q"], "timeoutMs": 300000 },
+  "search": { "maxRounds": 4, "candidatesPerRound": 4 }
+}

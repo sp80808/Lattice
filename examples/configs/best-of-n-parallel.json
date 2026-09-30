@@ -1,0 +1,13 @@
+{
+  "mode": "auto",
+  "autonomy": { "mode": "autopilot" },
+  "model": {
+    "provider": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "model": "qwen3-coder"
+  },
+  "agent": { "preset": "qwen-code", "approvalMode": "auto-edit", "outputFormat": "json" },
+  "verify": { "command": "npm", "args": ["test"], "timeoutMs": 120000 },
+  "search": { "maxRounds": 3, "candidatesPerRound": 6, "topK": 2, "parallelism": 2 },
+  "workspace": { "cleanup": "on-failure" }
+}

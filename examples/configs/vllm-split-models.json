@@ -1,0 +1,20 @@
+{
+  "mode": "auto",
+  "autonomy": { "mode": "supervised", "minConfidence": 0.72, "maxNormalizedEntropy": 0.72 },
+  "models": {
+    "decision": {
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen3-4B-Instruct-2507",
+      "jsonMode": true,
+      "timeoutMs": 15000
+    },
+    "generator": {
+      "baseUrl": "http://127.0.0.1:8001/v1",
+      "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "timeoutMs": 120000
+    }
+  },
+  "agent": { "preset": "qwen-code", "approvalMode": "auto-edit", "outputFormat": "json" },
+  "verify": { "command": "cargo", "args": ["test"], "timeoutMs": 600000 },
+  "search": { "maxRounds": 6, "candidatesPerRound": 5 }
+}

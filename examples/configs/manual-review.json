@@ -1,0 +1,12 @@
+{
+  "mode": "auto",
+  "autonomy": { "mode": "manual" },
+  "model": {
+    "provider": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "model": "qwen3-coder"
+  },
+  "agent": { "preset": "qwen-code", "approvalMode": "default", "outputFormat": "json" },
+  "verify": { "command": "make", "args": ["test"], "timeoutMs": 300000 },
+  "search": { "maxRounds": 4, "candidatesPerRound": 3 }
+}

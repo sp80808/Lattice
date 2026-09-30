@@ -255,6 +255,16 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
   };
 }
 
+/** Decision provider for `models.decision ?? model`, or undefined when unconfigured. */
+export function createDecisionProvider(
+  config: LatticeConfig,
+): OpenAICompatibleDecisionProvider | undefined {
+  const model = config.models?.decision ?? config.model;
+  return model
+    ? new OpenAICompatibleDecisionProvider(endpointConfig(model))
+    : undefined;
+}
+
 export function createRunTaskOptions(
   config: LatticeConfig,
   hooks: { reviewer?: DecisionReviewer } = {},

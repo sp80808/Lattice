@@ -12,10 +12,16 @@
   },
   "references": [
     {
-      "path": "../../packages/core"
+      "path": "../../packages/service"
     },
     {
-      "path": "../../packages/runtime"
+      "path": "../../packages/server"
+    },
+    {
+      "path": "../../packages/mcp"
+    },
+    {
+      "path": "../../packages/protocol"
     },
     {
       "path": "../../packages/analytics"

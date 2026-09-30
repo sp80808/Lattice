@@ -1,0 +1,4 @@
+{
+  "mode": "observe",
+  "verify": { "command": "npm", "args": ["test"], "timeoutMs": 120000 }
+}

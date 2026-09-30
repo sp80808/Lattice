@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "skipLibCheck": true
+  },
+  "references": [
+    { "path": "../protocol" },
+    { "path": "../core" },
+    { "path": "../runtime" },
+    { "path": "../analytics" },
+    { "path": "../providers" },
+    { "path": "../execution" },
+    { "path": "../search" }
+  ],
+  "include": ["src/**/*.ts"]
+}
