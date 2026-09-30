@@ -26,6 +26,8 @@ import {
 export interface RunTaskOptions {
   cwd?: string;
   latticeDir?: string;
+  /** Called after each event is durably appended. Listener errors are ignored. */
+  onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
   search?: {
     generator: GeneratorProvider;
@@ -46,6 +48,7 @@ class JsonlEventLog {
   constructor(
     private readonly runId: string,
     readonly path: string,
+    private readonly onEvent?: (event: RunEvent) => void,
   ) {}
 
   async append<T>(type: RunEvent<T>["type"], payload: T): Promise<void> {
@@ -57,6 +60,11 @@ class JsonlEventLog {
       payload,
     };
     await appendFile(this.path, JSON.stringify(event) + "\n", "utf8");
+    try {
+      this.onEvent?.(event);
+    } catch {
+      // Observers must never break the run or its log.
+    }
   }
 }
 
@@ -89,7 +97,11 @@ export async function runTask(
   const runsDir = join(latticeDir, "runs");
   await mkdir(runsDir, { recursive: true });
 
-  const log = new JsonlEventLog(runId, join(runsDir, `${runId}.jsonl`));
+  const log = new JsonlEventLog(
+    runId,
+    join(runsDir, `${runId}.jsonl`),
+    options.onEvent,
+  );
   await log.append("run.started", { task: trimmed, cwd });
 
   try {

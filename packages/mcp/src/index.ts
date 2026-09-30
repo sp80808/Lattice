@@ -17,7 +17,9 @@ import {
   LatticeServiceError,
   listRuns,
   parseDecisionRequest,
+  ReviewBroker,
   runDoctor,
+  startTask,
 } from "@lattice/service";
 
 export const SUPPORTED_PROTOCOL_VERSIONS = [
@@ -54,6 +56,8 @@ interface ToolDefinition {
 export interface McpServerOptions {
   /** Default project directory for tools that are not given `cwd`. */
   cwd?: string;
+  /** How long a `review=remote` decision waits for lattice_review. Default 10 min. */
+  reviewTimeoutMs?: number;
 }
 
 const cwdProperty = {
@@ -70,7 +74,7 @@ function stringArg(args: Record<string, unknown>, name: string, required = false
   return value;
 }
 
-function tools(): ToolDefinition[] {
+function tools(reviews: ReviewBroker): ToolDefinition[] {
   return [
     {
       name: "lattice_run",
@@ -79,12 +83,21 @@ function tools(): ToolDefinition[] {
         "Ground a coding task in repository and verifier evidence and record a replayable run. " +
         "mode=observe (default) only gathers evidence and runs the configured verifier. " +
         "mode=configured honours .lattice/config.json; with mode:auto that runs model search and " +
-        "coding agents in isolated git worktrees, which can take minutes.",
+        "coding agents in isolated git worktrees, which can take minutes: pass wait=false to get a runId " +
+        "back immediately and poll lattice_show_run until status is completed or failed.",
       inputSchema: {
         type: "object",
         properties: {
           task: { type: "string", description: "The coding task in plain language." },
           mode: { type: "string", enum: ["observe", "configured"], default: "observe" },
+          wait: { type: "boolean", default: true, description: "false: return as soon as the run starts." },
+          review: {
+            type: "string",
+            enum: ["none", "remote"],
+            default: "none",
+            description:
+              "remote: supervised/manual decisions wait for you to answer via lattice_review instead of blocking the run. Use with wait=false.",
+          },
           cwd: cwdProperty,
         },
         required: ["task"],
@@ -96,7 +109,35 @@ function tools(): ToolDefinition[] {
         if (mode !== "observe" && mode !== "configured") {
           throw new LatticeServiceError("invalid_request", "mode must be 'observe' or 'configured'");
         }
-        const outcome = await executeTask(stringArg(args, "task", true)!, { cwd, mode });
+        if (args.wait !== undefined && typeof args.wait !== "boolean") {
+          throw new LatticeServiceError("invalid_request", "wait must be a boolean");
+        }
+        const review = stringArg(args, "review") ?? "none";
+        if (review !== "none" && review !== "remote") {
+          throw new LatticeServiceError("invalid_request", "review must be 'none' or 'remote'");
+        }
+        let runId: string | undefined;
+        const taskOptions = {
+          cwd,
+          mode: mode as "observe" | "configured",
+          reviewer: review === "remote" ? reviews.reviewerFor(() => runId) : undefined,
+          onEvent: (event: { runId: string }) => {
+            runId ??= event.runId;
+          },
+        };
+        if (args.wait === false) {
+          const started = await startTask(stringArg(args, "task", true)!, taskOptions);
+          return {
+            runId: started.runId,
+            status: "running",
+            mode,
+            next:
+              review === "remote"
+                ? `poll lattice_reviews / lattice_show_run for id=${started.runId}; answer reviews with lattice_review`
+                : `poll lattice_show_run with id=${started.runId}`,
+          };
+        }
+        const outcome = await executeTask(stringArg(args, "task", true)!, taskOptions);
         const { result } = outcome;
         return {
           runId: result.runId,
@@ -143,6 +184,42 @@ function tools(): ToolDefinition[] {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
       run: (args, cwd) => getRun(stringArg(args, "id", true)!, cwd),
+    },
+    {
+      name: "lattice_reviews",
+      title: "Pending Lattice reviews",
+      description:
+        "List decisions from runs started with review=remote that are waiting for a reviewer. Each shows " +
+        "the question, the choices, what Lattice's decision model picked, and why review was required.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      run: async () => ({ reviews: reviews.list() }),
+    },
+    {
+      name: "lattice_review",
+      title: "Answer a Lattice review",
+      description:
+        "Answer a pending review so the paused run continues. approve = accept the model's pick; " +
+        "replace = run the choice IDs in `selected` instead; refine = regenerate candidates with your note; " +
+        "stop = end the run. Pass reviewId from lattice_reviews to avoid answering a stale round.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Run ID, unambiguous prefix, or 'latest'." },
+          action: { type: "string", enum: ["approve", "replace", "refine", "stop"] },
+          selected: { type: "array", items: { type: "string" } },
+          note: { type: "string" },
+          reviewId: { type: "string" },
+        },
+        required: ["id", "action"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      async run(args) {
+        const { id: _id, ...answer } = args;
+        const answered = reviews.answer(stringArg(args, "id", true)!, answer);
+        return { runId: answered.runId, reviewId: answered.reviewId, accepted: true };
+      },
     },
     {
       name: "lattice_decide",
@@ -214,7 +291,8 @@ function tools(): ToolDefinition[] {
 /** Transport-agnostic JSON-RPC handler. Returns undefined for notifications. */
 export function createMcpHandler(options: McpServerOptions = {}) {
   const baseCwd = resolve(options.cwd ?? process.cwd());
-  const registry = new Map(tools().map((tool) => [tool.name, tool]));
+  const reviews = new ReviewBroker({ timeoutMs: options.reviewTimeoutMs });
+  const registry = new Map(tools(reviews).map((tool) => [tool.name, tool]));
 
   const ok = (id: JsonRpcId, result: unknown): JsonRpcResponse => ({ jsonrpc: "2.0", id, result });
   const fail = (id: JsonRpcId, code: number, message: string): JsonRpcResponse => ({

@@ -69,6 +69,13 @@ try {
   const doctor = await client.doctor({ cwd: project, network: false });
   console.log(`\ndoctor ok=${doctor.ok}: ${doctor.checks.map((c) => `${c.id}=${c.status}`).join(" ")}`);
 
+  // Long runs: submit without waiting, then stream events as they happen (SSE).
+  const accepted = await client.submitTask("stream this run", { cwd: project, mode: "observe" });
+  console.log(`\nsubmitted ${accepted.runId.slice(0, 8)} (${accepted.status}); streaming:`);
+  for await (const event of client.streamEvents(accepted.runId, { cwd: project })) {
+    console.log(`  #${event.seq} ${event.type}`);
+  }
+
   // Errors carry a stable code.
   try {
     await client.getRun("deadbeef", { cwd: project });

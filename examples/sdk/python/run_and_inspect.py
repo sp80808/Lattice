@@ -84,6 +84,11 @@ def main() -> int:
         )
         print(f"\ndecision ({decision['identity']['provider']}): {', '.join(decision['selected'])}")
 
+        accepted = client.submit_task("stream this run", cwd=project, mode="observe")
+        print(f"\nsubmitted {accepted['runId'][:8]} ({accepted['status']}); streaming:")
+        for event in client.stream_events(accepted["runId"], cwd=project):
+            print(f"  #{event['seq']} {event['type']}")
+
         try:
             client.get_run("deadbeef", cwd=project)
         except LatticeApiError as error:

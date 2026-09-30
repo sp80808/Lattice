@@ -150,6 +150,22 @@ export interface TaskSubmission {
   cwd?: string;
   mode?: TaskExecutionMode;
   configPath?: string;
+  /** `false` returns 202 + runId as soon as the run starts (default `true`). */
+  wait?: boolean;
+  /**
+   * `remote` parks supervised/manual review requests for an API/MCP client to
+   * answer (see /v1/reviews). Default `none`: such decisions block the run.
+   */
+  review?: "none" | "remote";
+}
+
+/** Response to `POST /v1/tasks` with `wait: false`. */
+export interface TaskAccepted {
+  runId: string;
+  status: "running";
+  startedAt: string;
+  mode: TaskExecutionMode;
+  links: { run: string; events: string };
 }
 
 export type RunStatus = "completed" | "failed" | "incomplete";
@@ -194,3 +210,26 @@ export interface ApiErrorBody {
   error: string;
   code: string;
 }
+
+/** A supervised/manual-mode decision waiting for a remote reviewer. */
+export interface PendingReview {
+  runId: string;
+  /** Changes every round; pass it back to guard against answering a stale review. */
+  reviewId: string;
+  round: number;
+  question: string;
+  reasons: string[];
+  choices: DecisionChoice[];
+  /** What the decision model picked. */
+  modelSelection: string[];
+  confidence?: number;
+  evidenceIds: string[];
+  requestedAt: string;
+  expiresAt: string;
+}
+
+export type ReviewAnswer =
+  | { action: "approve"; note?: string; reviewId?: string }
+  | { action: "replace"; selected: string[]; note?: string; reviewId?: string }
+  | { action: "refine"; note?: string; reviewId?: string }
+  | { action: "stop"; note?: string; reviewId?: string };

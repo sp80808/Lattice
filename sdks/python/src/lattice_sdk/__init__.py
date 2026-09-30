@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Literal, Optional, Sequence, TypedDict
+from typing import Any, Dict, Iterator, List, Literal, Optional, Sequence, TypedDict
 
 __all__ = [
     "DEFAULT_LATTICE_URL",
@@ -32,6 +32,8 @@ __version__ = "0.0.1"
 DEFAULT_LATTICE_URL = "http://127.0.0.1:4774"
 
 TaskMode = Literal["observe", "configured"]
+ReviewMode = Literal["none", "remote"]
+ReviewAction = Literal["approve", "replace", "refine", "stop"]
 DecisionProviderName = Literal["configured", "random"]
 
 
@@ -99,10 +101,108 @@ class LatticeClient:
         cwd: Optional[str] = None,
         mode: Optional[TaskMode] = None,
         config_path: Optional[str] = None,
+        review: Optional[ReviewMode] = None,
     ) -> Dict[str, Any]:
         """Run a task. ``mode="observe"`` (daemon default) never launches coding agents."""
-        body = _drop_none({"task": task, "cwd": cwd, "mode": mode, "configPath": config_path})
+        body = _drop_none({"task": task, "cwd": cwd, "mode": mode, "configPath": config_path, "review": review})
         return self._request("POST", "/v1/tasks", body=body)
+
+    def submit_task(
+        self,
+        task: str,
+        *,
+        cwd: Optional[str] = None,
+        mode: Optional[TaskMode] = None,
+        config_path: Optional[str] = None,
+        review: Optional[ReviewMode] = None,
+    ) -> Dict[str, Any]:
+        """Start a task and return as soon as it is running (``{"runId", "status": "running", ...}``)."""
+        body = _drop_none(
+            {"task": task, "cwd": cwd, "mode": mode, "configPath": config_path, "review": review, "wait": False}
+        )
+        return self._request("POST", "/v1/tasks", body=body)
+
+    def stream_events(
+        self,
+        run_id: str,
+        *,
+        cwd: Optional[str] = None,
+        after: Optional[int] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """Yield a run's events (server-sent events) until it completes or fails.
+
+        Earlier events are replayed first, so this is safe to call right after
+        ``submit_task``. Pass ``after=<seq>`` to resume.
+        """
+        path = f"/v1/events/{urllib.parse.quote(run_id, safe='')}"
+        url = self.base_url + path + "?" + urllib.parse.urlencode(
+            _drop_none({"follow": "true", "cwd": cwd, "after": after})
+        )
+        headers = {"accept": "text/event-stream"}
+        if self.token:
+            headers["authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as error:
+            raise self._api_error(error) from None
+        with response:
+            data: List[str] = []
+            for raw_line in response:
+                line = raw_line.decode("utf-8").rstrip("\r\n")
+                if line.startswith("data:"):
+                    value = line[5:]
+                    data.append(value[1:] if value.startswith(" ") else value)
+                elif line == "" and data:
+                    yield json.loads("\n".join(data))
+                    data = []
+
+    def wait_for_run(self, run_id: str, *, cwd: Optional[str] = None) -> Dict[str, Any]:
+        """Follow a run to completion and return its final detail."""
+        resolved = run_id
+        for event in self.stream_events(run_id, cwd=cwd):
+            resolved = event["runId"]
+        return self.get_run(resolved, cwd=cwd)
+
+    # -- remote review ---------------------------------------------------------
+
+    def list_reviews(self) -> List[Dict[str, Any]]:
+        """Decisions from ``review="remote"`` runs waiting for an answer on this daemon."""
+        return self._request("GET", "/v1/reviews")["reviews"]
+
+    def get_review(self, run_id: str) -> Dict[str, Any]:
+        return self._request("GET", f"/v1/reviews/{urllib.parse.quote(run_id, safe='')}")
+
+    def answer_review(
+        self,
+        run_id: str,
+        action: ReviewAction,
+        *,
+        selected: Optional[Sequence[str]] = None,
+        note: Optional[str] = None,
+        review_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Answer a pending review; pass ``review_id`` to guard against a stale round."""
+        body = _drop_none(
+            {
+                "action": action,
+                "selected": list(selected) if selected is not None else None,
+                "note": note,
+                "reviewId": review_id,
+            }
+        )
+        return self._request("POST", f"/v1/reviews/{urllib.parse.quote(run_id, safe='')}", body=body)
+
+    def wait_for_review(self, run_id: str, timeout: float = 60.0, interval: float = 0.2) -> Dict[str, Any]:
+        """Poll until ``run_id`` has a pending review."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return self.get_review(run_id)
+            except LatticeApiError as error:
+                if error.status != 404 or time.monotonic() > deadline:
+                    raise
+            time.sleep(interval)
 
     def list_runs(self, *, cwd: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         return self._request("GET", "/v1/tasks", query={"cwd": cwd, "limit": limit})["runs"]
@@ -175,15 +275,19 @@ class LatticeClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            with error:
-                raw = error.read()
-            try:
-                payload = json.loads(raw) if raw else {}
-            except ValueError:
-                payload = {}
-            raise LatticeApiError(
-                error.code,
-                payload.get("code", "http_error"),
-                payload.get("error", f"HTTP {error.code}: {raw[:200]!r}"),
-            ) from None
+            raise self._api_error(error) from None
         return json.loads(raw) if raw else None
+
+    @staticmethod
+    def _api_error(error: urllib.error.HTTPError) -> LatticeApiError:
+        with error:
+            raw = error.read()
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            payload = {}
+        return LatticeApiError(
+            error.code,
+            payload.get("code", "http_error"),
+            payload.get("error", f"HTTP {error.code}: {raw[:200]!r}"),
+        )

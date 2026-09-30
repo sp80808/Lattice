@@ -24,7 +24,7 @@ Usage:
 Tasks:
   run <task...>        run a task          [--config path] [--observe] [--json]
   runs                 list recorded runs  [-n limit] [--json]
-  show [id|latest]     show one run        [--events] [--json]
+  show [id|latest]     show one run        [--events] [-f|--follow] [--json]
 
 Setup:
   init                 write .lattice/config.json

@@ -52,6 +52,12 @@ test("init, run, runs and show work end-to-end with -C before the command", asyn
   assert.match(shown.stdout, /status:\s+completed/);
   assert.match(shown.stdout, /suite ok/);
 
+  const followed = lattice("-C", cwd, "show", "latest", "--follow");
+  assert.match(followed.stdout, /run\.started[\s\S]*run\.completed/);
+  assert.match(followed.stdout, /status:\s+completed/);
+  const followedJson = lattice("-C", cwd, "show", "--follow", "--json").stdout.trim().split("\n");
+  assert.equal(JSON.parse(followedJson.at(-1)!).type, "run.completed");
+
   const doctor = lattice("-C", cwd, "doctor", "--offline", "--json");
   assert.equal(JSON.parse(doctor.stdout).configPath, written.path);
 });

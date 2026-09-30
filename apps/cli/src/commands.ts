@@ -11,12 +11,13 @@ import {
   buildPolicySimulation,
   formatPolicySimulation,
 } from "@lattice/policy";
-import type { DoctorStatus, RunDetail, RunSummary } from "@lattice/protocol";
+import type { DoctorStatus, RunDetail, RunEvent, RunSummary } from "@lattice/protocol";
 import { startLatticeServer } from "@lattice/server";
 import {
   buildInitConfig,
   detectVerifyCommand,
   executeTask,
+  followRunEvents,
   getRun,
   getRunEvents,
   INIT_PRESETS,
@@ -219,6 +220,12 @@ export async function runsCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+function eventLine(event: RunEvent): string {
+  const payload = event.payload as Record<string, unknown> | undefined;
+  const detail = typeof payload?.tool === "string" ? payload.tool : typeof payload?.type === "string" ? payload.type : "";
+  return `${String(event.seq).padStart(4)}  ${when(event.at)}  ${event.type.padEnd(20)} ${detail}`;
+}
+
 function printRun(run: RunDetail): void {
   console.log(`run:      ${run.runId}`);
   console.log(`status:   ${run.status}`);
@@ -246,20 +253,36 @@ function printRun(run: RunDetail): void {
 }
 
 export async function showCommand(args: string[]): Promise<number> {
-  const { values, positionals } = parse(args, { events: { type: "boolean" } });
+  const { values, positionals } = parse(args, {
+    events: { type: "boolean" },
+    follow: { type: "boolean", short: "f" },
+  });
   const cwd = cwdOf(values);
   const id = positionals[0] ?? "latest";
+
+  if (values.follow) {
+    const controller = new AbortController();
+    process.once("SIGINT", () => controller.abort());
+    for await (const event of followRunEvents(id, cwd, { signal: controller.signal })) {
+      if (values.json) {
+        console.log(JSON.stringify(event));
+      } else {
+        console.log(eventLine(event));
+      }
+    }
+    if (!values.json && !controller.signal.aborted) {
+      console.log("");
+      printRun(await getRun(id, cwd));
+    }
+    return 0;
+  }
 
   if (values.events) {
     const events = await getRunEvents(id, cwd);
     if (values.json) {
       printJson(events);
     } else {
-      for (const event of events) {
-        const payload = event.payload as Record<string, unknown> | undefined;
-        const detail = typeof payload?.tool === "string" ? payload.tool : typeof payload?.type === "string" ? payload.type : "";
-        console.log(`${String(event.seq).padStart(4)}  ${when(event.at)}  ${event.type.padEnd(20)} ${detail}`);
-      }
+      for (const event of events) console.log(eventLine(event));
     }
     return 0;
   }

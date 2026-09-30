@@ -23,6 +23,9 @@ node examples/embedded/offline-search-loop.mjs >/dev/null && ok "search solved b
 info "examples/sdk/typescript/run-and-inspect.mjs"
 env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null && ok "TypeScript SDK round-trip"
 
+info "examples/review/remote-reviewer.mjs"
+node examples/review/remote-reviewer.mjs >/dev/null && ok "remote review of an auto-mode run"
+
 info "examples/mcp/raw-session.mjs"
 node examples/mcp/raw-session.mjs >/dev/null && ok "MCP stdio session"
 

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { LatticeApiError, LatticeClient } from "@lattice/sdk";
+import { createAutoModeFixture } from "@lattice/service/testing";
 import { startLatticeServer } from "./index.js";
 
 async function withServer(
@@ -127,4 +128,138 @@ test("optional bearer token protects everything except health", async () => {
       error instanceof LatticeApiError && error.status === 401,
     );
   });
+});
+
+async function slowObserveConfig(cwd: string): Promise<void> {
+  await mkdir(join(cwd, ".lattice"), { recursive: true });
+  await writeFile(
+    join(cwd, ".lattice", "config.json"),
+    JSON.stringify({
+      mode: "observe",
+      verify: {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => process.stdout.write('slow ok'), 400)"],
+      },
+    }),
+  );
+}
+
+test("submitTask returns 202 immediately and events stream until completion", async () => {
+  await withServer({}, async (url, cwd) => {
+    await slowObserveConfig(cwd);
+    const client = new LatticeClient({ baseUrl: url });
+
+    const accepted = await client.submitTask("slow async task");
+    assert.equal(accepted.status, "running");
+    assert.equal(accepted.mode, "observe");
+    assert.equal(accepted.links.events, `/v1/events/${accepted.runId}?follow=true`);
+    assert.equal((await client.health()).activeRuns, 1);
+    assert.equal((await client.getRun(accepted.runId)).status, "incomplete");
+
+    const types: string[] = [];
+    for await (const event of client.streamEvents(accepted.runId)) types.push(event.type);
+    assert.equal(types[0], "run.started");
+    assert.equal(types.at(-1), "run.completed");
+
+    const resumed: number[] = [];
+    for await (const event of client.streamEvents(accepted.runId, { after: 5 })) resumed.push(event.seq);
+    assert.equal(resumed[0], 6);
+
+    const detail = await client.waitForRun("latest");
+    assert.equal(detail.status, "completed");
+    assert.match(detail.tap?.evidence[1]?.summary ?? "", /slow ok/);
+  });
+});
+
+test("async submission still rejects bad input up front; unknown streams are 404", async () => {
+  await withServer({}, async (url) => {
+    const client = new LatticeClient({ baseUrl: url });
+    await assert.rejects(client.submitTask(" "), (error: unknown) =>
+      error instanceof LatticeApiError && error.status === 400,
+    );
+    await assert.rejects(
+      (async () => {
+        for await (const _event of client.streamEvents("deadbeef")) {
+          // unreachable
+        }
+      })(),
+      (error: unknown) => error instanceof LatticeApiError && error.status === 404,
+    );
+    const raw = await fetch(`${url}/v1/tasks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "x", wait: "no" }),
+    });
+    assert.equal(raw.status, 400);
+  });
+});
+
+test("closing an SSE stream early does not break the server", async () => {
+  await withServer({}, async (url, cwd) => {
+    await slowObserveConfig(cwd);
+    const client = new LatticeClient({ baseUrl: url });
+    const accepted = await client.submitTask("abandon stream");
+    const controller = new AbortController();
+    const seen: string[] = [];
+    await assert.rejects(async () => {
+      for await (const event of client.streamEvents(accepted.runId, { signal: controller.signal })) {
+        seen.push(event.type);
+        controller.abort();
+      }
+    });
+    assert.equal(seen[0], "run.started");
+    assert.equal((await client.waitForRun(accepted.runId)).status, "completed");
+  });
+});
+
+test("remote review: a client answers a manual-mode decision and the run is solved by tests", async () => {
+  const { cwd, closeModel } = await createAutoModeFixture();
+  try {
+    await withServer({ cwd }, async (url) => {
+      const client = new LatticeClient({ baseUrl: url });
+      const accepted = await client.submitTask("fix the add test", {
+        mode: "configured",
+        review: "remote",
+      });
+
+      let pending = await client.waitForReview(accepted.runId, { timeoutMs: 20_000 });
+      assert.equal(pending.round, 1);
+      assert.deepEqual(pending.modelSelection, ["inspect"]);
+      assert.deepEqual((await client.listReviews()).map((r) => r.runId), [accepted.runId]);
+
+      await assert.rejects(
+        client.answerReview(accepted.runId, { action: "approve", reviewId: "stale:r9" }),
+        (error: unknown) => error instanceof LatticeApiError && error.status === 409,
+      );
+      const answered = await client.answerReview(accepted.runId, {
+        action: "replace",
+        selected: ["fix-add"],
+        note: "patching is the cheapest discriminating experiment",
+        reviewId: pending.reviewId,
+      });
+      assert.equal(answered.accepted, true);
+
+      const detail = await client.waitForRun(accepted.runId);
+      assert.equal(detail.status, "completed");
+      assert.match(detail.summary ?? "", /search solved after 1 round/);
+      assert.ok(detail.tap?.evidence.some((e) => e.kind === "command" && e.verified && /exit=0/.test(e.summary)));
+      assert.deepEqual(await client.listReviews(), []);
+    });
+  } finally {
+    await closeModel();
+  }
+});
+
+test("without remote review, a manual-mode decision blocks instead of auto-approving", async () => {
+  const { cwd, closeModel } = await createAutoModeFixture();
+  try {
+    await withServer({ cwd }, async (url) => {
+      const client = new LatticeClient({ baseUrl: url });
+      const run = await client.runTask("fix the add test", { mode: "configured" });
+      assert.match(run.summary, /search blocked/);
+      assert.ok(run.tap.uncertainties.some((u) => /no reviewer is available/.test(u)));
+    });
+  } finally {
+    await closeModel();
+  }
 });

@@ -29,6 +29,17 @@ choice = client.decide(
     provider="random",             # "configured" uses the project's decision model
 )
 
+# Long runs: return immediately, then stream events (server-sent events).
+accepted = client.submit_task("fix the flaky test", cwd="/path/to/repo", mode="configured")
+for event in client.stream_events(accepted["runId"], cwd="/path/to/repo"):
+    print(event["seq"], event["type"])
+final = client.wait_for_run(accepted["runId"], cwd="/path/to/repo")
+
+# Supervised/manual autonomy without a TTY: answer reviews remotely.
+accepted = client.submit_task("fix the add test", cwd="/path/to/repo", mode="configured", review="remote")
+pending = client.wait_for_review(accepted["runId"])
+client.answer_review(accepted["runId"], "replace", selected=["fix-add"], review_id=pending["reviewId"])
+
 try:
     client.get_run("deadbeef")
 except LatticeApiError as error:

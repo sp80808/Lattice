@@ -74,6 +74,37 @@ class DaemonIntegrationTest(unittest.TestCase):
         self.assertEqual(Path(doctor["cwd"]).resolve(), Path(self.project).resolve())
         self.assertIn("node", [check["id"] for check in doctor["checks"]])
 
+    def test_submit_stream_and_wait(self) -> None:
+        accepted = self.client.submit_task("async from python")
+        self.assertEqual(accepted["status"], "running")
+
+        types = [event["type"] for event in self.client.stream_events(accepted["runId"])]
+        self.assertEqual(types[0], "run.started")
+        self.assertEqual(types[-1], "run.completed")
+
+        resumed = [event["seq"] for event in self.client.stream_events(accepted["runId"], after=3)]
+        self.assertEqual(resumed[0], 4)
+
+        self.assertEqual(self.client.wait_for_run(accepted["runId"])["status"], "completed")
+
+        with self.assertRaises(LatticeApiError) as caught:
+            list(self.client.stream_events("deadbeef"))
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_review_endpoints(self) -> None:
+        self.assertEqual(self.client.list_reviews(), [])
+        with self.assertRaises(LatticeApiError) as caught:
+            self.client.get_review("latest")
+        self.assertEqual(caught.exception.status, 404)
+        with self.assertRaises(LatticeApiError) as caught:
+            self.client.answer_review("deadbeef", "approve")
+        self.assertEqual(caught.exception.code, "not_found")
+        with self.assertRaises(LatticeApiError):
+            self.client.wait_for_review("deadbeef", timeout=0.3, interval=0.1)
+        # Observe mode never needs review, so remote review is a harmless no-op.
+        run = self.client.run_task("observe with remote review", review="remote")
+        self.assertEqual(run["status"], "completed")
+
     def test_errors_are_typed(self) -> None:
         with self.assertRaises(LatticeApiError) as caught:
             self.client.run_task("   ")

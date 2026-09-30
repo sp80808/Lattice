@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,8 @@ import {
   decide,
   detectVerifyCommand,
   executeTask,
+  findExecutable,
+  followRunEvents,
   getRun,
   getRunEvents,
   LatticeServiceError,
@@ -15,7 +17,9 @@ import {
   parseCommandLine,
   parseDecisionRequest,
   resolveRunId,
+  ReviewBroker,
   runDoctor,
+  startTask,
   writeConfig,
 } from "./index.js";
 
@@ -212,4 +216,146 @@ test("doctor reports config and model reachability without a live server", async
   await writeFile(join(broken, ".lattice", "config.json"), "{ not json");
   const bad = await runDoctor({ cwd: broken });
   assert.equal(bad.ok, false);
+});
+
+const slowVerify = {
+  command: process.execPath,
+  args: ["-e", "setTimeout(() => process.stdout.write('slow ok'), 400)"],
+};
+
+test("startTask resolves once the run is logged and follow tails it live", async () => {
+  const cwd = await tempProject({ mode: "observe", verify: slowVerify });
+  const started = await startTask("slow observe", { cwd });
+  assert.match(started.runId, /^[0-9a-f-]{36}$/);
+
+  const listed = await listRuns({ cwd });
+  assert.equal(listed[0]?.status, "incomplete");
+
+  const types: string[] = [];
+  for await (const event of followRunEvents(started.runId, cwd, { pollMs: 25 })) {
+    types.push(event.type);
+  }
+  assert.equal(types[0], "run.started");
+  assert.equal(types.at(-1), "run.completed");
+  assert.ok(types.includes("tap.created"));
+
+  const outcome = await started.done;
+  assert.equal(outcome.result.runId, started.runId);
+
+  const resumed: number[] = [];
+  for await (const event of followRunEvents(started.runId, cwd, { after: 4 })) {
+    resumed.push(event.seq);
+  }
+  assert.equal(resumed[0], 5);
+});
+
+test("startTask rejects config errors before any run exists", async () => {
+  const cwd = await tempProject({
+    mode: "auto",
+    model: { baseUrl: "http://127.0.0.1:9/v1", model: "unused" },
+    agent: { preset: "qwen-code" },
+  });
+  await assert.rejects(startTask("no verifier", { cwd }), /verify/);
+  await assert.rejects(startTask("   ", { cwd }), /non-empty/);
+  assert.deepEqual(await listRuns({ cwd }), []);
+});
+
+test("followRunEvents stops when aborted", async () => {
+  const cwd = await tempProject({ mode: "observe", verify: slowVerify });
+  const started = await startTask("abort follow", { cwd });
+  const controller = new AbortController();
+  const seen: string[] = [];
+  for await (const event of followRunEvents(started.runId, cwd, { signal: controller.signal, pollMs: 25 })) {
+    seen.push(event.type);
+    controller.abort();
+  }
+  assert.deepEqual(seen, ["run.started"]);
+  await started.done;
+});
+
+function reviewRequest(round: number) {
+  return {
+    round,
+    reasons: ["confidence 0.400 below 0.720"],
+    selectedCandidates: [],
+    decision: {
+      selected: ["a"],
+      scores: { a: 0.4, b: 0.35, __none__: 0.25 },
+      confidence: 0.4,
+      identity: { provider: "test" },
+      usage: { latencyMs: 1 },
+    },
+    frame: {
+      id: "frame1",
+      class: "next-action" as const,
+      objective: "o",
+      question: "Which next?",
+      criteria: [],
+      state: "",
+      evidenceIds: ["ev:1"],
+      choices: [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+        { id: "__none__", label: "none" },
+      ],
+      allowUnknown: true,
+      audit: [],
+    },
+  };
+}
+
+test("ReviewBroker parks reviews until a remote answer arrives", async () => {
+  const broker = new ReviewBroker();
+  const runId = "11111111-2222-3333-4444-555555555555";
+  const reviewer = broker.reviewerFor(() => runId);
+
+  const pending = reviewer(reviewRequest(1));
+  const [listed] = broker.list();
+  assert.equal(listed?.runId, runId);
+  assert.equal(listed?.reviewId, "frame1:r1");
+  assert.deepEqual(listed?.modelSelection, ["a"]);
+  assert.equal(broker.get("11111111").question, "Which next?");
+  assert.equal(broker.get("latest").runId, runId);
+
+  assert.throws(() => broker.answer(runId, { action: "maybe" }), /action must be/);
+  assert.throws(() => broker.answer(runId, { action: "replace", selected: ["__none__"] }), /non-empty subset of a, b/);
+  assert.throws(() => broker.answer(runId, { action: "approve", reviewId: "old:r0" }), /stale/);
+  assert.equal(broker.list().length, 1, "invalid answers leave the review pending");
+
+  broker.answer(runId, { action: "replace", selected: ["b"], note: "b is cheaper", reviewId: "frame1:r1" });
+  assert.deepEqual(await pending, { action: "replace", selected: ["b"], note: "b is cheaper" });
+  assert.deepEqual(broker.list(), []);
+  assert.throws(() => broker.get(runId), /no pending review/);
+});
+
+test("ReviewBroker stops unanswered reviews after the timeout", async () => {
+  const broker = new ReviewBroker({ timeoutMs: 20 });
+  const result = await broker.reviewerFor(() => "abc")(reviewRequest(2));
+  assert.equal(result.action, "stop");
+  assert.match(result.note ?? "", /no remote review within 20ms/);
+  assert.deepEqual(broker.list(), []);
+
+  const early = await broker.reviewerFor(() => undefined)(reviewRequest(1));
+  assert.equal(early.action, "stop");
+});
+
+test("findExecutable searches PATH and honours PATHEXT on Windows", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-path-"));
+  await writeFile(join(dir, "tool"), "");
+  await chmod(join(dir, "tool"), 0o755);
+  await writeFile(join(dir, "qwen.CMD"), "");
+  await chmod(join(dir, "qwen.CMD"), 0o755);
+  await writeFile(join(dir, "plain"), "");
+
+  assert.equal(await findExecutable("tool", `/nonexistent:${dir}`, { platform: "linux" }), join(dir, "tool"));
+  assert.equal(await findExecutable("plain", dir, { platform: "linux" }), undefined, "not executable");
+  assert.equal(await findExecutable("qwen", dir, { platform: "linux" }), undefined);
+  assert.equal(await findExecutable(join(dir, "tool"), "", { platform: "linux" }), join(dir, "tool"));
+
+  assert.equal(
+    await findExecutable("qwen", `C:\\nope;${dir}`, { platform: "win32", pathExt: ".EXE;.CMD" }),
+    join(dir, "qwen.CMD"),
+  );
+  assert.equal(await findExecutable("qwen.CMD", dir, { platform: "win32", pathExt: ".EXE" }), join(dir, "qwen.CMD"));
+  assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
 });

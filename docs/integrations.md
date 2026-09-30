@@ -45,15 +45,30 @@ versions 2025-06-18, 2025-03-26 and 2024-11-05). Tools:
 
 | Tool | Read-only | Purpose |
 |---|---|---|
-| `lattice_run` | no | run a task; `mode=observe` (default) or `configured` |
+| `lattice_run` | no | run a task; `mode=observe` (default) or `configured`; `wait=false` returns a `runId` immediately |
 | `lattice_runs` | yes | list runs |
 | `lattice_show_run` | yes | run status + TAP packet |
+| `lattice_reviews` | yes | decisions from `review=remote` runs waiting for a reviewer |
+| `lattice_review` | no | answer one: `approve`, `replace` (with `selected`), `refine`, `stop` |
 | `lattice_decide` | yes | bounded decision via the configured decision model (or `random`) |
 | `lattice_stats` | yes | calibration stats |
 | `lattice_doctor` | yes | setup checks |
 
 The architecture sketch named these `lattice.run`, `lattice.decide`, etc.;
 underscores are used because not every MCP client accepts dots in tool names.
+
+Many clients time out long tool calls. For `mode=configured` runs, agents should
+pass `wait=false` and poll `lattice_show_run` until `status` is `completed` or
+`failed` (the tool description tells the model this).
+
+### Your agent as Lattice's reviewer
+
+`lattice_run` with `mode=configured, review=remote, wait=false` gives a useful
+split. Lattice's cheap decision model handles routine choices, and the
+supervised/manual decisions it is unsure about come back to the calling agent
+through `lattice_reviews`. The agent answers with `lattice_review`, and the run
+continues in its worktree, still gated by your verifier. Reviews are held by the
+`lattice mcp` process, so they only exist while that client session is alive.
 
 Tool failures come back as results with `isError: true` and a `code: message` text,
 so the calling model can read and react to them.

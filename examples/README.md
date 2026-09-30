@@ -9,6 +9,7 @@ runs all of them (CI does too).
 | [`embedded/offline-search-loop.mjs`](embedded/offline-search-loop.mjs) | Embedding `@lattice/core`'s search loop with your own generator, decision provider and executor; the bug is fixed and *proven* fixed by test evidence | `node examples/embedded/offline-search-loop.mjs` |
 | [`sdk/typescript/run-and-inspect.mjs`](sdk/typescript/run-and-inspect.mjs) | `@lattice/sdk` against the daemon: run, list, show, events, decide, doctor, typed errors | `node examples/sdk/typescript/run-and-inspect.mjs` |
 | [`sdk/python/run_and_inspect.py`](sdk/python/run_and_inspect.py) | The same flow with the stdlib-only Python client | `python3 examples/sdk/python/run_and_inspect.py` |
+| [`review/remote-reviewer.mjs`](review/remote-reviewer.mjs) | A full **auto-mode** run (fake model, real worktree + tests) where a program answers Lattice's manual-mode review over the API, streaming events via SSE | `node examples/review/remote-reviewer.mjs` |
 | [`mcp/raw-session.mjs`](mcp/raw-session.mjs) | A raw MCP JSON-RPC session with `lattice mcp` (debug integrations before wiring a client) | `node examples/mcp/raw-session.mjs` |
 | [`mcp/`](mcp/) | Client config snippets: Claude Code, Codex, Cursor, Claude Desktop | see below |
 | [`configs/`](configs/) | Ready-to-copy `.lattice/config.json` variants | see below |

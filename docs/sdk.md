@@ -25,12 +25,16 @@ npm run daemon                # same server, via apps/daemon ($LATTICE_PORT)
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | `/health` | — | `{ok, service, version}` (no auth) |
-| POST | `/v1/tasks` | `{task, cwd?, mode?, configPath?}` | `RunResult` + `mode`, `runtimeMode`, `configPath` (201) |
+| GET | `/health` | — | `{ok, service, version, activeRuns}` (no auth) |
+| POST | `/v1/tasks` | `{task, cwd?, mode?, configPath?, wait?}` | `RunResult` + `mode`, `runtimeMode`, `configPath` (201); with `wait: false`, `TaskAccepted` (202) as soon as the run starts |
 | GET | `/v1/tasks` | `?cwd&limit` | `{runs: RunSummary[]}` newest first |
 | GET | `/v1/tasks/:id` | `?cwd` | `RunDetail` (summary + latest TAP); `id` = full ID, prefix, or `latest` |
 | GET | `/v1/events/:id` | `?cwd` | `{events: RunEvent[]}` |
+| GET | `/v1/events/:id?follow=true` | `?cwd&after`, or `Accept: text/event-stream` | server-sent events until the run completes or fails |
 | POST | `/v1/decide` | `{question, choices, state?, mode?, allowUnknown?, provider?, cwd?}` | `DecisionResult` |
+| GET | `/v1/reviews` | — | `{reviews: PendingReview[]}` waiting on this daemon |
+| GET | `/v1/reviews/:runId` | — | one `PendingReview` (run ID, prefix, or `latest`) |
+| POST | `/v1/reviews/:runId` | `{action, selected?, note?, reviewId?}` | `{runId, reviewId, accepted}`; the run resumes |
 | GET | `/v1/stats` | `?cwd` | calibration `StatsReport` |
 | GET | `/v1/doctor` | `?cwd&network=false` | `DoctorReport` |
 
@@ -40,8 +44,64 @@ npm run daemon                # same server, via apps/daemon ($LATTICE_PORT)
   starts model search or coding agents, even when the config says `mode: auto`.
 - `configured`: honour the config as written. With `mode: auto` this runs model
   search and coding agents in worktrees; the request blocks until the run ends.
-  There is no reviewer over HTTP, so decisions that need human review make the run
-  *blocked* rather than auto-approved.
+  Decisions that need human review make the run *blocked* rather than
+  auto-approved, unless you submit with `review: "remote"` (see below).
+
+### Long runs: async submission and streaming
+
+`POST /v1/tasks` with `"wait": false` validates the request and config, starts
+the run, and returns `202`:
+
+```json
+{"runId": "…", "status": "running", "startedAt": "…", "mode": "configured",
+ "links": {"run": "/v1/tasks/…", "events": "/v1/events/…?follow=true"}}
+```
+
+Invalid input and config errors still fail synchronously (400/422); failures
+after the run starts are recorded in its log as `run.failed`.
+
+`GET /v1/events/:id?follow=true` streams the run as SSE. Each frame is
+`id: <seq>` plus `data: <RunEvent JSON>`. The stream replays earlier events,
+tails new ones, and closes after `run.completed` or `run.failed`. Resume with
+`?after=<seq>` or the standard `Last-Event-ID` header. A `: keepalive` comment
+is sent every 15 s. Streaming works for any run, including ones started by the
+CLI or another daemon, because it tails the JSONL log.
+
+```bash
+curl -N "http://127.0.0.1:4774/v1/events/latest?follow=true"
+```
+
+### Remote review (supervised / manual autonomy)
+
+With `autonomy.mode` `supervised` or `manual`, some decisions need a reviewer.
+The CLI asks at the TTY. Over HTTP there is no TTY, so by default those runs
+end *blocked* instead of auto-approving.
+
+Submit with `"review": "remote"` to have the run pause instead. The request
+shows up in `GET /v1/reviews` and on the run's event stream as a
+`decision.completed` event whose payload `type` is `decision.review.requested`.
+Answer it with `POST /v1/reviews/:runId`:
+
+| action | effect |
+|---|---|
+| `approve` | run the model's pick |
+| `replace` | run `selected` instead (IDs from `choices`, excluding `__none__`) |
+| `refine` | regenerate candidates, with `note` added to the context |
+| `stop` | end the run as blocked |
+
+Pass the `reviewId` you were shown: answering a stale round returns `409`. An
+unanswered review stops the run after `reviewTimeoutMs` (default 10 minutes).
+Pending reviews live in the daemon process, so a daemon restart forgets them
+(the run itself is lost too).
+
+```ts
+const accepted = await client.submitTask("fix the add test", { mode: "configured", review: "remote" });
+const pending = await client.waitForReview(accepted.runId);
+await client.answerReview(accepted.runId, { action: "replace", selected: ["fix-add"], reviewId: pending.reviewId });
+const final = await client.waitForRun(accepted.runId);
+```
+
+See [`examples/review/remote-reviewer.mjs`](../examples/review/remote-reviewer.mjs).
 
 `provider` on `/v1/decide`: `configured` (the project's `models.decision ?? model`)
 or `random` (offline baseline).
@@ -99,6 +159,13 @@ const decision = await client.decide({
   provider: "configured",
   cwd: "/path/to/repo",
 });
+
+// Long runs: don't block, stream progress instead.
+const accepted = await client.submitTask("fix the flaky test", { cwd: "/path/to/repo", mode: "configured" });
+for await (const event of client.streamEvents(accepted.runId, { cwd: "/path/to/repo" })) {
+  console.log(event.seq, event.type);
+}
+const final = await client.waitForRun(accepted.runId, { cwd: "/path/to/repo" }); // or just wait
 
 try {
   await client.getRun("nope");

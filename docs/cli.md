@@ -36,7 +36,10 @@ evidence/decision/experiment counts.
 
 One run: status, summary or error, the TAP packet's evidence and
 uncertainties, and the log path. `id` may be a full ID or any unambiguous
-prefix. `--events` prints the raw event timeline.
+prefix. `--events` prints the raw event timeline. `-f, --follow` tails a run
+that is still going (for example one submitted to the daemon), printing events
+as they are logged and the final summary when it ends (`--json` prints one
+event per line).
 
 ## Setup
 

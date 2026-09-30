@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { buildStatsReport, type StatsReport } from "@lattice/analytics";
 import { runTask } from "@lattice/core";
 import { runCommand } from "@lattice/execution";
@@ -15,11 +15,14 @@ import {
   type ModelEndpointConfig,
 } from "@lattice/runtime";
 import type { DecisionReviewer } from "@lattice/search";
+import { UNKNOWN_CHOICE_ID } from "@lattice/protocol";
 import type {
   DecisionRequest,
   DecisionResult,
   DoctorCheck,
   DoctorReport,
+  PendingReview,
+  ReviewAnswer,
   RunDetail,
   RunEvent,
   RunResult,
@@ -70,6 +73,8 @@ export interface ExecuteTaskOptions {
   configPath?: string;
   mode?: TaskExecutionMode;
   reviewer?: DecisionReviewer;
+  /** Observe events as they are appended to the run log. */
+  onEvent?: (event: RunEvent) => void;
 }
 
 export interface ExecuteTaskResult {
@@ -96,7 +101,7 @@ export async function executeTask(
 
   const loaded = await loadConfigOrThrow(cwd, options.configPath);
   if (!loaded) {
-    const result = await runTask(task, { cwd });
+    const result = await runTask(task, { cwd, onEvent: options.onEvent });
     return { result, mode, runtimeMode: "evidence-only" };
   }
 
@@ -110,13 +115,53 @@ export async function executeTask(
     throw new LatticeServiceError("config_error", errorMessage(error));
   }
 
-  const result = await runTask(task, { ...runOptions, cwd });
+  const result = await runTask(task, { ...runOptions, cwd, onEvent: options.onEvent });
   return {
     result,
     mode,
     configPath: loaded.path,
     runtimeMode: config.mode ?? "auto",
   };
+}
+
+export interface StartedTask {
+  runId: string;
+  startedAt: string;
+  /** Settles when the run ends. Failures after start are also recorded as `run.failed`. */
+  done: Promise<ExecuteTaskResult>;
+}
+
+/**
+ * Start a task and resolve as soon as its run is logged, without waiting for
+ * it to finish. Invalid input and config errors still reject up front.
+ */
+export function startTask(
+  task: string,
+  options: ExecuteTaskOptions = {},
+): Promise<StartedTask> {
+  return new Promise((resolveStart, rejectStart) => {
+    let started = false;
+    const done = executeTask(task, {
+      ...options,
+      onEvent: (event) => {
+        if (!started && event.type === "run.started") {
+          started = true;
+          resolveStart({ runId: event.runId, startedAt: event.at, done });
+        }
+        options.onEvent?.(event);
+      },
+    });
+    done.then(
+      () => {
+        if (!started) rejectStart(new Error("run finished without a run.started event"));
+      },
+      (error) => {
+        if (!started) rejectStart(error);
+      },
+    );
+    // After start, failures live in the run log; keep them from becoming unhandled.
+    done.catch(() => undefined);
+  });
 }
 
 async function loadConfigOrThrow(
@@ -135,6 +180,140 @@ export async function loadConfig(
   configPath?: string,
 ): Promise<LoadedLatticeConfig | undefined> {
   return loadConfigOrThrow(resolve(cwd), configPath);
+}
+
+// ---------------------------------------------------------------------------
+// Remote review
+
+export interface ReviewBrokerOptions {
+  /** Unanswered reviews resolve to `stop` after this long. Default 10 minutes. */
+  timeoutMs?: number;
+}
+
+interface PendingEntry {
+  review: PendingReview;
+  settle: (result: ReviewAnswer) => void;
+}
+
+/**
+ * In-process queue that lets API/MCP clients answer supervised-mode decision
+ * reviews. Pending reviews live only as long as the process that owns the run.
+ */
+export class ReviewBroker {
+  private readonly pending = new Map<string, PendingEntry>();
+
+  constructor(private readonly options: ReviewBrokerOptions = {}) {}
+
+  /** A reviewer for one run. `runId` is read lazily: it is only known once the run starts. */
+  reviewerFor(runId: () => string | undefined): DecisionReviewer {
+    return (request) =>
+      new Promise((resolveReview) => {
+        const id = runId();
+        if (!id || this.pending.has(id)) {
+          resolveReview({ action: "stop", note: "remote review unavailable for this run" });
+          return;
+        }
+        const timeoutMs = this.options.timeoutMs ?? 600_000;
+        const now = Date.now();
+        const timer = setTimeout(() => {
+          this.pending.delete(id);
+          resolveReview({ action: "stop", note: `no remote review within ${timeoutMs}ms` });
+        }, timeoutMs);
+        timer.unref?.();
+
+        this.pending.set(id, {
+          review: {
+            runId: id,
+            reviewId: `${request.frame.id}:r${request.round}`,
+            round: request.round,
+            question: request.frame.question,
+            reasons: request.reasons,
+            choices: request.frame.choices,
+            modelSelection: request.decision.selected,
+            confidence: request.decision.confidence,
+            evidenceIds: request.frame.evidenceIds,
+            requestedAt: new Date(now).toISOString(),
+            expiresAt: new Date(now + timeoutMs).toISOString(),
+          },
+          settle: (answer) => {
+            clearTimeout(timer);
+            this.pending.delete(id);
+            const { reviewId: _reviewId, ...result } = answer;
+            resolveReview(result);
+          },
+        });
+      });
+  }
+
+  list(): PendingReview[] {
+    return [...this.pending.values()]
+      .map((entry) => entry.review)
+      .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
+  }
+
+  /** Find a pending review by run ID, unambiguous run-ID prefix, or `latest`. */
+  get(reference: string): PendingReview {
+    return this.entry(reference).review;
+  }
+
+  /** Answer a pending review; the paused run resumes immediately. */
+  answer(reference: string, value: unknown): PendingReview {
+    const entry = this.entry(reference);
+    const answer = parseReviewAnswer(value, entry.review);
+    entry.settle(answer);
+    return entry.review;
+  }
+
+  private entry(reference: string): PendingEntry {
+    if (reference === "latest") {
+      const [latest] = this.list();
+      if (latest) return this.pending.get(latest.runId)!;
+      throw new LatticeServiceError("not_found", "no reviews are pending");
+    }
+    const matches = [...this.pending.keys()].filter((id) => id.startsWith(reference.toLowerCase()));
+    if (matches.length === 0) {
+      throw new LatticeServiceError("not_found", `no pending review for run ${reference}`);
+    }
+    if (matches.length > 1) {
+      throw new LatticeServiceError("conflict", `run id prefix ${reference} is ambiguous`);
+    }
+    return this.pending.get(matches[0]!)!;
+  }
+}
+
+export function parseReviewAnswer(value: unknown, review: PendingReview): ReviewAnswer {
+  if (!isObject(value)) invalid("review answer must be an object");
+  if (value.reviewId !== undefined && value.reviewId !== review.reviewId) {
+    throw new LatticeServiceError(
+      "conflict",
+      `review ${String(value.reviewId)} is stale; the pending review is ${review.reviewId}`,
+    );
+  }
+  if (value.note !== undefined && typeof value.note !== "string") invalid("note must be a string");
+  const note = value.note as string | undefined;
+
+  switch (value.action) {
+    case "approve":
+    case "refine":
+    case "stop":
+      return { action: value.action, note };
+    case "replace": {
+      // The synthetic "unknown" option is not a runnable candidate; use stop instead.
+      const ids = new Set(
+        review.choices.map((choice) => choice.id).filter((id) => id !== UNKNOWN_CHOICE_ID),
+      );
+      if (
+        !Array.isArray(value.selected) ||
+        value.selected.length === 0 ||
+        !value.selected.every((id) => typeof id === "string" && ids.has(id))
+      ) {
+        invalid(`replace needs selected: a non-empty subset of ${[...ids].join(", ")}`);
+      }
+      return { action: "replace", selected: value.selected as string[], note };
+    }
+    default:
+      invalid("action must be approve, replace, refine or stop");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +471,70 @@ export async function getRunEvents(
   return readEvents(join(runsDirectory(cwd), `${runId}.jsonl`));
 }
 
+const TERMINAL_EVENTS = new Set(["run.completed", "run.failed"]);
+
+export function isTerminalEvent(event: RunEvent): boolean {
+  return TERMINAL_EVENTS.has(event.type);
+}
+
+export interface FollowOptions {
+  /** Only yield events with `seq` greater than this (resume support). */
+  after?: number;
+  signal?: AbortSignal;
+  pollMs?: number;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolveSleep) => {
+    if (signal?.aborted) return resolveSleep();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolveSleep();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+/**
+ * Tail a run's JSONL log, yielding events in order until the run completes or
+ * fails (or `signal` aborts). Works for runs owned by any process.
+ */
+export async function* followRunEvents(
+  reference: string,
+  cwd = process.cwd(),
+  options: FollowOptions = {},
+): AsyncGenerator<RunEvent> {
+  const runId = await resolveRunId(reference, cwd);
+  const path = join(runsDirectory(cwd), `${runId}.jsonl`);
+  const pollMs = options.pollMs ?? 200;
+  let lastSeq = options.after ?? 0;
+  let consumed = 0;
+
+  while (!options.signal?.aborted) {
+    const raw = await readFile(path, "utf8");
+    // Only parse complete lines; a trailing partial line is read next poll.
+    const end = raw.lastIndexOf("\n") + 1;
+    const fresh = raw.slice(consumed, end);
+    consumed = end;
+    for (const line of fresh.split("\n")) {
+      if (!line.trim()) continue;
+      let event: RunEvent;
+      try {
+        event = JSON.parse(line) as RunEvent;
+      } catch {
+        continue;
+      }
+      if (event.seq <= lastSeq) continue;
+      lastSeq = event.seq;
+      yield event;
+      if (isTerminalEvent(event) || options.signal?.aborted) return;
+    }
+    await sleep(pollMs, options.signal);
+  }
+}
+
 export async function getStats(cwd = process.cwd()): Promise<StatsReport> {
   const root = resolve(cwd);
   return buildStatsReport([runsDirectory(root)], root);
@@ -380,23 +623,45 @@ export async function decide(
 // ---------------------------------------------------------------------------
 // Doctor
 
-/** Find an executable on PATH (or verify an explicit path). */
+export interface FindExecutableOptions {
+  platform?: NodeJS.Platform;
+  /** Windows executable extensions; defaults to $PATHEXT. */
+  pathExt?: string;
+}
+
+/**
+ * Find an executable on PATH (or verify an explicit path). On Windows a bare
+ * name is also tried with each $PATHEXT extension (`qwen` → `qwen.cmd`).
+ */
 export async function findExecutable(
   command: string,
   pathEnv = process.env.PATH ?? "",
+  options: FindExecutableOptions = {},
 ): Promise<string | undefined> {
-  const candidates = command.includes("/")
+  const windows = (options.platform ?? process.platform) === "win32";
+  const separator = windows ? ";" : delimiter;
+  const explicit = command.includes("/") || (windows && command.includes("\\"));
+  const extensions =
+    windows && !extname(command)
+      ? ["", ...(options.pathExt ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)]
+      : [""];
+
+  const bases = explicit
     ? [resolve(command)]
     : pathEnv
-        .split(delimiter)
+        .split(separator)
         .filter(Boolean)
         .map((dir) => join(dir, command));
-  for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // keep looking
+  for (const base of bases) {
+    for (const extension of extensions) {
+      const candidate = base + extension;
+      try {
+        // On Windows X_OK degrades to an existence check, which is the intent there.
+        await access(candidate, constants.X_OK);
+        return candidate;
+      } catch {
+        // keep looking
+      }
     }
   }
   return undefined;

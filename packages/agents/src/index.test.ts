@@ -163,7 +163,12 @@ test("parallel agent scheduler pins one base revision and preserves result order
     async run(task: { prompt: string }, workspace: string) {
       active += 1;
       maxActive = Math.max(maxActive, active);
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+      // Wait for a sibling to overlap instead of a fixed sleep: worktree creation
+      // time varies under load. A serial scheduler times out here and fails below.
+      const deadline = Date.now() + 5_000;
+      while (maxActive < 2 && Date.now() < deadline) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      }
       await writeFile(join(workspace, task.prompt + ".txt"), task.prompt + "\n");
       active -= 1;
       return {

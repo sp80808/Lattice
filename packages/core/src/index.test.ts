@@ -75,3 +75,23 @@ test("runTask records run.failed before rethrowing", async () => {
   assert.equal(last.type, "run.failed");
   assert.match(last.payload.error, /generator offline/);
 });
+
+test("runTask reports each appended event to onEvent, ignoring listener errors", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-"));
+  const seen: string[] = [];
+  const result = await runTask("observe events", {
+    cwd,
+    onEvent: (event) => {
+      seen.push(event.type);
+      if (event.type === "tap.created") throw new Error("listener bug");
+    },
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(seen, [
+    "run.started",
+    "tool.started",
+    "tool.completed",
+    "tap.created",
+    "run.completed",
+  ]);
+});

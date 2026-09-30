@@ -7,10 +7,11 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isAbsolute, resolve } from "node:path";
-import type { ApiErrorBody, TaskExecutionMode } from "@lattice/protocol";
+import type { ApiErrorBody, TaskAccepted, TaskExecutionMode } from "@lattice/protocol";
 import {
   decide,
   executeTask,
+  followRunEvents,
   getRun,
   getRunEvents,
   getStats,
@@ -18,7 +19,10 @@ import {
   LatticeServiceError,
   listRuns,
   parseDecisionRequest,
+  resolveRunId,
+  ReviewBroker,
   runDoctor,
+  startTask,
 } from "@lattice/service";
 
 export interface LatticeServerOptions {
@@ -31,6 +35,8 @@ export interface LatticeServerOptions {
   /** Execution mode for POST /v1/tasks when the body omits `mode`. Default `observe`. */
   defaultMode?: TaskExecutionMode;
   maxBodyBytes?: number;
+  /** How long a `review: "remote"` decision waits for an answer before stopping. Default 10 min. */
+  reviewTimeoutMs?: number;
 }
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
@@ -128,6 +134,9 @@ function positiveInt(value: string | null, name: string): number | undefined {
  * GET  /v1/tasks/:id        run detail + TAP   (id, prefix or "latest")
  * GET  /v1/events/:id       raw run events
  * POST /v1/decide           bounded decision   {question, choices, state?, mode?, provider?, cwd?}
+ * GET  /v1/reviews          pending remote reviews
+ * GET  /v1/reviews/:runId   one pending review (run id, prefix or "latest")
+ * POST /v1/reviews/:runId   answer it          {action, selected?, note?, reviewId?}
  * GET  /v1/stats            calibration stats
  * GET  /v1/doctor           environment checks (?network=false)
  */
@@ -142,6 +151,44 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
     if (typeof value !== "string") throw new HttpError("invalid_request", "cwd must be a string");
     return isAbsolute(value) ? value : resolve(baseCwd, value);
   };
+
+  const activeRuns = new Set<string>();
+  const reviews = new ReviewBroker({ timeoutMs: options.reviewTimeoutMs });
+
+  /** Server-sent events: one `id: <seq>` / `data: <RunEvent json>` frame per event. */
+  async function streamEvents(
+    req: IncomingMessage,
+    res: ServerResponse,
+    reference: string,
+    cwd: string,
+    query: URLSearchParams,
+  ): Promise<void> {
+    // Resolve first so an unknown run is a normal JSON 404, not a broken stream.
+    const runId = await resolveRunId(reference, cwd);
+    const resumeFrom = query.get("after") ?? req.headers["last-event-id"];
+    const after = resumeFrom === undefined || resumeFrom === null ? 0 : Number(resumeFrom);
+    if (!Number.isInteger(after) || after < 0) {
+      throw new HttpError("invalid_request", "after/Last-Event-ID must be a non-negative integer");
+    }
+
+    const controller = new AbortController();
+    req.on("close", () => controller.abort());
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    });
+    res.write(": lattice run events\n\n");
+    const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+    try {
+      for await (const event of followRunEvents(runId, cwd, { after, signal: controller.signal })) {
+        res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
+      }
+    } finally {
+      clearInterval(heartbeat);
+      res.end();
+    }
+  }
 
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // DNS-rebinding and cross-site protections for a localhost-only daemon.
@@ -170,7 +217,12 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
 
     if (path === "/health") {
       if (req.method !== "GET") throw new HttpError("method_not_allowed", "use GET");
-      send(res, 200, { ok: true, service: "lattice", version: LATTICE_VERSION });
+      send(res, 200, {
+        ok: true,
+        service: "lattice",
+        version: LATTICE_VERSION,
+        activeRuns: activeRuns.size,
+      });
       return;
     }
 
@@ -207,12 +259,45 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
         if (body.configPath !== undefined && typeof body.configPath !== "string") {
           throw new HttpError("invalid_request", "configPath must be a string");
         }
+        if (body.wait !== undefined && typeof body.wait !== "boolean") {
+          throw new HttpError("invalid_request", "wait must be a boolean");
+        }
+        const review = body.review ?? "none";
+        if (review !== "none" && review !== "remote") {
+          throw new HttpError("invalid_request", "review must be 'none' or 'remote'");
+        }
         const cwd = projectDir(body.cwd);
-        const outcome = await executeTask(body.task as string, {
+        let runId: string | undefined;
+        const taskOptions = {
           cwd,
           mode: (body.mode as TaskExecutionMode | undefined) ?? defaultMode,
           configPath: body.configPath as string | undefined,
-        });
+          reviewer: review === "remote" ? reviews.reviewerFor(() => runId) : undefined,
+          onEvent: (event: { runId: string }) => {
+            runId ??= event.runId;
+          },
+        };
+
+        if (body.wait === false) {
+          const started = await startTask(body.task as string, taskOptions);
+          activeRuns.add(started.runId);
+          void started.done.finally(() => activeRuns.delete(started.runId));
+          const cwdParam = body.cwd ? `cwd=${encodeURIComponent(cwd)}` : "";
+          const accepted: TaskAccepted = {
+            runId: started.runId,
+            status: "running",
+            startedAt: started.startedAt,
+            mode: taskOptions.mode,
+            links: {
+              run: `/v1/tasks/${started.runId}${cwdParam ? `?${cwdParam}` : ""}`,
+              events: `/v1/events/${started.runId}?follow=true${cwdParam ? `&${cwdParam}` : ""}`,
+            },
+          };
+          send(res, 202, accepted);
+          return;
+        }
+
+        const outcome = await executeTask(body.task as string, taskOptions);
         send(res, 201, {
           ...outcome.result,
           mode: outcome.mode,
@@ -224,6 +309,13 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
       case "events": {
         expect("GET");
         if (!id) throw new HttpError("not_found", "run id required");
+        const wantsStream =
+          query.get("follow") === "true" ||
+          /\btext\/event-stream\b/.test(req.headers.accept ?? "");
+        if (wantsStream) {
+          await streamEvents(req, res, decodeURIComponent(id), projectDir(query.get("cwd")), query);
+          return;
+        }
         send(res, 200, {
           events: await getRunEvents(decodeURIComponent(id), projectDir(query.get("cwd"))),
         });
@@ -245,6 +337,22 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
             provider,
           }),
         );
+        return;
+      }
+      case "reviews": {
+        if (!id) {
+          expect("GET");
+          send(res, 200, { reviews: reviews.list() });
+          return;
+        }
+        const reference = decodeURIComponent(id);
+        if (method === "GET") {
+          send(res, 200, reviews.get(reference));
+          return;
+        }
+        expect("POST");
+        const answered = reviews.answer(reference, await readJson(req, maxBodyBytes));
+        send(res, 200, { runId: answered.runId, reviewId: answered.reviewId, accepted: true });
         return;
       }
       case "stats": {
@@ -302,8 +410,10 @@ export async function startLatticeServer(
     port,
     url: `http://127.0.0.1:${port}`,
     close: () =>
-      new Promise<void>((resolveClose, reject) =>
-        server.close((error) => (error ? reject(error) : resolveClose())),
-      ),
+      new Promise<void>((resolveClose, reject) => {
+        server.close((error) => (error ? reject(error) : resolveClose()));
+        // Open SSE streams would otherwise keep close() pending indefinitely.
+        server.closeAllConnections();
+      }),
   };
 }
