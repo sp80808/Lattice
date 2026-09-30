@@ -35,6 +35,18 @@
       "path": "./packages/policy"
     },
     {
+      "path": "./packages/service"
+    },
+    {
+      "path": "./packages/server"
+    },
+    {
+      "path": "./packages/mcp"
+    },
+    {
+      "path": "./packages/sdk"
+    },
+    {
       "path": "./apps/cli"
     },
     {

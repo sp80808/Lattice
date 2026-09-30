@@ -134,3 +134,63 @@ export interface DecisionProvider {
 export interface GeneratorProvider {
   generate(request: GeneratorRequest): Promise<GeneratorResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Daemon / SDK / MCP wire types. Shared so clients need no runtime deps.
+
+/**
+ * How a submitted task uses the project's Lattice config.
+ * - `observe`: load config but only gather evidence (incl. the configured verifier).
+ * - `configured`: honour the config as written; `mode: auto` runs model search + coding agents.
+ */
+export type TaskExecutionMode = "observe" | "configured";
+
+export interface TaskSubmission {
+  task: string;
+  cwd?: string;
+  mode?: TaskExecutionMode;
+  configPath?: string;
+}
+
+export type RunStatus = "completed" | "failed" | "incomplete";
+
+export interface RunSummary {
+  runId: string;
+  status: RunStatus;
+  task?: string;
+  cwd?: string;
+  summary?: string;
+  error?: string;
+  startedAt?: string;
+  endedAt?: string;
+  events: number;
+  evidence: number;
+  decisions: number;
+  experiments: number;
+  logPath: string;
+}
+
+export interface RunDetail extends RunSummary {
+  tap?: TapPacket;
+}
+
+export type DoctorStatus = "ok" | "warn" | "fail" | "skip";
+
+export interface DoctorCheck {
+  id: string;
+  status: DoctorStatus;
+  message: string;
+  hint?: string;
+}
+
+export interface DoctorReport {
+  ok: boolean;
+  cwd: string;
+  configPath?: string;
+  checks: DoctorCheck[];
+}
+
+export interface ApiErrorBody {
+  error: string;
+  code: string;
+}

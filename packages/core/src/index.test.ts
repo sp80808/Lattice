@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,4 +44,34 @@ test("runTask can attach explicit command verification", async () => {
   assert.equal(result.tap.evidence[1]?.kind, "command");
   assert.match(result.tap.evidence[1]?.summary ?? "", /verified/);
   assert.equal(result.tap.verification.length, 1);
+});
+
+test("runTask records run.failed before rethrowing", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-"));
+  const failing = {
+    generate: async () => {
+      throw new Error("generator offline");
+    },
+  };
+
+  await assert.rejects(
+    runTask("fail during search", {
+      cwd,
+      search: {
+        generator: failing,
+        decision: { decide: async () => { throw new Error("unused"); } },
+        executor: { execute: async () => { throw new Error("unused"); } },
+      },
+    }),
+    /generator offline/,
+  );
+
+  const [file] = await readdir(join(cwd, ".lattice", "runs"));
+  const events = (await readFile(join(cwd, ".lattice", "runs", file!), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const last = events.at(-1);
+  assert.equal(last.type, "run.failed");
+  assert.match(last.payload.error, /generator offline/);
 });

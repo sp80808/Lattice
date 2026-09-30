@@ -1,229 +1,126 @@
 #!/usr/bin/env node
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { buildStatsReport, formatStatsReport } from "@lattice/analytics";
-import { runTask } from "@lattice/core";
+import { LATTICE_VERSION, LatticeServiceError } from "@lattice/service";
 import {
-  formatMiningReport,
-  mineLedger,
-  writeMiningProposals,
-} from "@lattice/mining";
-import {
-  buildPolicySimulation,
-  formatPolicySimulation,
-} from "@lattice/policy";
-import type { DecisionReviewer } from "@lattice/search";
-import {
-  createRunTaskOptions,
-  loadLatticeConfig,
-} from "@lattice/runtime";
+  configCommand,
+  doctorCommand,
+  initCommand,
+  mcpCommand,
+  mineCommand,
+  policySimCommand,
+  runCommand,
+  runsCommand,
+  serveCommand,
+  showCommand,
+  statsCommand,
+  UsageError,
+} from "./commands.js";
 
-const args = process.argv.slice(2);
+const HELP = `Lattice ${LATTICE_VERSION} — generate less, choose cheaply, verify everything.
 
-if (args[0] === "policy-sim") {
-  const simArgs = args.slice(1);
-  const candidatePath = simArgs[0];
-  if (!candidatePath || candidatePath.startsWith("--")) {
-    console.error("policy-sim requires a candidate policy JSON path");
-    process.exit(2);
-  }
+Usage:
+  lattice "your coding task"            shorthand for \`lattice run\`
+  lattice <command> [options]
 
-  const json = simArgs.includes("--json");
-  const holdoutIndex = simArgs.indexOf("--holdout");
-  const holdout = holdoutIndex >= 0
-    ? Number(simArgs[holdoutIndex + 1] ?? "0.2")
-    : 0.2;
-  const againstIndex = simArgs.indexOf("--against");
-  const paths: string[] = [];
-  if (againstIndex >= 0) {
-    for (let index = againstIndex + 1; index < simArgs.length; index++) {
-      const value = simArgs[index]!;
-      if (value.startsWith("--")) break;
-      paths.push(value);
-    }
-  }
+Tasks:
+  run <task...>        run a task          [--config path] [--observe] [--json]
+  runs                 list recorded runs  [-n limit] [--json]
+  show [id|latest]     show one run        [--events] [--json]
 
-  try {
-    const report = await buildPolicySimulation(
-      candidatePath,
-      paths,
-      holdout,
-    );
-    console.log(
-      json ? JSON.stringify(report, null, 2) : formatPolicySimulation(report),
-    );
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-  process.exit();
-}
+Setup:
+  init                 write .lattice/config.json
+                         [--preset ollama|vllm|openai-compatible|observe]
+                         [--model m] [--base-url url] [--api-key-env VAR]
+                         [--agent qwen-code|opencode] [--verify "cmd args"] [--no-verify]
+                         [--autonomy autopilot|supervised|manual] [--force] [--print]
+  doctor               check node, git, config, models, agent and verifier [--offline] [--json]
+  config               print the resolved config [--config path] [--json]
 
-if (args[0] === "mine") {
-  const mineArgs = args.slice(1);
-  const json = mineArgs.includes("--json");
-  const valueAfter = (flag: string): string | undefined => {
-    const index = mineArgs.indexOf(flag);
-    return index >= 0 ? mineArgs[index + 1] : undefined;
-  };
-  const out = valueAfter("--out");
-  const maxRules = Number(valueAfter("--rules") ?? "5");
-  const maxTiles = Number(valueAfter("--tiles") ?? "5");
-  const minRuleSupport = Number(valueAfter("--min-support") ?? "3");
-  const consumed = new Set<string>();
-  for (const flag of ["--out", "--rules", "--tiles", "--min-support"]) {
-    const index = mineArgs.indexOf(flag);
-    if (index >= 0) {
-      consumed.add(flag);
-      if (mineArgs[index + 1]) consumed.add(mineArgs[index + 1]!);
-    }
-  }
-  consumed.add("--json");
-  const paths = mineArgs.filter((arg) => !consumed.has(arg));
+Integrations:
+  serve                HTTP daemon on 127.0.0.1 [--port 4774] [--token t] [--origin url ...]
+  mcp                  MCP server over stdio (for Claude Code, Codex, Cursor, ...)
 
-  try {
-    const report = await mineLedger(paths, {
-      maxRules,
-      maxTiles,
-      minRuleSupport,
-    });
-    if (out) {
-      const files = await writeMiningProposals(report, out);
-      if (!json) console.log(`wrote: ${files.join(", ")}`);
-    }
-    console.log(json ? JSON.stringify(report, null, 2) : formatMiningReport(report));
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-  process.exit();
-}
+Replay analytics:
+  stats [--json] [run-file-or-directory ...]
+  mine [--json] [--out dir] [--rules N] [--tiles N] [run-path ...]
+  policy-sim candidate.json [--against run-path ...] [--holdout 0.2] [--json]
 
-if (args[0] === "stats") {
-  const statsArgs = args.slice(1);
-  const json = statsArgs.includes("--json");
-  const paths = statsArgs.filter((arg) => arg !== "--json");
-  try {
-    const report = await buildStatsReport(paths);
-    console.log(json ? JSON.stringify(report, null, 2) : formatStatsReport(report));
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-  process.exit();
-}
+Global:
+  -C, --cwd <dir>      operate on another project directory
+  -h, --help           show this help
+  -v, --version        print version
 
-let configPath: string | undefined;
-const taskParts: string[] = [];
+Config discovery: --config, $LATTICE_CONFIG, .lattice/config.json, lattice.config.json
+Autonomy modes: autopilot | supervised | manual
+Docs: docs/cli.md`;
 
-for (let index = 0; index < args.length; index++) {
-  const arg = args[index]!;
-  if (arg === "--config") {
-    const next = args[++index];
-    if (!next) {
-      console.error("--config requires a path");
-      process.exit(2);
-    }
-    configPath = next;
-  } else {
-    taskParts.push(arg);
-  }
-}
-
-const task = taskParts.join(" ").trim();
-
-if (!task) {
-  console.log("Lattice — generate less, choose cheaply, verify everything.");
-  console.log("");
-  console.log('Usage: lattice [--config path] "your coding task"');
-  console.log("       lattice stats [--json] [run-file-or-directory ...]");
-  console.log("       lattice mine [--json] [--out dir] [--rules N] [--tiles N] [run-path ...]");
-  console.log("       lattice policy-sim candidate.json [--against run-path ...] [--holdout 0.2] [--json]");
-  console.log("");
-  console.log("Autonomy modes: autopilot | supervised | manual");
-  console.log("Config discovery:");
-  console.log("  .lattice/config.json");
-  console.log("  lattice.config.json");
-  console.log("  $LATTICE_CONFIG");
-  process.exit(0);
-}
-
-const cliReviewer: DecisionReviewer = async (request) => {
-  if (!input.isTTY || !output.isTTY) {
-    return {
-      action: "stop",
-      note: "interactive review required but no TTY is available",
-    };
-  }
-
-  console.log("");
-  console.log(`Review required — round ${request.round}`);
-  console.log(`Question: ${request.frame.question}`);
-  console.log(`Reasons: ${request.reasons.join("; ")}`);
-  console.log("Evidence:");
-  for (const id of request.frame.evidenceIds) console.log(`  - ${id}`);
-  console.log("Options:");
-  request.frame.choices.forEach((choice, index) => {
-    console.log(
-      `  ${index + 1}. [${choice.id}] ${choice.label}${choice.detail ? ` — ${choice.detail}` : ""}`,
-    );
-  });
-  console.log(`Model selection: ${request.decision.selected.join(", ")}`);
-
-  const rl = createInterface({ input, output });
-  try {
-    const answer = (
-      await rl.question(
-        "Approve [Enter/a], replace with IDs [id1,id2], refine [r], or stop [s]: ",
-      )
-    ).trim();
-
-    if (!answer || answer.toLowerCase() === "a") {
-      return { action: "approve" };
-    }
-    if (answer.toLowerCase() === "r") {
-      const note = await rl.question("Refinement note (optional): ");
-      return { action: "refine", note: note.trim() || undefined };
-    }
-    if (answer.toLowerCase() === "s") {
-      return { action: "stop" };
-    }
-
-    const selected = answer
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    return {
-      action: "replace",
-      selected,
-      note: "human-selected candidate override",
-    };
-  } finally {
-    rl.close();
-  }
+const COMMANDS: Record<string, (args: string[]) => Promise<number>> = {
+  run: runCommand,
+  init: initCommand,
+  doctor: doctorCommand,
+  runs: runsCommand,
+  show: showCommand,
+  config: configCommand,
+  serve: serveCommand,
+  mcp: mcpCommand,
+  stats: statsCommand,
+  mine: mineCommand,
+  "policy-sim": policySimCommand,
 };
 
-try {
-  const loaded = await loadLatticeConfig(process.cwd(), configPath);
-  const options = loaded
-    ? createRunTaskOptions(loaded.config, { reviewer: cliReviewer })
-    : {};
-
-  if (loaded) {
-    console.log(`config: ${loaded.path}`);
-    console.log(
-      `autonomy: ${loaded.config.autonomy?.mode ?? "autopilot"}`,
-    );
-  } else {
-    console.log("config: none (evidence-only bootstrap mode)");
+/** Hoist leading `-C dir` / `--cwd dir` / `--cwd=dir` so they may precede the command. */
+function hoistGlobals(argv: string[]): { globals: string[]; remaining: string[] } {
+  const globals: string[] = [];
+  let index = 0;
+  while (index < argv.length) {
+    const arg = argv[index]!;
+    if (arg === "-C" || arg === "--cwd") {
+      const value = argv[index + 1];
+      if (value === undefined) throw new UsageError(`${arg} requires a directory`);
+      globals.push("--cwd", value);
+      index += 2;
+    } else if (arg.startsWith("--cwd=")) {
+      globals.push(arg);
+      index += 1;
+    } else {
+      break;
+    }
   }
+  return { globals, remaining: argv.slice(index) };
+}
 
-  const result = await runTask(task, options);
-  console.log(`run: ${result.runId}`);
-  console.log(result.summary);
-  console.log(`evidence: ${result.tap.evidence.length}`);
-  console.log(`events: ${result.eventLogPath}`);
+async function main(argv: string[]): Promise<number> {
+  const { globals, remaining } = hoistGlobals(argv);
+  const [first, ...tail] = remaining;
+  const rest = [...globals, ...tail];
+  if (first === undefined || first === "help" || first === "-h" || first === "--help") {
+    console.log(HELP);
+    return 0;
+  }
+  if (first === "-v" || first === "--version" || first === "version") {
+    console.log(LATTICE_VERSION);
+    return 0;
+  }
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(HELP);
+    return 0;
+  }
+  const command = COMMANDS[first];
+  // Anything that is not a command is a task: `lattice "fix the tests"`.
+  return command ? command(rest) : runCommand([...globals, ...remaining]);
+}
+
+try {
+  process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+  if (error instanceof UsageError) {
+    console.error(`lattice: ${error.message}`);
+    console.error("run `lattice --help` for usage");
+    process.exitCode = 2;
+  } else if (error instanceof LatticeServiceError) {
+    console.error(`lattice: ${error.message}`);
+    process.exitCode = 1;
+  } else {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }

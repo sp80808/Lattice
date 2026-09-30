@@ -156,7 +156,7 @@ lattice replay <run-id>
 
 ### Daemon API
 
-Provisional:
+Implemented subset and SDKs: see [sdk.md](sdk.md). Provisional target:
 
 ```text
 POST /v1/tasks

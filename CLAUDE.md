@@ -60,13 +60,17 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+scripts/bootstrap.sh          # npm install + build + tests + CLI smoke test
+npm run build                 # tsc -b (project references)
+npm test                      # build + node --test over every package's dist/index.test.js
+npm run test:python           # Python SDK against a real daemon
+npm run test:examples         # validate example configs and run every example
+node apps/cli/dist/index.js --help
 ```
+
+New packages must be added to the root `tsconfig.json` references and to the
+explicit file list in the root `test` script.
 
 ## Architecture Overview
 

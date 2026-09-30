@@ -11,7 +11,11 @@
     "skipLibCheck": true
   },
   "references": [
-    { "path": "../../packages/core" }
+    {
+      "path": "../../packages/server"
+    }
   ],
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

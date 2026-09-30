@@ -92,154 +92,161 @@ export async function runTask(
   const log = new JsonlEventLog(runId, join(runsDir, `${runId}.jsonl`));
   await log.append("run.started", { task: trimmed, cwd });
 
-  await log.append("tool.started", {
-    tool: "repository.snapshot",
-    cwd,
-  });
-  const snapshot = await collectRepositorySnapshot(cwd);
-  await log.append("tool.completed", {
-    tool: "repository.snapshot",
-    snapshot,
-  });
-
-  const repoSummary = [
-    `source=${snapshot.source}`,
-    snapshot.revision ? `revision=${snapshot.revision}` : "revision=unknown",
-    snapshot.dirty === undefined ? undefined : `dirty=${snapshot.dirty}`,
-    `tracked_files=${snapshot.trackedFiles.length}`,
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const repositoryEvidence = evidence(
-    "repository",
-    snapshot.source === "git" ? "git" : "filesystem",
-    repoSummary,
-  );
-
-  let tap: TapPacket = {
-    version: TAP_VERSION,
-    runId,
-    task: trimmed,
-    repo: { root: cwd, revision: snapshot.revision },
-    objectives: [trimmed],
-    constraints: [],
-    context: [
-      `repo:${snapshot.source}`,
-      `files:${snapshot.trackedFiles.slice(0, 80).join(",")}`,
-    ],
-    hypotheses: [],
-    candidateActions: [],
-    evidence: [repositoryEvidence],
-    uncertainties: snapshot.revision ? [] : ["repository revision unavailable"],
-    verification: [],
-    budget: { maxRounds: 8 },
-    childRunIds: [],
-  };
-
-  if (options.verifyCommand) {
-    const command = {
-      ...options.verifyCommand,
-      cwd: options.verifyCommand.cwd ?? cwd,
-    };
-
+  try {
     await log.append("tool.started", {
-      tool: "command",
-      command: command.command,
-      args: command.args ?? [],
+      tool: "repository.snapshot",
+      cwd,
     });
-
-    const result = await runCommand(command);
+    const snapshot = await collectRepositorySnapshot(cwd);
     await log.append("tool.completed", {
-      tool: "command",
-      result,
+      tool: "repository.snapshot",
+      snapshot,
     });
 
-    const source = [result.command, ...result.args].join(" ");
-    const summary = [
-      `exit=${result.exitCode ?? "null"}`,
-      `timeout=${result.timedOut}`,
-      `duration_ms=${Math.round(result.durationMs)}`,
-      result.outputTruncated ? "output=truncated" : undefined,
-      result.stdout.trim()
-        ? `stdout=${result.stdout.trim().slice(0, 500)}`
-        : undefined,
-      result.stderr.trim()
-        ? `stderr=${result.stderr.trim().slice(0, 500)}`
-        : undefined,
+    const repoSummary = [
+      `source=${snapshot.source}`,
+      snapshot.revision ? `revision=${snapshot.revision}` : "revision=unknown",
+      snapshot.dirty === undefined ? undefined : `dirty=${snapshot.dirty}`,
+      `tracked_files=${snapshot.trackedFiles.length}`,
     ]
       .filter(Boolean)
       .join(" ");
 
-    const commandEvidence = evidence(
-      "command",
-      source,
-      summary,
-      result.exitCode !== null && !result.timedOut,
+    const repositoryEvidence = evidence(
+      "repository",
+      snapshot.source === "git" ? "git" : "filesystem",
+      repoSummary,
     );
-    tap.evidence.push(commandEvidence);
-    tap.verification.push(commandEvidence.id);
-  }
 
-  await log.append("tap.created", tap);
+    let tap: TapPacket = {
+      version: TAP_VERSION,
+      runId,
+      task: trimmed,
+      repo: { root: cwd, revision: snapshot.revision },
+      objectives: [trimmed],
+      constraints: [],
+      context: [
+        `repo:${snapshot.source}`,
+        `files:${snapshot.trackedFiles.slice(0, 80).join(",")}`,
+      ],
+      hypotheses: [],
+      candidateActions: [],
+      evidence: [repositoryEvidence],
+      uncertainties: snapshot.revision ? [] : ["repository revision unavailable"],
+      verification: [],
+      budget: { maxRounds: 8 },
+      childRunIds: [],
+    };
 
-  let summary =
-    `Lattice grounded the task in ${tap.evidence.length} evidence record(s) before model reasoning.`;
+    if (options.verifyCommand) {
+      const command = {
+        ...options.verifyCommand,
+        cwd: options.verifyCommand.cwd ?? cwd,
+      };
 
-  if (options.search) {
-    const searchResult = await runSearchLoop({
+      await log.append("tool.started", {
+        tool: "command",
+        command: command.command,
+        args: command.args ?? [],
+      });
+
+      const result = await runCommand(command);
+      await log.append("tool.completed", {
+        tool: "command",
+        result,
+      });
+
+      const source = [result.command, ...result.args].join(" ");
+      const summary = [
+        `exit=${result.exitCode ?? "null"}`,
+        `timeout=${result.timedOut}`,
+        `duration_ms=${Math.round(result.durationMs)}`,
+        result.outputTruncated ? "output=truncated" : undefined,
+        result.stdout.trim()
+          ? `stdout=${result.stdout.trim().slice(0, 500)}`
+          : undefined,
+        result.stderr.trim()
+          ? `stderr=${result.stderr.trim().slice(0, 500)}`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      const commandEvidence = evidence(
+        "command",
+        source,
+        summary,
+        result.exitCode !== null && !result.timedOut,
+      );
+      tap.evidence.push(commandEvidence);
+      tap.verification.push(commandEvidence.id);
+    }
+
+    await log.append("tap.created", tap);
+
+    let summary =
+      `Lattice grounded the task in ${tap.evidence.length} evidence record(s) before model reasoning.`;
+
+    if (options.search) {
+      const searchResult = await runSearchLoop({
+        tap,
+        generator: options.search.generator,
+        decision: options.search.decision,
+        executor: options.search.executor,
+        maxRounds: options.search.maxRounds,
+        candidatesPerRound: options.search.candidatesPerRound,
+        topK: options.search.topK,
+        parallelism: options.search.parallelism,
+        autonomy: options.search.autonomy,
+        reviewer: options.search.reviewer,
+        onTrace: async (event) => {
+          if (event.type === "candidates.generated" || event.type === "decision.framed") {
+            await log.append("decision.requested", {
+              round: event.round,
+              event,
+            });
+          } else if (
+            event.type === "decision.completed" ||
+            event.type === "decision.review.requested" ||
+            event.type === "decision.review.completed"
+          ) {
+            await log.append("decision.completed", event);
+          } else if (event.type === "experiment.started") {
+            await log.append("tool.started", {
+              tool: "experiment",
+              round: event.round,
+              candidate: event.candidate,
+            });
+          } else {
+            await log.append("tool.completed", {
+              tool: "experiment",
+              round: event.round,
+              outcome: event.outcome,
+            });
+          }
+        },
+      });
+
+      tap = searchResult.tap;
+      await log.append("tap.updated", tap);
+      summary =
+        `Lattice search ${searchResult.status} after ${searchResult.rounds} round(s); ` +
+        `${tap.evidence.length} evidence record(s) retained.`;
+    }
+
+    await log.append("run.completed", { summary });
+
+    return {
+      runId,
+      status: "completed",
+      summary,
       tap,
-      generator: options.search.generator,
-      decision: options.search.decision,
-      executor: options.search.executor,
-      maxRounds: options.search.maxRounds,
-      candidatesPerRound: options.search.candidatesPerRound,
-      topK: options.search.topK,
-      parallelism: options.search.parallelism,
-      autonomy: options.search.autonomy,
-      reviewer: options.search.reviewer,
-      onTrace: async (event) => {
-        if (event.type === "candidates.generated" || event.type === "decision.framed") {
-          await log.append("decision.requested", {
-            round: event.round,
-            event,
-          });
-        } else if (
-          event.type === "decision.completed" ||
-          event.type === "decision.review.requested" ||
-          event.type === "decision.review.completed"
-        ) {
-          await log.append("decision.completed", event);
-        } else if (event.type === "experiment.started") {
-          await log.append("tool.started", {
-            tool: "experiment",
-            round: event.round,
-            candidate: event.candidate,
-          });
-        } else {
-          await log.append("tool.completed", {
-            tool: "experiment",
-            round: event.round,
-            outcome: event.outcome,
-          });
-        }
-      },
+      eventLogPath: log.path,
+    };
+  } catch (error) {
+    await log.append("run.failed", {
+      error: error instanceof Error ? error.message : String(error),
     });
-
-    tap = searchResult.tap;
-    await log.append("tap.updated", tap);
-    summary =
-      `Lattice search ${searchResult.status} after ${searchResult.rounds} round(s); ` +
-      `${tap.evidence.length} evidence record(s) retained.`;
+    throw error;
   }
-
-  await log.append("run.completed", { summary });
-
-  return {
-    runId,
-    status: "completed",
-    summary,
-    tap,
-    eventLogPath: log.path,
-  };
 }
