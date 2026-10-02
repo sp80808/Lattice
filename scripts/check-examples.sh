@@ -18,23 +18,23 @@ node --input-type=module -e '
 '
 
 info "examples/embedded/offline-search-loop.mjs"
-node examples/embedded/offline-search-loop.mjs >/dev/null && ok "search solved by test evidence"
+node examples/embedded/offline-search-loop.mjs >/dev/null; ok "search solved by test evidence"
 
 info "examples/sdk/typescript/run-and-inspect.mjs"
-env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null && ok "TypeScript SDK round-trip"
+env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null; ok "TypeScript SDK round-trip"
 
 info "examples/review/remote-reviewer.mjs"
-node examples/review/remote-reviewer.mjs >/dev/null && ok "remote review of an auto-mode run"
+node examples/review/remote-reviewer.mjs >/dev/null; ok "remote review of an auto-mode run"
 
 info "examples/mcp/raw-session.mjs"
-node examples/mcp/raw-session.mjs >/dev/null && ok "MCP stdio session"
+node examples/mcp/raw-session.mjs >/dev/null; ok "MCP stdio session"
 
 info "examples/demo/run-demo.sh"
-examples/demo/run-demo.sh >/dev/null && ok "CLI walkthrough"
+examples/demo/run-demo.sh >/dev/null; ok "CLI walkthrough"
 
 if has python3; then
   info "examples/sdk/python/run_and_inspect.py"
-  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null && ok "Python SDK round-trip"
+  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null; ok "Python SDK round-trip"
 else
   warn "python3 not found; skipping the Python SDK example"
 fi

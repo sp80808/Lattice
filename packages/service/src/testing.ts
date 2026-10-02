@@ -57,7 +57,7 @@ export async function createAutoModeFixture(): Promise<{ cwd: string; closeModel
       autonomy: { mode: "manual" },
       model: { baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" },
       agent: { preset: "qwen-code", command: worker },
-      verify: { command: process.execPath, args: ["--test", "test/"], timeoutMs: 60000 },
+      verify: { command: process.execPath, args: ["--test"], timeoutMs: 60000 },
       search: { maxRounds: 2, candidatesPerRound: 2 },
       workspace: { cleanup: "always" },
     }),
