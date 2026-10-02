@@ -330,7 +330,10 @@ test("ReviewBroker parks reviews until a remote answer arrives", async () => {
 
 test("ReviewBroker stops unanswered reviews after the timeout", async () => {
   const broker = new ReviewBroker({ timeoutMs: 20 });
-  const result = await broker.reviewerFor(() => "abc")(reviewRequest(2));
+  // The broker unrefs its timer so a parked review never holds a process open;
+  // keep this test's event loop alive until the timeout fires.
+  const keepAlive = setInterval(() => {}, 1_000);
+  const result = await broker.reviewerFor(() => "abc")(reviewRequest(2)).finally(() => clearInterval(keepAlive));
   assert.equal(result.action, "stop");
   assert.match(result.note ?? "", /no remote review within 20ms/);
   assert.deepEqual(broker.list(), []);
