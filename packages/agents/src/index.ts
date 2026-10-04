@@ -8,7 +8,12 @@ import {
   type CommandResult,
   type CommandSpec,
 } from "@lattice/execution";
-import type { EvidenceRef, TapPacket } from "@lattice/protocol";
+import type {
+  EvidenceRef,
+  TapPacket,
+  VerificationRecord,
+  Verifier,
+} from "@lattice/protocol";
 import type {
   CandidateAction,
   ExperimentExecutor,
@@ -282,6 +287,8 @@ export interface IsolatedAgentRunOptions {
   task: AgentTask;
   adapter: AgentAdapter;
   verifyCommand?: CommandSpec;
+  /** Structured verifier; when set it replaces `verifyCommand`. */
+  verifier?: Verifier;
   cleanup?: CleanupPolicy;
 }
 
@@ -290,6 +297,7 @@ export interface IsolatedAgentRunResult {
   execution: AgentExecution;
   changes: WorkspaceChanges;
   verification?: CommandResult;
+  verifierResult?: VerificationRecord;
   success: boolean;
   workspaceRetained: boolean;
 }
@@ -304,6 +312,7 @@ export async function runIsolatedAgent(
 
   let execution: AgentExecution | undefined;
   let verification: CommandResult | undefined;
+  let verifierResult: VerificationRecord | undefined;
   let changes: WorkspaceChanges = {
     changedFiles: [],
     untrackedFiles: [],
@@ -314,7 +323,9 @@ export async function runIsolatedAgent(
     execution = await options.adapter.run(options.task, workspace.path);
     changes = await captureWorkspaceChanges(workspace.path);
 
-    if (options.verifyCommand) {
+    if (options.verifier) {
+      verifierResult = await options.verifier.verify(workspace.path);
+    } else if (options.verifyCommand) {
       verification = await runCommand({
         ...options.verifyCommand,
         cwd: workspace.path,
@@ -324,6 +335,7 @@ export async function runIsolatedAgent(
     const success =
       execution.exitCode === 0 &&
       !execution.timedOut &&
+      (verifierResult === undefined || verifierResult.passed) &&
       (verification === undefined ||
         (verification.exitCode === 0 && !verification.timedOut));
 
@@ -342,6 +354,7 @@ export async function runIsolatedAgent(
       execution,
       changes,
       verification,
+      verifierResult,
       success,
       workspaceRetained: !shouldCleanup,
     };
@@ -604,6 +617,7 @@ function evidence(
 export interface AgentExperimentOptions {
   adapter: AgentAdapter;
   verifyCommand?: CommandSpec;
+  verifier?: Verifier;
   cleanup?: CleanupPolicy;
 }
 
@@ -637,6 +651,7 @@ export function createAgentExperimentExecutor(
         },
         adapter: options.adapter,
         verifyCommand: options.verifyCommand,
+        verifier: options.verifier,
         cleanup: options.cleanup,
       });
 
@@ -679,10 +694,13 @@ export function createAgentExperimentExecutor(
         );
       }
 
-      const verifiedSuccess =
-        result.verification !== undefined &&
-        result.verification.exitCode === 0 &&
-        !result.verification.timedOut;
+      if (result.verifierResult) records.push(...result.verifierResult.evidence);
+
+      const verifiedSuccess = result.verifierResult
+        ? result.verifierResult.passed
+        : result.verification !== undefined &&
+          result.verification.exitCode === 0 &&
+          !result.verification.timedOut;
 
       return {
         candidateId: candidate.id,
@@ -696,9 +714,11 @@ export function createAgentExperimentExecutor(
           `agent=${result.execution.agent}`,
           `agent_exit=${result.execution.exitCode}`,
           `changed=${result.changes.changedFiles.length}`,
-          result.verification
-            ? `verify_exit=${result.verification.exitCode}`
-            : "verify=not_run",
+          result.verifierResult
+            ? `verify=${result.verifierResult.summary}`
+            : result.verification
+              ? `verify_exit=${result.verification.exitCode}`
+              : "verify=not_run",
           `worktree=${result.workspace.path}`,
         ].join(" "),
         evidence: records,

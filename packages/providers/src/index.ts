@@ -164,12 +164,40 @@ async function postChat(
   }
 }
 
+/** Deterministic PRNG (mulberry32) so baseline runs can be replayed by seed. */
+export function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+export interface RandomDecisionOptions {
+  /**
+   * `false` picks only among the supplied choices, even when the request
+   * allows unknown. Baselines use this: a uniform pick of "none" only ends
+   * the run, which measures nothing. Default: follow the request.
+   */
+  allowUnknown?: boolean;
+}
+
 export class RandomDecisionProvider implements DecisionProvider {
-  constructor(private readonly random: () => number = Math.random) {}
+  constructor(
+    private readonly random: () => number = Math.random,
+    private readonly options: RandomDecisionOptions = {},
+  ) {}
 
   async decide(request: DecisionRequest): Promise<DecisionResult> {
     const started = performance.now();
-    const choices = ensureChoices(request);
+    const choices = ensureChoices(
+      this.options.allowUnknown === false
+        ? { ...request, allowUnknown: false }
+        : request,
+    );
     const index = Math.min(
       choices.length - 1,
       Math.floor(this.random() * choices.length),

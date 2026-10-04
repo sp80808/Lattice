@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  createDecisionProvider,
   createRunTaskOptions,
+  describeVerify,
   loadLatticeConfig,
   parseLatticeConfig,
 } from "./index.js";
@@ -23,7 +25,7 @@ test("loadLatticeConfig discovers .lattice/config.json", async () => {
   const loaded = await loadLatticeConfig(cwd);
   assert.ok(loaded);
   assert.equal(loaded.config.mode, "observe");
-  assert.equal(loaded.config.verify?.command, "npm");
+  assert.equal(describeVerify(loaded.config.verify!), "npm test");
 });
 
 test("auto mode composes model, worker and verifier runtime", () => {
@@ -63,5 +65,50 @@ test("auto mode refuses to run without objective verification", () => {
   assert.throws(
     () => createRunTaskOptions(config),
     /requires configuration for: verify/,
+  );
+});
+
+test("verify.tessera builds a witness verifier", () => {
+  const config = parseLatticeConfig({
+    mode: "observe",
+    verify: {
+      tessera: {
+        tsr: "/opt/tsr",
+        file: "add.tes",
+        overflow: "trapping",
+        cases: [{ function: "add", args: [2, 3], expect: "5" }],
+      },
+    },
+  });
+  assert.equal(describeVerify(config.verify!), "/opt/tsr witness add.tes (+1 tsr run case)");
+  const options = createRunTaskOptions(config);
+  assert.equal(options.verifyCommand, undefined);
+  assert.equal(options.verifier?.tool, "tessera.witness");
+
+  assert.throws(
+    () => parseLatticeConfig({ verify: { tessera: { file: "a.tes", cases: [{ function: "f", args: [], expect: "1" }] } } }),
+    /verify.tessera: tessera cases require overflow/,
+  );
+  assert.throws(
+    () => parseLatticeConfig({ verify: { command: "npm", tessera: { file: "a.tes" } } }),
+    /either command or tessera/,
+  );
+});
+
+test("models.decision provider random is a seeded baseline", async () => {
+  const config = parseLatticeConfig({
+    mode: "observe",
+    models: { decision: { provider: "random", seed: 3 } },
+  });
+  const pick = async () =>
+    (await createDecisionProvider(config)!.decide({
+      question: "which",
+      choices: [{ id: "a", label: "a" }, { id: "b", label: "b" }],
+    })).selected;
+  assert.deepEqual(await pick(), await pick());
+  assert.notDeepEqual(await pick(), ["__none__"]);
+  assert.throws(
+    () => parseLatticeConfig({ models: { decision: { provider: "random", seed: 1.5 } } }),
+    /seed must be an integer/,
   );
 });

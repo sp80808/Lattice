@@ -7,6 +7,8 @@ import { runCommand } from "@lattice/execution";
 import { RandomDecisionProvider } from "@lattice/providers";
 import {
   createDecisionProvider,
+  describeVerify,
+  verifyExecutable,
   createRunTaskOptions,
   loadLatticeConfig,
   parseLatticeConfig,
@@ -14,6 +16,7 @@ import {
   type LoadedLatticeConfig,
   type ModelEndpointConfig,
 } from "@lattice/runtime";
+export { describeVerify } from "@lattice/runtime";
 import type { DecisionReviewer } from "@lattice/search";
 import { UNKNOWN_CHOICE_ID } from "@lattice/protocol";
 import type {
@@ -794,8 +797,16 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     }
   }
 
+  const decisionModel = config.models?.decision ?? config.model;
+  if (decisionModel?.provider === "random") {
+    checks.push({
+      id: "model.decision",
+      status: "ok",
+      message: `random baseline${decisionModel.seed === undefined ? "" : ` (seed ${decisionModel.seed})`}`,
+    });
+  }
   const models: Array<[string, ModelEndpointConfig | undefined]> = [
-    ["decision", config.models?.decision ?? config.model],
+    ["decision", decisionModel?.provider === "random" ? undefined : decisionModel],
     ["generator", config.models?.generator ?? config.model],
   ];
   const seen = new Set<string>();
@@ -837,12 +848,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   }
 
   if (config.verify) {
-    const found = await findExecutable(config.verify.command);
-    const shown = [config.verify.command, ...(config.verify.args ?? [])].join(" ");
+    const executable = verifyExecutable(config.verify);
+    const found = await findExecutable(executable);
     checks.push(
       found
-        ? { id: "verify", status: "ok", message: shown }
-        : { id: "verify", status: "fail", message: `verifier \`${config.verify.command}\` not found on PATH` },
+        ? { id: "verify", status: "ok", message: describeVerify(config.verify) }
+        : { id: "verify", status: "fail", message: `verifier \`${executable}\` not found on PATH` },
     );
   }
 

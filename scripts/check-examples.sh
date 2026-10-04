@@ -32,6 +32,14 @@ node examples/mcp/raw-session.mjs >/dev/null; ok "MCP stdio session"
 info "examples/demo/run-demo.sh"
 examples/demo/run-demo.sh >/dev/null; ok "CLI walkthrough"
 
+if [ -n "${TSR:-}" ] || has tsr; then
+  info "examples/tessera-repair/compare.mjs"
+  out=$(node examples/tessera-repair/compare.mjs --seeds 1 2>&1) || { echo "$out"; exit 1; }
+  ok "Tessera repair judged by tsr witness"
+else
+  warn "tsr not found (set TSR); skipping the Tessera repair example"
+fi
+
 if has python3; then
   info "examples/sdk/python/run_and_inspect.py"
   env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null; ok "Python SDK round-trip"

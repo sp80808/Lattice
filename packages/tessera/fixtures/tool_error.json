@@ -1,0 +1,27 @@
+{
+  "artifacts": {},
+  "diagnostics": [],
+  "error": "failed to read input: No such file or directory (os error 2)",
+  "invocation": {
+    "input": "tc",
+    "overflow": null,
+    "path": "/nonexistent.tes",
+    "phase": "check"
+  },
+  "outcome": "tool_error",
+  "phases": [],
+  "representations": {},
+  "result_id": "sha256:5fedee14169d1462d622a377e684a95c91120d0d811487b2e10b4daba2d3d3d8",
+  "schema": "tessera.witness/v0",
+  "source": null,
+  "timing": {
+    "compile_us": null,
+    "total_us": 141
+  },
+  "tool": {
+    "commit": "e941def661cabfb32ac8e27cd0fe41ba7ce923d8",
+    "dirty": false,
+    "name": "tsr",
+    "version": "0.0.1"
+  }
+}

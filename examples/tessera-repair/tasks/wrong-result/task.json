@@ -1,0 +1,12 @@
+{
+  "name": "wrong-result",
+  "description": "the program compiles but add returns the wrong value",
+  "file": "add.tes",
+  "phase": "check",
+  "overflow": "trapping",
+  "cases": [
+    { "function": "add", "args": [2, 3], "expect": "5" },
+    { "function": "add", "args": [0, 0], "expect": "0" },
+    { "function": "add", "args": [7, -2], "expect": "5" }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "artifacts": {},
+  "diagnostics": [
+    {
+      "code": "E-resolve-unbound-name",
+      "col": 20,
+      "line": 1,
+      "message": "unbound variable `b` (not a parameter of `add`)",
+      "phase": "resolve",
+      "severity": "error",
+      "span": {
+        "end": 20,
+        "start": 19
+      }
+    }
+  ],
+  "error": null,
+  "invocation": {
+    "input": "tc",
+    "overflow": null,
+    "path": "examples/witness/semantic_error.tes",
+    "phase": "check"
+  },
+  "outcome": "fail",
+  "phases": [
+    {
+      "phase": "syntax",
+      "status": "pass"
+    },
+    {
+      "phase": "hir",
+      "status": "pass"
+    },
+    {
+      "phase": "resolve",
+      "status": "fail"
+    },
+    {
+      "phase": "typeck",
+      "status": "pass"
+    },
+    {
+      "phase": "tir",
+      "status": "pass"
+    }
+  ],
+  "representations": {
+    "source": {
+      "bytes": 21,
+      "sha256": "36cee1c4307265bfdb772be254d26febd32594b6d1a62c66686f7cc6d15d91e8",
+      "tessera_tokens": 13,
+      "tokenizers": {
+        "cl100k_base": 11,
+        "o200k_base": 11
+      }
+    }
+  },
+  "result_id": "sha256:39c68b40bec75a3361461c7dfff147c16a09025796407b7a6da31ebcec7a152a",
+  "schema": "tessera.witness/v0",
+  "source": {
+    "bytes": 21,
+    "sha256": "36cee1c4307265bfdb772be254d26febd32594b6d1a62c66686f7cc6d15d91e8"
+  },
+  "timing": {
+    "compile_us": 186,
+    "total_us": 1018193
+  },
+  "tool": {
+    "commit": "e941def661cabfb32ac8e27cd0fe41ba7ce923d8",
+    "dirty": false,
+    "name": "tsr",
+    "version": "0.0.1"
+  }
+}

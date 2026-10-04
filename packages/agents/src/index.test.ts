@@ -243,3 +243,49 @@ test("scheduler can stop launching queued jobs after verified success", async ()
   assert.equal(results[2]?.status, "skipped");
   assert.equal(verifiedBatchResults(results).length, 1);
 });
+
+test("a structured verifier replaces the verify command and gates success", async () => {
+  const repo = await createRepo();
+  const adapter = new ProcessAgentAdapter({
+    name: "fixture-agent",
+    command: process.execPath,
+    args: ["-e", "require('fs').writeFileSync('base.txt', 'changed\\n')"],
+  });
+  const seen: string[] = [];
+  const verifier = (passed: boolean) => ({
+    tool: "fixture.verifier",
+    describe: () => ({}),
+    async verify(cwd: string) {
+      seen.push(cwd);
+      return {
+        tool: "fixture.verifier",
+        passed,
+        summary: passed ? "ok" : "rejected",
+        evidence: [],
+        record: { passed },
+      };
+    },
+  });
+
+  const rejected = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter,
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    verifier: verifier(false),
+    cleanup: "always",
+  });
+  assert.equal(rejected.success, false);
+  assert.equal(rejected.verification, undefined, "the command is not run");
+  assert.equal(rejected.verifierResult?.summary, "rejected");
+  assert.equal(seen[0], rejected.workspace.path, "verifier runs in the worktree");
+
+  const accepted = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter,
+    verifier: verifier(true),
+    cleanup: "always",
+  });
+  assert.equal(accepted.success, true);
+});

@@ -1,0 +1,19 @@
+{
+  "mode": "auto",
+  "autonomy": { "mode": "supervised" },
+  "model": {
+    "provider": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "model": "qwen3-coder"
+  },
+  "agent": { "preset": "qwen-code", "approvalMode": "auto-edit", "outputFormat": "json" },
+  "verify": {
+    "tessera": {
+      "file": "add.tes",
+      "phase": "check",
+      "overflow": "trapping",
+      "cases": [{ "function": "add", "args": [2, 3], "expect": "5" }]
+    }
+  },
+  "search": { "maxRounds": 4, "candidatesPerRound": 4 }
+}

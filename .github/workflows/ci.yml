@@ -21,3 +21,35 @@ jobs:
       - run: npm test
       - run: npm run test:python
       - run: npm run test:examples
+
+  # Tessera issue #41: the witness path runs the real `tsr`, never a stub.
+  # Bump TESSERA_REF when Lattice should follow a newer compiler build.
+  tessera-witness:
+    runs-on: ubuntu-latest
+    env:
+      TESSERA_REF: e941def661cabfb32ac8e27cd0fe41ba7ce923d8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: sp80808/Tessera
+          ref: ${{ env.TESSERA_REF }}
+          path: .tessera
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .tessera/target
+          key: tsr-${{ runner.os }}-${{ env.TESSERA_REF }}
+      - run: cargo build --release --locked -p tessera-cli
+        working-directory: .tessera
+      - run: echo "TSR=$GITHUB_WORKSPACE/.tessera/target/release/tsr" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run build
+      - run: node --test packages/tessera/dist/index.test.js
+      - run: node examples/tessera-repair/compare.mjs --seeds 3

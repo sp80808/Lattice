@@ -1,0 +1,74 @@
+{
+  "artifacts": {},
+  "diagnostics": [
+    {
+      "code": "E-syntax-expected",
+      "col": 1,
+      "line": 2,
+      "message": "expected expression, found end of input",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 26,
+        "start": 26
+      }
+    }
+  ],
+  "error": null,
+  "invocation": {
+    "input": "tc",
+    "overflow": null,
+    "path": "examples/witness/syntax_error.tes",
+    "phase": "check"
+  },
+  "outcome": "fail",
+  "phases": [
+    {
+      "phase": "syntax",
+      "status": "fail"
+    },
+    {
+      "phase": "hir",
+      "status": "pass"
+    },
+    {
+      "phase": "resolve",
+      "status": "pass"
+    },
+    {
+      "phase": "typeck",
+      "status": "pass"
+    },
+    {
+      "phase": "tir",
+      "status": "pass"
+    }
+  ],
+  "representations": {
+    "source": {
+      "bytes": 26,
+      "sha256": "b46d2c861b0afcd8618a1a4822511190a28f8eb3cfb808510eca8197ed596ee4",
+      "tessera_tokens": 16,
+      "tokenizers": {
+        "cl100k_base": 13,
+        "o200k_base": 13
+      }
+    }
+  },
+  "result_id": "sha256:ee43031c2f171e1a2cb5ce2a5c297792e60bdb99026acfb7acfcaa678cdb71e3",
+  "schema": "tessera.witness/v0",
+  "source": {
+    "bytes": 26,
+    "sha256": "b46d2c861b0afcd8618a1a4822511190a28f8eb3cfb808510eca8197ed596ee4"
+  },
+  "timing": {
+    "compile_us": 196,
+    "total_us": 974638
+  },
+  "tool": {
+    "commit": "e941def661cabfb32ac8e27cd0fe41ba7ce923d8",
+    "dirty": false,
+    "name": "tsr",
+    "version": "0.0.1"
+  }
+}

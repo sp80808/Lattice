@@ -13,10 +13,11 @@
     "skipLibCheck": true
   },
   "references": [
-    { "path": "../agents" },
     { "path": "../core" },
+    { "path": "../execution" },
     { "path": "../providers" },
-    { "path": "../tessera" }
+    { "path": "../search" },
+    { "path": "../protocol" }
   ],
   "include": ["src/**/*.ts"]
 }

@@ -7,6 +7,14 @@ import {
   type CleanupPolicy,
 } from "@lattice/agents";
 import type { RunTaskOptions } from "@lattice/core";
+import type { DecisionProvider, Verifier } from "@lattice/protocol";
+import {
+  createWitnessVerifier,
+  resolveTsr,
+  validateVerifySpec,
+  witnessArgs,
+  type TesseraVerifySpec,
+} from "@lattice/tessera";
 import type {
   AutonomyMode,
   DecisionReviewer,
@@ -14,6 +22,8 @@ import type {
 import {
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
+  RandomDecisionProvider,
+  seededRandom,
   type OpenAICompatibleConfig,
 } from "@lattice/providers";
 
@@ -49,11 +59,49 @@ export interface OpenCodeAgentConfig {
   extraArgs?: string[];
 }
 
-export interface VerifyConfig {
+export interface CommandVerifyConfig {
   command: string;
   args?: string[];
   timeoutMs?: number;
   maxOutputBytes?: number;
+}
+
+/** Verify with `tsr witness` (+ optional `tsr run` cases); evidence is the witness JSON. */
+export interface TesseraVerifyConfig {
+  tessera: TesseraVerifySpec;
+}
+
+export type VerifyConfig = CommandVerifyConfig | TesseraVerifyConfig;
+
+/**
+ * Uniform choice among generated candidates: the baseline for comparing a
+ * decision model (docs/mvp.md Milestone C). `seed` makes a run replayable.
+ */
+export interface RandomDecisionConfig {
+  provider: "random";
+  seed?: number;
+}
+
+export function isTesseraVerify(verify: VerifyConfig): verify is TesseraVerifyConfig {
+  return "tessera" in verify;
+}
+
+/** The executable a verify config runs, for doctor checks. */
+export function verifyExecutable(verify: VerifyConfig): string {
+  return isTesseraVerify(verify) ? resolveTsr(verify.tessera.tsr) : verify.command;
+}
+
+/** One-line description of a verify config. */
+export function describeVerify(verify: VerifyConfig): string {
+  if (!isTesseraVerify(verify)) return [verify.command, ...(verify.args ?? [])].join(" ");
+  const cases = verify.tessera.cases?.length;
+  return [
+    resolveTsr(verify.tessera.tsr),
+    ...witnessArgs(verify.tessera.file, verify.tessera),
+    cases ? `(+${cases} tsr run case${cases === 1 ? "" : "s"})` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export interface LatticeConfig {
@@ -67,7 +115,7 @@ export interface LatticeConfig {
   };
   model?: ModelEndpointConfig;
   models?: {
-    decision?: ModelEndpointConfig;
+    decision?: ModelEndpointConfig | RandomDecisionConfig;
     generator?: ModelEndpointConfig;
   };
   agent?: QwenAgentConfig | OpenCodeAgentConfig;
@@ -140,10 +188,18 @@ export function parseLatticeConfig(value: unknown): LatticeConfig {
     if (!isObject(value.models)) throw new Error("models must be an object");
     config.models = {};
     if (value.models.decision !== undefined) {
-      config.models.decision = validateModel(
-        value.models.decision,
-        "models.decision",
-      );
+      const decision = value.models.decision;
+      if (isObject(decision) && decision.provider === "random") {
+        if (
+          decision.seed !== undefined &&
+          (typeof decision.seed !== "number" || !Number.isInteger(decision.seed))
+        ) {
+          throw new Error("models.decision.seed must be an integer");
+        }
+        config.models.decision = decision as unknown as RandomDecisionConfig;
+      } else {
+        config.models.decision = validateModel(decision, "models.decision");
+      }
     }
     if (value.models.generator !== undefined) {
       config.models.generator = validateModel(
@@ -163,6 +219,19 @@ export function parseLatticeConfig(value: unknown): LatticeConfig {
 
   if (value.verify !== undefined) {
     if (!isObject(value.verify)) throw new Error("verify must be an object");
+    if (value.verify.tessera !== undefined) {
+      if (value.verify.command !== undefined) {
+        throw new Error("verify takes either command or tessera, not both");
+      }
+      if (!isObject(value.verify.tessera)) throw new Error("verify.tessera must be an object");
+      try {
+        validateVerifySpec(value.verify.tessera as unknown as TesseraVerifySpec);
+      } catch (error) {
+        throw new Error(`verify.tessera: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      config.verify = value.verify as unknown as TesseraVerifyConfig;
+      return finishParse(value, config);
+    }
     if (typeof value.verify.command !== "string" || !value.verify.command.trim()) {
       throw new Error("verify.command must be a non-empty string");
     }
@@ -173,9 +242,16 @@ export function parseLatticeConfig(value: unknown): LatticeConfig {
     ) {
       throw new Error("verify.args must be an array of strings");
     }
-    config.verify = value.verify as unknown as VerifyConfig;
+    config.verify = value.verify as unknown as CommandVerifyConfig;
   }
 
+  return finishParse(value, config);
+}
+
+function finishParse(
+  value: Record<string, unknown>,
+  config: LatticeConfig,
+): LatticeConfig {
   if (value.search !== undefined) {
     if (!isObject(value.search)) throw new Error("search must be an object");
     config.search = value.search as LatticeConfig["search"];
@@ -258,28 +334,37 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
 /** Decision provider for `models.decision ?? model`, or undefined when unconfigured. */
 export function createDecisionProvider(
   config: LatticeConfig,
-): OpenAICompatibleDecisionProvider | undefined {
+): DecisionProvider | undefined {
   const model = config.models?.decision ?? config.model;
-  return model
-    ? new OpenAICompatibleDecisionProvider(endpointConfig(model))
-    : undefined;
+  if (!model) return undefined;
+  if (model.provider === "random") {
+    return new RandomDecisionProvider(
+      model.seed === undefined ? Math.random : seededRandom(model.seed),
+      { allowUnknown: false },
+    );
+  }
+  return new OpenAICompatibleDecisionProvider(endpointConfig(model));
 }
 
 export function createRunTaskOptions(
   config: LatticeConfig,
   hooks: { reviewer?: DecisionReviewer } = {},
 ): RunTaskOptions {
-  const verifyCommand = config.verify
-    ? {
-        command: config.verify.command,
-        args: config.verify.args,
-        timeoutMs: config.verify.timeoutMs,
-        maxOutputBytes: config.verify.maxOutputBytes,
-      }
-    : undefined;
+  const verify = config.verify;
+  const verifier: Verifier | undefined =
+    verify && isTesseraVerify(verify) ? createWitnessVerifier(verify.tessera) : undefined;
+  const verifyCommand =
+    verify && !isTesseraVerify(verify)
+      ? {
+          command: verify.command,
+          args: verify.args,
+          timeoutMs: verify.timeoutMs,
+          maxOutputBytes: verify.maxOutputBytes,
+        }
+      : undefined;
 
   if ((config.mode ?? "auto") === "observe") {
-    return { verifyCommand };
+    return { verifyCommand, verifier };
   }
 
   const decisionModel = config.models?.decision ?? config.model;
@@ -289,7 +374,7 @@ export function createRunTaskOptions(
     !decisionModel ? "model/models.decision" : undefined,
     !generatorModel ? "model/models.generator" : undefined,
     !config.agent ? "agent" : undefined,
-    !verifyCommand ? "verify" : undefined,
+    !verifyCommand && !verifier ? "verify" : undefined,
   ].filter(Boolean);
 
   if (missing.length) {
@@ -298,9 +383,7 @@ export function createRunTaskOptions(
     );
   }
 
-  const decision = new OpenAICompatibleDecisionProvider(
-    endpointConfig(decisionModel!),
-  );
+  const decision = createDecisionProvider(config)!;
   const generator = new OpenAICompatibleGeneratorProvider(
     endpointConfig(generatorModel!),
   );
@@ -327,12 +410,14 @@ export function createRunTaskOptions(
 
   return {
     verifyCommand,
+    verifier,
     search: {
       decision,
       generator,
       executor: createAgentExperimentExecutor({
         adapter: agent,
         verifyCommand,
+        verifier,
         cleanup: config.workspace?.cleanup ?? "on-failure",
       }),
       maxRounds: config.search?.maxRounds,

@@ -12,6 +12,7 @@ import {
   type AutonomyPolicy,
   type DecisionReviewer,
   type ExperimentExecutor,
+  type ProposalPrompt,
 } from "@lattice/search";
 import {
   TAP_VERSION,
@@ -21,6 +22,7 @@ import {
   type DecisionProvider,
   type GeneratorProvider,
   type TapPacket,
+  type Verifier,
 } from "@lattice/protocol";
 
 export interface RunTaskOptions {
@@ -29,6 +31,8 @@ export interface RunTaskOptions {
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
+  /** Structured verifier (e.g. `tsr witness`); its record is stored in the run log. */
+  verifier?: Verifier;
   search?: {
     generator: GeneratorProvider;
     decision: DecisionProvider;
@@ -39,6 +43,7 @@ export interface RunTaskOptions {
     parallelism?: number;
     autonomy?: AutonomyPolicy;
     reviewer?: DecisionReviewer;
+    proposal?: ProposalPrompt;
   };
 }
 
@@ -194,8 +199,25 @@ export async function runTask(
       tap.verification.push(commandEvidence.id);
     }
 
+    if (options.verifier) {
+      await log.append("tool.started", {
+        tool: options.verifier.tool,
+        ...options.verifier.describe(),
+      });
+      const verification = await options.verifier.verify(cwd);
+      await log.append("tool.completed", {
+        tool: verification.tool,
+        passed: verification.passed,
+        summary: verification.summary,
+        record: verification.record,
+      });
+      tap.evidence.push(...verification.evidence);
+      tap.verification.push(...verification.evidence.map((item) => item.id));
+    }
+
     await log.append("tap.created", tap);
 
+    let searchOutcome: RunResult["search"];
     let summary =
       `Lattice grounded the task in ${tap.evidence.length} evidence record(s) before model reasoning.`;
 
@@ -211,6 +233,7 @@ export async function runTask(
         parallelism: options.search.parallelism,
         autonomy: options.search.autonomy,
         reviewer: options.search.reviewer,
+        proposal: options.search.proposal,
         onTrace: async (event) => {
           if (event.type === "candidates.generated" || event.type === "decision.framed") {
             await log.append("decision.requested", {
@@ -240,6 +263,11 @@ export async function runTask(
       });
 
       tap = searchResult.tap;
+      searchOutcome = {
+        status: searchResult.status,
+        rounds: searchResult.rounds,
+        selected: searchResult.selected,
+      };
       await log.append("tap.updated", tap);
       summary =
         `Lattice search ${searchResult.status} after ${searchResult.rounds} round(s); ` +
@@ -254,6 +282,7 @@ export async function runTask(
       summary,
       tap,
       eventLogPath: log.path,
+      ...(searchOutcome ? { search: searchOutcome } : {}),
     };
   } catch (error) {
     await log.append("run.failed", {
