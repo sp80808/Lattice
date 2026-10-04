@@ -20,6 +20,9 @@
       "path": "./packages/providers"
     },
     {
+      "path": "./packages/tessera"
+    },
+    {
       "path": "./packages/runtime"
     },
     {

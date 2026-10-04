@@ -139,7 +139,7 @@ test("init builds validated configs and falls back to observe without a verifier
   });
   assert.equal(withVerify.config.mode, "auto");
   assert.equal(withVerify.config.model?.model, "qwen3-coder");
-  assert.deepEqual(withVerify.config.verify?.args, ["test"]);
+  assert.deepEqual(withVerify.config.verify, { command: "npm", args: ["test"], timeoutMs: 120_000 });
   assert.deepEqual(withVerify.warnings, []);
 
   const noVerify = buildInitConfig({ preset: "vllm", model: "Qwen/Qwen3-8B" });

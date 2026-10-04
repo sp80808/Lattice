@@ -15,6 +15,7 @@ import type { DoctorStatus, RunDetail, RunEvent, RunSummary } from "@lattice/pro
 import { startLatticeServer } from "@lattice/server";
 import {
   buildInitConfig,
+  describeVerify,
   detectVerifyCommand,
   executeTask,
   followRunEvents,
@@ -161,7 +162,7 @@ export async function initCommand(args: string[]): Promise<number> {
   if (plan.config.model) console.log(`  model: ${plan.config.model.model} @ ${plan.config.model.baseUrl}`);
   if (plan.config.agent) console.log(`  agent: ${plan.config.agent.preset}`);
   console.log(
-    `  verify: ${plan.config.verify ? [plan.config.verify.command, ...(plan.config.verify.args ?? [])].join(" ") : "none"}`,
+    `  verify: ${plan.config.verify ? describeVerify(plan.config.verify) : "none"}`,
   );
   for (const warning of plan.warnings) console.log(`warning: ${warning}`);
   console.log("");

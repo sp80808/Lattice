@@ -35,6 +35,8 @@ export interface ExperimentOutcome {
   summary: string;
   evidence: EvidenceRef[];
   uncertainties?: string[];
+  /** Raw tool records (e.g. witness documents) kept verbatim in the run log for replay. */
+  records?: unknown[];
 }
 
 export interface ExperimentExecutor {
@@ -102,6 +104,16 @@ export type SearchTraceEvent =
       type: "candidates.generated";
       round: number;
       candidates: CandidateAction[];
+      identity?: ProviderIdentity;
+      usage?: ProviderUsage;
+    }
+  | {
+      /** The generator answered but its reply was unusable; the run stops. */
+      type: "candidates.rejected";
+      round: number;
+      error: string;
+      identity?: ProviderIdentity;
+      usage?: ProviderUsage;
     }
   | {
       type: "decision.framed";
@@ -145,6 +157,19 @@ export type SearchTraceEvent =
       outcome: ExperimentOutcome;
     };
 
+/**
+ * Overrides the generic proposal prompt for domain-specific searches (e.g.
+ * candidates that are whole replacement files). The JSON reply contract is
+ * unchanged: `{"candidates":[{id,label,action,expectedEvidence,estimatedCost}]}`.
+ */
+export interface ProposalPrompt {
+  system?: string;
+  /** Receives the number of candidates requested this round. */
+  prompt?: (count: number) => string;
+  /** Extra context appended after the compact TAP state each round. */
+  context?: (tap: TapPacket) => string[] | Promise<string[]>;
+}
+
 export interface SearchLoopOptions {
   tap: TapPacket;
   generator: GeneratorProvider;
@@ -156,6 +181,7 @@ export interface SearchLoopOptions {
   parallelism?: number;
   autonomy?: AutonomyPolicy;
   reviewer?: DecisionReviewer;
+  proposal?: ProposalPrompt;
   onTrace?: (event: SearchTraceEvent) => void | Promise<void>;
 }
 
@@ -496,15 +522,30 @@ export async function runSearchLoop(
 
   for (let round = 1; round <= maxRounds; round++) {
     const state = compactState(tap);
+    const proposal = options.proposal;
     const generated = await options.generator.generate({
       system:
+        proposal?.system ??
         "You are the proposal stage of an evidence-first coding search. Do not fabricate repository facts.",
-      prompt: candidatePrompt(candidatesPerRound),
-      context: [state],
+      prompt: (proposal?.prompt ?? candidatePrompt)(candidatesPerRound),
+      context: [state, ...((await proposal?.context?.(tap)) ?? [])],
       temperature: 0.3,
     });
 
-    const candidates = parseCandidates(generated.text, candidatesPerRound);
+    let candidates: CandidateAction[];
+    try {
+      candidates = parseCandidates(generated.text, candidatesPerRound);
+    } catch (error) {
+      // Record the call before failing so its tokens and cost are not lost.
+      await options.onTrace?.({
+        type: "candidates.rejected",
+        round,
+        error: error instanceof Error ? error.message : String(error),
+        identity: generated.identity,
+        usage: generated.usage,
+      });
+      throw error;
+    }
     tap.candidateActions = candidates.map(
       (candidate) => `${candidate.id}:${candidate.label}`,
     );
@@ -513,6 +554,8 @@ export async function runSearchLoop(
       type: "candidates.generated",
       round,
       candidates,
+      identity: generated.identity,
+      usage: generated.usage,
     });
 
     const frame = compileDecisionFrame(tap, candidates, "next-action");

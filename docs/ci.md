@@ -21,6 +21,16 @@ Run the same thing locally before opening a PR:
 npm run ci        # or scripts/ci-health.sh
 ```
 
+The `CI / tessera-witness` job builds `tsr` from sp80808/Tessera at the commit
+pinned in `TESSERA_REF` and runs, against that real compiler:
+
+| Check | Command |
+|---|---|
+| witness end to end | `node scripts/run-node-tests.mjs packages/tessera/dist/e2e.test.js` (fails without `TSR`; not part of `npm test`) |
+| repair comparison | `node examples/tessera-repair/compare.mjs --seeds 3` |
+
+Locally: `TSR=/path/to/tsr npm run ci` also runs the Tessera repair example.
+
 It runs every step even when an earlier one fails and exits non-zero if any
 step failed, so one run shows everything that is red.
 

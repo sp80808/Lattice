@@ -9,4 +9,5 @@ dist/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+.tessera/
 __pycache__/

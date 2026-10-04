@@ -10,6 +10,7 @@ runs all of them (CI does too).
 | [`sdk/typescript/run-and-inspect.mjs`](sdk/typescript/run-and-inspect.mjs) | `@lattice/sdk` against the daemon: run, list, show, events, decide, doctor, typed errors | `node examples/sdk/typescript/run-and-inspect.mjs` |
 | [`sdk/python/run_and_inspect.py`](sdk/python/run_and_inspect.py) | The same flow with the stdlib-only Python client | `python3 examples/sdk/python/run_and_inspect.py` |
 | [`review/remote-reviewer.mjs`](review/remote-reviewer.mjs) | A full **auto-mode** run (fake model, real worktree + tests) where a program answers Lattice's manual-mode review over the API, streaming events via SSE | `node examples/review/remote-reviewer.mjs` |
+| [`tessera-repair/compare.mjs`](tessera-repair/compare.mjs) | The MVP slice: repair broken Tessera programs where only `tsr witness` decides success, and compare a decider against random choice on rounds, tokens and cost. Needs a `tsr` build (`TSR=/path/to/tsr`) | `node examples/tessera-repair/compare.mjs` |
 | [`mcp/raw-session.mjs`](mcp/raw-session.mjs) | A raw MCP JSON-RPC session with `lattice mcp` (debug integrations before wiring a client) | `node examples/mcp/raw-session.mjs` |
 | [`mcp/`](mcp/) | Client config snippets: Claude Code, Codex, Cursor, Claude Desktop | see below |
 | [`configs/`](configs/) | Ready-to-copy `.lattice/config.json` variants | see below |
@@ -30,6 +31,8 @@ Copy one to `<project>/.lattice/config.json`, or generate one with `lattice init
 | [`best-of-n-parallel.json`](configs/best-of-n-parallel.json) | Deliberate best-of-N: rank 6 candidates, run the top 2 in parallel worktrees |
 | [`manual-review.json`](configs/manual-review.json) | Review every decision at the TTY; the worker uses its most conservative approval mode |
 | [`observe-only.json`](configs/observe-only.json) | Evidence capture only: repository snapshot + test run, no models |
+| [`tessera-witness.json`](configs/tessera-witness.json) | A Tessera project: `tsr witness` (+ `tsr run` cases) is the verifier and its JSON is the evidence |
+| [`random-baseline.json`](configs/random-baseline.json) | The baseline for a comparison: same generator, but decisions are a seeded uniform random pick |
 
 Auto mode always needs `verify`: Lattice refuses to search without an objective check.
 

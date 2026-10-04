@@ -13,7 +13,7 @@
     "typecheck": "tsc -b --pretty false",
     "dev": "npm run build && node apps/cli/dist/index.js",
     "daemon": "npm run build && node apps/daemon/dist/index.js",
-    "test": "npm run build && node scripts/run-node-tests.mjs packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js packages/agents/dist/index.test.js packages/runtime/dist/index.test.js packages/ledger/dist/index.test.js packages/analytics/dist/index.test.js packages/mining/dist/index.test.js packages/policy/dist/index.test.js packages/service/dist/index.test.js packages/server/dist/index.test.js packages/mcp/dist/index.test.js apps/cli/dist/index.test.js scripts/check-examples.test.mjs",
+    "test": "npm run build && node scripts/run-node-tests.mjs packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js packages/agents/dist/index.test.js packages/tessera/dist/index.test.js packages/runtime/dist/index.test.js packages/ledger/dist/index.test.js packages/analytics/dist/index.test.js packages/mining/dist/index.test.js packages/policy/dist/index.test.js packages/service/dist/index.test.js packages/server/dist/index.test.js packages/mcp/dist/index.test.js apps/cli/dist/index.test.js scripts/check-examples.test.mjs",
     "lattice": "node apps/cli/dist/index.js",
     "test:python": "python3 -m unittest discover -s sdks/python/tests",
     "test:examples": "scripts/check-examples.sh",

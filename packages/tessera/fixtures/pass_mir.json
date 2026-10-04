@@ -1,0 +1,86 @@
+{
+  "artifacts": {
+    "mir": {
+      "bytes": 272,
+      "functions": 1,
+      "sha256": "b0bbf07d27f2957da4bc9c58357c1835deabf73efb83f0642a9984b779c253d3"
+    },
+    "tir": {
+      "bytes": 92,
+      "functions": 1,
+      "roundtrip": true,
+      "sha256": "4a8badec51d4efbda97bb7cb2595a7d312e0cf018ea92ad70d9583990430b7d0"
+    }
+  },
+  "diagnostics": [],
+  "error": null,
+  "invocation": {
+    "input": "tc",
+    "overflow": "trapping",
+    "path": "examples/witness/pass.tes",
+    "phase": "mir"
+  },
+  "outcome": "pass",
+  "phases": [
+    {
+      "phase": "syntax",
+      "status": "pass"
+    },
+    {
+      "phase": "hir",
+      "status": "pass"
+    },
+    {
+      "phase": "resolve",
+      "status": "pass"
+    },
+    {
+      "phase": "typeck",
+      "status": "pass"
+    },
+    {
+      "phase": "tir",
+      "status": "pass"
+    },
+    {
+      "phase": "mir",
+      "status": "pass"
+    }
+  ],
+  "representations": {
+    "source": {
+      "bytes": 27,
+      "sha256": "ce4bfbeb0d4f631cac27f753f946e195058303513382bbacc61550f1322e1942",
+      "tessera_tokens": 17,
+      "tokenizers": {
+        "cl100k_base": 14,
+        "o200k_base": 14
+      }
+    },
+    "tir": {
+      "bytes": 92,
+      "sha256": "4a8badec51d4efbda97bb7cb2595a7d312e0cf018ea92ad70d9583990430b7d0",
+      "tessera_tokens": null,
+      "tokenizers": {
+        "cl100k_base": 37,
+        "o200k_base": 37
+      }
+    }
+  },
+  "result_id": "sha256:57dc91a5147583d6e50d39a8a20f6d9480111423ea669443b20ac9fbda8827e1",
+  "schema": "tessera.witness/v0",
+  "source": {
+    "bytes": 27,
+    "sha256": "ce4bfbeb0d4f631cac27f753f946e195058303513382bbacc61550f1322e1942"
+  },
+  "timing": {
+    "compile_us": 478,
+    "total_us": 961008
+  },
+  "tool": {
+    "commit": "e941def661cabfb32ac8e27cd0fe41ba7ce923d8",
+    "dirty": false,
+    "name": "tsr",
+    "version": "0.0.1"
+  }
+}

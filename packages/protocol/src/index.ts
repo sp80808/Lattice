@@ -19,6 +19,28 @@ export interface EvidenceRef {
   createdAt: string;
 }
 
+/**
+ * One run of a structured verifier (e.g. `tsr witness`). `record` is the
+ * tool's own machine-readable output, stored verbatim in the run log so the
+ * verdict can be replayed without re-running or scraping terminal text.
+ */
+export interface VerificationRecord {
+  tool: string;
+  /** True only when the tool itself reported success. Never a model opinion. */
+  passed: boolean;
+  summary: string;
+  evidence: EvidenceRef[];
+  record: unknown;
+}
+
+/** A verifier that produces structured evidence instead of a bare exit code. */
+export interface Verifier {
+  readonly tool: string;
+  /** What will run, for the event log (command, file, flags). */
+  describe(): Record<string, unknown>;
+  verify(cwd: string): Promise<VerificationRecord>;
+}
+
 export interface Budget {
   maxRounds?: number;
   maxTokens?: number;
@@ -71,6 +93,12 @@ export interface RunResult {
   summary: string;
   tap: TapPacket;
   eventLogPath: string;
+  /** Present when the run used the search loop. */
+  search?: {
+    status: "solved" | "blocked" | "budget_exhausted";
+    rounds: number;
+    selected: string[];
+  };
 }
 
 

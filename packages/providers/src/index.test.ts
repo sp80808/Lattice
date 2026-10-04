@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   OpenAICompatibleDecisionProvider,
   RandomDecisionProvider,
+  seededRandom,
 } from "./index.js";
 
 test("random provider adds an explicit unknown choice", async () => {
@@ -84,4 +85,25 @@ test("OpenAI-compatible decision provider rejects hallucinated choice IDs", asyn
       }),
     /unknown choice ID/,
   );
+});
+
+test("random provider can exclude unknown and replays by seed", async () => {
+  const request = {
+    question: "Which patch?",
+    choices: [
+      { id: "a", label: "a" },
+      { id: "b", label: "b" },
+      { id: "c", label: "c" },
+    ],
+  };
+  const picks = async (seed: number) => {
+    const provider = new RandomDecisionProvider(seededRandom(seed), { allowUnknown: false });
+    const out: string[] = [];
+    for (let i = 0; i < 20; i++) out.push(...(await provider.decide(request)).selected);
+    return out;
+  };
+  const first = await picks(7);
+  assert.deepEqual(await picks(7), first);
+  assert.ok(first.every((id) => id !== "__none__"));
+  assert.ok(new Set(first).size > 1);
 });

@@ -65,6 +65,13 @@ Required safeguards:
 
 Exit criterion: compare against random-selection baseline.
 
+Harness: [`examples/tessera-repair`](../examples/tessera-repair/README.md)
+repairs broken Tessera programs with `tsr witness` as the only judge and reports
+rounds, verifications, tokens and cost per verified patch against a seeded
+random decider (`models.decision.provider: "random"` does the same for any
+configured run). Offline it runs with stub providers; the real-model numbers
+are still to be collected.
+
 ## Milestone D — subagents
 
 - isolated worktrees;

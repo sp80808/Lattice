@@ -343,3 +343,68 @@ test("human reviewer can replace an insufficient-evidence decision", async () =>
   assert.equal(result.status, "solved");
   assert.equal(executed, "inspect");
 });
+
+test("a proposal override replaces the generic prompt and trace carries generator usage", async () => {
+  const requests: Array<{ system?: string; prompt: string; context?: string[] }> = [];
+  const recording: GeneratorProvider = {
+    async generate(request) {
+      requests.push(request);
+      const result = await generator.generate(request);
+      return { ...result, usage: { latencyMs: 1, inputTokens: 40, outputTokens: 9 } };
+    },
+  };
+  const decision: DecisionProvider = {
+    async decide() {
+      return { selected: ["repro"], scores: { repro: 1 }, identity: { provider: "fixture" }, usage: { latencyMs: 0 } };
+    },
+  };
+  const executor: ExperimentExecutor = {
+    async execute(candidate) {
+      return { candidateId: candidate.id, status: "success", terminal: true, summary: "ok", evidence: [] };
+    },
+  };
+  const trace: SearchTraceEvent[] = [];
+  await runSearchLoop({
+    tap: tap(),
+    generator: recording,
+    decision,
+    executor,
+    proposal: {
+      system: "domain system",
+      prompt: (count) => `give me ${count} files`,
+      context: (packet) => [`TASK FILE for ${packet.runId}`],
+    },
+    onTrace: (event) => {
+      trace.push(event);
+    },
+  });
+  assert.equal(requests[0]!.system, "domain system");
+  assert.equal(requests[0]!.prompt, "give me 5 files");
+  assert.match(requests[0]!.context![0]!, /^OBJECTIVE:/);
+  assert.equal(requests[0]!.context![1], "TASK FILE for run-1");
+  const generated = trace.find((event) => event.type === "candidates.generated");
+  assert.equal(generated?.type === "candidates.generated" && generated.usage?.inputTokens, 40);
+});
+
+test("an unusable generator reply is traced with its usage before the run fails", async () => {
+  const trace: SearchTraceEvent[] = [];
+  const broken: GeneratorProvider = {
+    async generate() {
+      return { text: "not json", identity: { provider: "model" }, usage: { latencyMs: 1, inputTokens: 30, outputTokens: 5 } };
+    },
+  };
+  await assert.rejects(
+    runSearchLoop({
+      tap: tap(),
+      generator: broken,
+      decision: { decide: async () => assert.fail("decision must not run") },
+      executor: { execute: async () => assert.fail("executor must not run") },
+      onTrace: (event) => {
+        trace.push(event);
+      },
+    }),
+    /no JSON object/,
+  );
+  const rejected = trace.find((event) => event.type === "candidates.rejected");
+  assert.equal(rejected?.type === "candidates.rejected" && rejected.usage?.inputTokens, 30);
+});

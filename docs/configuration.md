@@ -51,6 +51,41 @@ OpenAI-compatible Qwen endpoint
             npm test
 ```
 
+## Tessera verifier
+
+For a Tessera program, `verify.tessera` runs the real `tsr witness` instead of a
+shell command and stores its `tessera.witness/v0` JSON in the run log:
+
+```json
+{
+  "verify": {
+    "tessera": {
+      "tsr": "/path/to/tsr",
+      "file": "add.tes",
+      "phase": "check",
+      "overflow": "trapping",
+      "cases": [{ "function": "add", "args": [2, 3], "expect": "5" }]
+    }
+  }
+}
+```
+
+- `tsr` defaults to `$TSR`, then `tsr` on `PATH`.
+- `phase` is `check` (default), `mir` (needs `overflow`) or `backend`
+  (reported `unsupported`, never faked).
+- `cases` run only when the witness passes, through `tsr run`; they need
+  `overflow` because `tsr run` has no default.
+- The verdict comes from the document's `outcome` and the exit code, and the
+  document must hash to its own `result_id`; anything else is a tool error.
+  `replayRunLog()` in `@lattice/tessera` re-derives every stored verdict from a
+  run log without running `tsr`. See [evidence.md](evidence.md#tessera-witness).
+
+## Random decision baseline
+
+`models.decision: { "provider": "random", "seed": 1 }` keeps the configured
+generator but picks uniformly among its candidates (never "none"). Use it to
+measure what a decision model adds (`docs/mvp.md` Milestone C).
+
 ## Configuration discovery
 
 In order:

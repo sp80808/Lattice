@@ -26,3 +26,25 @@ Command output is capped before it reaches run history or model context. Large l
 ## Safety boundary
 
 `runCommand` does not use a shell. Model-generated shell strings must not be silently executed. Higher-level agent actions should be converted to structured executable + argument arrays, pass policy/approval checks, and only then enter this layer.
+
+## Tessera witness
+
+With `verify.tessera` (see [configuration.md](configuration.md#tessera-verifier)),
+the verifier runs `tsr witness` and Lattice keeps the compiler's own
+`tessera.witness/v0` document (Tessera `docs/spec/witness.md`) instead of
+scraping terminal text:
+
+- The run log's `tool.completed` event for `tessera.witness`, and each repair
+  experiment's `outcome.records`, hold a `lattice.tessera-verification/v0`
+  record: the command, exit code, verdict, the witness document verbatim, and
+  any `tsr run` case results.
+- The TAP gets one `build` evidence record per witness (outcome, `result_id`,
+  `tsr` version and commit, diagnostics with phase, code and line:col) and one
+  `test` record per case.
+- Verdicts map to `pass`, `fail`, `unsupported` and `tool_error`. A document is
+  trusted only when its `outcome` matches the exit code and it hashes to its
+  own `result_id`; otherwise it is recorded as a `tool_error` with the reason,
+  and is not verified evidence.
+- `replayRunLog(path)` re-parses every stored document, recomputes `result_id`
+  and re-derives the verdict without running `tsr`, so a log can be audited
+  later or on another machine.
