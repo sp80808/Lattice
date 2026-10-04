@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# `shell: bash` runs every step with `-eo pipefail`, so a failing command in a
+# pipeline fails the step instead of being masked by the last command.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -17,7 +23,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm install
-      - run: npm run build
-      - run: npm test
-      - run: npm run test:python
-      - run: npm run test:examples
+      # The same command contributors run locally; see docs/ci.md.
+      - run: scripts/ci-health.sh

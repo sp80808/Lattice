@@ -30,11 +30,13 @@ info "examples/mcp/raw-session.mjs"
 node examples/mcp/raw-session.mjs >/dev/null; ok "MCP stdio session"
 
 info "examples/demo/run-demo.sh"
-examples/demo/run-demo.sh >/dev/null; ok "CLI walkthrough"
+examples/demo/run-demo.sh --strict >/dev/null; ok "CLI walkthrough"
 
 if has python3; then
   info "examples/sdk/python/run_and_inspect.py"
   env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null; ok "Python SDK round-trip"
+elif [ -n "${CI:-}" ]; then
+  die "python3 not found; CI must run the Python SDK example"
 else
   warn "python3 not found; skipping the Python SDK example"
 fi

@@ -118,6 +118,8 @@ lattice runs && lattice show latest
 No model yet? `lattice init --preset observe` records repository and test evidence only, and
 `node examples/embedded/offline-search-loop.mjs` runs the full search loop offline.
 
+Before opening a PR, run `npm run ci`; it runs the same checks CI requires before merge ([docs/ci.md](docs/ci.md)).
+
 Every run writes a versioned TAP task packet and an append-only JSONL event log under `.lattice/runs/`.
 
 | Surface | Entry point | Docs |
