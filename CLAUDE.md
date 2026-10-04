@@ -63,9 +63,10 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 ```bash
 scripts/bootstrap.sh          # npm install + build + tests + CLI smoke test
 npm run build                 # tsc -b (project references)
-npm test                      # build + node --test over every package's dist/index.test.js
+npm test                      # build + scripts/run-node-tests.mjs over every package's dist/index.test.js
 npm run test:python           # Python SDK against a real daemon
 npm run test:examples         # validate example configs and run every example
+npm run ci                    # everything CI requires before merge (docs/ci.md)
 node apps/cli/dist/index.js --help
 ```
 
