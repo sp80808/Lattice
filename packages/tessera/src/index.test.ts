@@ -15,6 +15,7 @@ import {
   mutationBodies,
   parseTcFunction,
   parseWitness,
+  repairProposal,
   replayVerification,
   summarize,
   verificationEvidence,
@@ -204,4 +205,13 @@ test("arms sharing a generator see the same recorded rounds", async () => {
   assert.equal((await second.generate({ prompt: "p" })).text, "round-3", "beyond the recording it calls the model");
   assert.equal((await other.generate({ prompt: "p" })).text, "round-4");
   assert.equal(calls, 4);
+});
+
+test("the repair prompt shows a valid program and rules out C-style bodies", () => {
+  const prompt = repairProposal(
+    { name: "t", dir: ".", description: "", file: "add.tes", overflow: "trapping", cases: [] },
+    async () => "",
+  );
+  assert.match(prompt.system ?? "", /`f twice\(x:i64\)>i64=x\+x`/);
+  assert.match(prompt.system ?? "", /no braces, `return`, semicolons/);
 });

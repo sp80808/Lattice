@@ -265,6 +265,8 @@ export function repairProposal(
     system:
       "You repair programs in Tessera's TC surface language. A program is one function: " +
       "`f NAME(PARAM:i64,...)>i64=EXPR`, where EXPR uses parameters, integer literals and `+` only. " +
+      "There are no braces, `return`, semicolons, statements or other operators. " +
+      "Example of a complete, valid program: `f twice(x:i64)>i64=x+x`. " +
       "The compiler (`tsr`) decides success; do not claim a fix works.",
     prompt: (count) =>
       [
