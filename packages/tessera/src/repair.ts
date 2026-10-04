@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { runTask } from "@lattice/core";
 import {
   UNKNOWN_CHOICE_ID,
@@ -54,8 +54,12 @@ export interface RepairTask {
 export async function loadRepairTask(dir: string): Promise<RepairTask> {
   const root = resolve(dir);
   const raw = JSON.parse(await readFile(join(root, "task.json"), "utf8")) as Partial<RepairTask>;
-  if (typeof raw.file !== "string" || isAbsolute(raw.file)) {
-    throw new Error(`${root}/task.json: file must be a relative path`);
+  if (
+    typeof raw.file !== "string" ||
+    isAbsolute(raw.file) ||
+    relative(root, resolve(root, raw.file)).startsWith("..")
+  ) {
+    throw new Error(`${root}/task.json: file must be a relative path inside the task directory`);
   }
   if (raw.overflow !== "wrapping" && raw.overflow !== "trapping") {
     throw new Error(`${root}/task.json: overflow must be wrapping or trapping`);
@@ -450,7 +454,11 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
 
   const onEvent = (event: RunEvent) => {
     const payload = event.payload as Record<string, any>;
-    if (event.type === "decision.requested" && payload?.event?.type === "candidates.generated") {
+    const proposal = payload?.event?.type;
+    if (
+      event.type === "decision.requested" &&
+      (proposal === "candidates.generated" || proposal === "candidates.rejected")
+    ) {
       generatorTotals.identity = payload.event.identity;
       addUsage(generatorTotals, payload.event.usage, options.pricing);
     } else if (event.type === "decision.completed" && payload?.type === "decision.completed") {

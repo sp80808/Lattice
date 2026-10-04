@@ -235,7 +235,11 @@ export async function runTask(
         reviewer: options.search.reviewer,
         proposal: options.search.proposal,
         onTrace: async (event) => {
-          if (event.type === "candidates.generated" || event.type === "decision.framed") {
+          if (
+            event.type === "candidates.generated" ||
+            event.type === "candidates.rejected" ||
+            event.type === "decision.framed"
+          ) {
             await log.append("decision.requested", {
               round: event.round,
               event,

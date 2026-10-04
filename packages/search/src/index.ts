@@ -108,6 +108,14 @@ export type SearchTraceEvent =
       usage?: ProviderUsage;
     }
   | {
+      /** The generator answered but its reply was unusable; the run stops. */
+      type: "candidates.rejected";
+      round: number;
+      error: string;
+      identity?: ProviderIdentity;
+      usage?: ProviderUsage;
+    }
+  | {
       type: "decision.framed";
       round: number;
       frame: DecisionFrame;
@@ -524,7 +532,20 @@ export async function runSearchLoop(
       temperature: 0.3,
     });
 
-    const candidates = parseCandidates(generated.text, candidatesPerRound);
+    let candidates: CandidateAction[];
+    try {
+      candidates = parseCandidates(generated.text, candidatesPerRound);
+    } catch (error) {
+      // Record the call before failing so its tokens and cost are not lost.
+      await options.onTrace?.({
+        type: "candidates.rejected",
+        round,
+        error: error instanceof Error ? error.message : String(error),
+        identity: generated.identity,
+        usage: generated.usage,
+      });
+      throw error;
+    }
     tap.candidateActions = candidates.map(
       (candidate) => `${candidate.id}:${candidate.label}`,
     );

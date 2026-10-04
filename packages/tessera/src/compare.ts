@@ -2,7 +2,12 @@
 // random choice on the same tasks, generator stream and seeds.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { DecisionProvider, GeneratorProvider } from "@lattice/protocol";
+import type {
+  DecisionProvider,
+  GeneratorProvider,
+  GeneratorRequest,
+  GeneratorResult,
+} from "@lattice/protocol";
 import { RandomDecisionProvider, seededRandom } from "@lattice/providers";
 import {
   runRepair,
@@ -31,6 +36,32 @@ export function randomArm(generator?: ComparisonArm["generator"]): ComparisonArm
   };
 }
 
+/**
+ * Arms that share a generator factory must see the same candidates, or a
+ * difference could come from the generator rather than the decider. The
+ * first arm to reach round N for a task and seed calls the real generator;
+ * later arms replay that round's reply, including its usage, since that is
+ * what generating those candidates cost.
+ */
+export class RecordedRounds {
+  private readonly rounds = new Map<string, GeneratorResult[]>();
+
+  wrap(key: string, inner: GeneratorProvider): GeneratorProvider {
+    const recorded = this.rounds.get(key) ?? [];
+    this.rounds.set(key, recorded);
+    let round = 0;
+    return {
+      async generate(request: GeneratorRequest): Promise<GeneratorResult> {
+        const index = round++;
+        if (index < recorded.length) return structuredClone(recorded[index]!);
+        const result = await inner.generate(request);
+        recorded.push(structuredClone(result));
+        return result;
+      },
+    };
+  }
+}
+
 export interface ComparisonOptions {
   tasks: RepairTask[];
   arms: ComparisonArm[];
@@ -41,6 +72,8 @@ export interface ComparisonOptions {
   pricing?: Pricing;
   /** Share verification of identical candidates across runs (default true). */
   cache?: boolean;
+  /** Replay one generator stream per task and seed across arms (default true). */
+  shareCandidates?: boolean;
   latticeDir?: string;
   onRun?: (report: RepairRunReport) => void;
 }
@@ -104,6 +137,14 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
 export async function compareRepair(options: ComparisonOptions): Promise<ComparisonReport> {
   const cache = options.cache === false ? undefined : new Map<string, TesseraVerificationRecord>();
   const runs: RepairRunReport[] = [];
+  const shared = new Map<ComparisonArm["generator"], RecordedRounds>();
+  const sharedGenerator = (arm: ComparisonArm, task: RepairTask, seed: number, original: string) => {
+    const inner = arm.generator?.(seed, original);
+    if (!inner || options.shareCandidates === false) return inner;
+    let rounds = shared.get(arm.generator);
+    if (!rounds) shared.set(arm.generator, (rounds = new RecordedRounds()));
+    return rounds.wrap(`${task.name}\0${seed}`, inner);
+  };
   for (const task of options.tasks) {
     const original = await readFile(join(task.dir, task.file), "utf8");
     for (const seed of options.seeds) {
@@ -113,7 +154,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           tsr: options.tsr,
           arm: arm.name,
           seed,
-          generator: arm.generator?.(seed, original),
+          generator: sharedGenerator(arm, task, seed, original),
           decision: arm.decision(seed, original),
           maxRounds: options.maxRounds,
           candidatesPerRound: options.candidatesPerRound,

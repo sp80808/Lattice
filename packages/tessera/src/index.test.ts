@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   HeuristicRepairDecider,
   MutationRepairGenerator,
+  RecordedRounds,
   TRIED_HEADER,
   classifyWitness,
   computeResultId,
+  loadRepairTask,
   mutationBodies,
   parseTcFunction,
   parseWitness,
@@ -162,4 +165,43 @@ test("summaries report cost per verified patch", () => {
   assert.ok(Math.abs(a!.costPerVerifiedPatchUsd! - 0.06) < 1e-12);
   assert.equal(a!.tokensPerVerifiedPatch, 700);
   assert.equal(b!.meanRoundsToSolve, 3);
+});
+
+test("replay recomputes case results instead of trusting the stored flag", async () => {
+  const stored = record(await recorded("pass"), 0);
+  stored.cases = [{ function: "add", args: ["2", "3"], expect: "5", actual: "6", exitCode: 0, passed: true }];
+  const replayed = replayVerification(stored);
+  assert.equal(replayed.passed, false);
+  assert.equal(replayed.consistent, false);
+  assert.match(replayed.reason ?? "", /stored passed=true but printed "6"/);
+});
+
+test("repair tasks cannot point outside their directory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-task-"));
+  await writeFile(
+    join(dir, "task.json"),
+    JSON.stringify({ file: "../../etc/target.tes", overflow: "trapping", cases: [{ function: "f", args: [], expect: "1" }] }),
+  );
+  await assert.rejects(loadRepairTask(dir), /inside the task directory/);
+});
+
+test("arms sharing a generator see the same recorded rounds", async () => {
+  let calls = 0;
+  const live = {
+    async generate() {
+      calls++;
+      return { text: `round-${calls}`, identity: { provider: "model" }, usage: { latencyMs: 1, totalTokens: 10 } };
+    },
+  };
+  const rounds = new RecordedRounds();
+  const first = rounds.wrap("task/1", live);
+  const second = rounds.wrap("task/1", live);
+  const other = rounds.wrap("task/2", live);
+  assert.equal((await first.generate({ prompt: "p" })).text, "round-1");
+  assert.equal((await first.generate({ prompt: "p" })).text, "round-2");
+  assert.equal((await second.generate({ prompt: "p" })).text, "round-1");
+  assert.equal((await second.generate({ prompt: "p" })).usage.totalTokens, 10, "replayed rounds keep their cost");
+  assert.equal((await second.generate({ prompt: "p" })).text, "round-3", "beyond the recording it calls the model");
+  assert.equal((await other.generate({ prompt: "p" })).text, "round-4");
+  assert.equal(calls, 4);
 });

@@ -39,7 +39,10 @@ behaviour `tsr run` must show (`add(2,3)=5`, `add(0,0)=0`, `add(7,-2)=5`).
 3. Only a candidate `tsr` accepts is written back. The run ends `solved`, or
    `budget_exhausted` after `--max-rounds`.
 
-The two arms share the generator and seeds; only the decider differs:
+The two arms share the generator and seeds; only the decider differs. With
+`--generator model`, the first arm to reach a round for a task and seed calls
+the model and later arms replay that reply (and are charged its tokens), so
+every arm chooses from the same candidates:
 
 | arm | decider |
 |---|---|

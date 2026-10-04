@@ -385,3 +385,26 @@ test("a proposal override replaces the generic prompt and trace carries generato
   const generated = trace.find((event) => event.type === "candidates.generated");
   assert.equal(generated?.type === "candidates.generated" && generated.usage?.inputTokens, 40);
 });
+
+test("an unusable generator reply is traced with its usage before the run fails", async () => {
+  const trace: SearchTraceEvent[] = [];
+  const broken: GeneratorProvider = {
+    async generate() {
+      return { text: "not json", identity: { provider: "model" }, usage: { latencyMs: 1, inputTokens: 30, outputTokens: 5 } };
+    },
+  };
+  await assert.rejects(
+    runSearchLoop({
+      tap: tap(),
+      generator: broken,
+      decision: { decide: async () => assert.fail("decision must not run") },
+      executor: { execute: async () => assert.fail("executor must not run") },
+      onTrace: (event) => {
+        trace.push(event);
+      },
+    }),
+    /no JSON object/,
+  );
+  const rejected = trace.find((event) => event.type === "candidates.rejected");
+  assert.equal(rejected?.type === "candidates.rejected" && rejected.usage?.inputTokens, 30);
+});

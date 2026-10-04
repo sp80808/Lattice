@@ -536,8 +536,14 @@ export function replayVerification(record: TesseraVerificationRecord): ReplayedV
   } else {
     replayed = { outcome: "tool_error", verified: false, reason: stored.reason };
   }
+  // Re-derive each case from what `tsr run` printed; never trust the stored flag.
+  const caseMismatch = record.cases.find(
+    (c) => c.passed !== (c.actual !== null && c.actual === c.expect.trim()),
+  );
   const passed =
-    replayed.outcome === "pass" && replayed.verified && record.cases.every((c) => c.passed);
+    replayed.outcome === "pass" &&
+    replayed.verified &&
+    record.cases.every((c) => c.actual !== null && c.actual === c.expect.trim());
   return {
     file: record.file,
     storedOutcome: stored.outcome,
@@ -545,8 +551,14 @@ export function replayVerification(record: TesseraVerificationRecord): ReplayedV
     resultId: record.witness.document?.result_id,
     passed,
     consistent:
-      stored.outcome === replayed.outcome && stored.verified === replayed.verified,
-    reason: replayed.reason,
+      stored.outcome === replayed.outcome &&
+      stored.verified === replayed.verified &&
+      caseMismatch === undefined,
+    reason:
+      replayed.reason ??
+      (caseMismatch
+        ? `case ${caseMismatch.function}(${caseMismatch.args.join(",")}) stored passed=${caseMismatch.passed} but printed ${JSON.stringify(caseMismatch.actual)}, expected ${JSON.stringify(caseMismatch.expect)}`
+        : undefined),
   };
 }
 
