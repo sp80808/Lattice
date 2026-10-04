@@ -17,6 +17,8 @@ export interface OpenAICompatibleConfig {
   model: string;
   apiKey?: string;
   timeoutMs?: number;
+  /** Sent as `max_tokens`. Some routers reserve the model's full output limit against your balance when it is unset. */
+  maxTokens?: number;
   jsonMode?: boolean;
   fetchImpl?: FetchLike;
   providerName?: string;
@@ -32,6 +34,8 @@ interface ChatCompletionResponse {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    /** USD, when the endpoint reports it (OpenRouter, the Claude Code bridge). */
+    cost?: number;
   };
 }
 
@@ -138,7 +142,9 @@ async function postChat(
     const response = await fetchImpl(endpoint(config.baseUrl), {
       method: "POST",
       headers: headers(config.apiKey),
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        config.maxTokens === undefined ? body : { max_tokens: config.maxTokens, ...body },
+      ),
       signal: controller.signal,
     });
 
@@ -156,6 +162,7 @@ async function postChat(
         inputTokens: json.usage?.prompt_tokens,
         outputTokens: json.usage?.completion_tokens,
         totalTokens: json.usage?.total_tokens,
+        costUsd: json.usage?.cost,
         latencyMs: performance.now() - started,
       },
     };
@@ -341,3 +348,5 @@ export class OpenAICompatibleGeneratorProvider implements GeneratorProvider {
     };
   }
 }
+
+export * from "./claude-code.js";

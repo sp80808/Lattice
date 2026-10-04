@@ -57,6 +57,17 @@ model quality. Tokens and cost are counted from what the provider reports;
 candidate files are verified once per process (`tsr` results are deterministic
 per build) and reported as cache hits.
 
+Model calls send `max_tokens` (`--max-tokens`, default 4096); without it some
+routers reserve the model's full output limit against your balance. An auth,
+billing or rate-limit error (HTTP 401, 402, 403 or 429) stops the comparison
+instead of running every remaining task into the same error.
+
+`--claude-code` runs the model arms on the local Claude Code CLI (`claude -p`, no
+tools, one call per request) so they use your Claude plan instead of an API key;
+`--model` picks the CLI model. Tokens are counted and cost is the CLI's list-price
+figure, not what the plan charges. Each call starts a CLI process, so it is slower
+than an API.
+
 Every run log keeps every witness document; replay one without `tsr`:
 
 ```bash

@@ -19,6 +19,7 @@ import { parseArgs } from "node:util";
 import {
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
+  claudeCodeFetch,
 } from "@lattice/providers";
 import {
   HeuristicRepairDecider,
@@ -45,6 +46,8 @@ const { values } = parseArgs({
     "api-key-env": { type: "string", default: process.env.LATTICE_API_KEY_ENV },
     "price-in": { type: "string" },
     "price-out": { type: "string" },
+    "max-tokens": { type: "string", default: "4096" },
+    "claude-code": { type: "boolean" },
     out: { type: "string" },
     json: { type: "boolean" },
   },
@@ -65,10 +68,26 @@ if (probe.verdict.outcome !== "fail") {
 const needsModel = values.generator === "model" || values.decider === "model";
 let endpoint;
 if (needsModel) {
+  if (values["claude-code"]) {
+    // Run on the local Claude Code CLI (your plan, no API key); --model picks the CLI model.
+    values["base-url"] ??= "claude-code://local";
+    values.model ??= "claude-code-default";
+  }
   if (!values["base-url"] || !values.model) fail("--base-url and --model are required for a model arm");
   const apiKey = values["api-key-env"] ? process.env[values["api-key-env"]] : undefined;
   if (values["api-key-env"] && !apiKey) fail(`${values["api-key-env"]} is not set`);
-  endpoint = { baseUrl: values["base-url"], apiKey, timeoutMs: 120_000, providerName: "openai-compatible" };
+  const maxTokens = Number(values["max-tokens"]);
+  if (!Number.isInteger(maxTokens) || maxTokens < 1) fail("--max-tokens must be a positive integer");
+  endpoint = {
+    baseUrl: values["base-url"],
+    apiKey,
+    maxTokens,
+    timeoutMs: 180_000,
+    providerName: values["claude-code"] ? "claude-code" : "openai-compatible",
+    ...(values["claude-code"]
+      ? { fetchImpl: claudeCodeFetch({ model: values.model === "claude-code-default" ? undefined : values.model }) }
+      : {}),
+  };
 }
 const generator =
   values.generator === "model"
@@ -100,11 +119,17 @@ const report = await compareRepair({
   maxRounds: Number(values["max-rounds"]),
   candidatesPerRound: Number(values.candidates),
   pricing,
-  onRun: (run) =>
+  onRun: (run) => {
     console.error(
       `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.error ? ` error=${run.error}` : ""}`,
-    ),
-});
+    );
+    // Auth, billing and rate-limit errors fail every later run the same way.
+    const status = /Provider request failed: (\d{3})/.exec(run.error ?? "")?.[1];
+    if (status && ["401", "402", "403", "429"].includes(status)) {
+      fail(`provider refused the request (HTTP ${status}); stopping instead of running the rest into the same error`);
+    }
+  },
+}).catch((error) => fail(error instanceof Error ? error.message : String(error)));
 
 if (values.out) await writeFile(values.out, JSON.stringify(report, null, 2) + "\n");
 if (values.json) console.log(JSON.stringify(report, null, 2));
