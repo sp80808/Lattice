@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# `shell: bash` runs every step with `-eo pipefail`, so a failing command in a
+# pipeline fails the step instead of being masked by the last command.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -17,10 +23,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm install
-      - run: npm run build
-      - run: npm test
-      - run: npm run test:python
-      - run: npm run test:examples
+      # The same command contributors run locally; see docs/ci.md.
+      - run: scripts/ci-health.sh
 
   # Tessera issue #41: the witness path runs the real `tsr`, never a stub.
   # Bump TESSERA_REF when Lattice should follow a newer compiler build.
@@ -51,5 +55,5 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run build
-      - run: node --test packages/tessera/dist/index.test.js
+      - run: node scripts/run-node-tests.mjs packages/tessera/dist/e2e.test.js
       - run: node examples/tessera-repair/compare.mjs --seeds 3

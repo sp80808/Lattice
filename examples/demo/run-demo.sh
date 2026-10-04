@@ -4,19 +4,27 @@
 #   examples/demo/run-demo.sh                   # offline: observe mode, test evidence only
 #   examples/demo/run-demo.sh --preset ollama   # real search: local Qwen + qwen-code worker
 #   examples/demo/run-demo.sh --keep            # keep the temp project for poking around
+#   examples/demo/run-demo.sh --strict          # fail on doctor/run problems instead of warning (CI)
 set -euo pipefail
 . "$(dirname "$0")/../../scripts/lib.sh"
 
-PRESET=observe KEEP=0
+PRESET=observe KEEP=0 STRICT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --preset) PRESET="${2:?--preset needs a value}"; shift ;;
     --keep) KEEP=1 ;;
-    -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
+    --strict) STRICT=1 ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
 done
+
+# Interactive users get a warning and the rest of the walkthrough; --strict
+# makes the same problem fail the script so a checker cannot report success.
+soft_fail() {
+  if [ "$STRICT" = 1 ]; then die "$*"; else warn "$*"; fi
+}
 
 require_node
 require_built_cli
@@ -42,10 +50,10 @@ git -C "$PROJECT" add .lattice
 git -C "$PROJECT" -c user.name=lattice-demo -c user.email=demo@lattice.invalid commit -qm "lattice: add config"
 
 info "lattice doctor"
-lattice -C "$PROJECT" doctor --offline || warn "doctor found problems; an auto-mode run may fail"
+lattice -C "$PROJECT" doctor --offline || soft_fail "doctor found problems; an auto-mode run may fail"
 
 info "lattice \"fix the failing add test\""
-lattice -C "$PROJECT" "fix the failing add test" || warn "run failed (see hint above)"
+lattice -C "$PROJECT" "fix the failing add test" || soft_fail "run failed (see hint above)"
 
 info "lattice runs"
 lattice -C "$PROJECT" runs
