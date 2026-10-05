@@ -56,4 +56,4 @@ jobs:
       - run: npm install
       - run: npm run build
       - run: node scripts/run-node-tests.mjs packages/tessera/dist/e2e.test.js
-      - run: node examples/tessera-repair/compare.mjs --seeds 3
+      - run: node examples/tessera-repair/compare.mjs --seeds 3 --ablation

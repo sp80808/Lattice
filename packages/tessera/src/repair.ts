@@ -31,7 +31,10 @@ import {
   createWitnessVerifier,
   toVerificationRecord,
   verifyTessera,
+  type CandidateLineage,
+  type CandidateSource,
   type OverflowMode,
+  type SelectionSource,
   type RunCase,
   type TesseraVerificationRecord,
   type TesseraVerifySpec,
@@ -39,6 +42,7 @@ import {
 } from "./witness.js";
 import {
   SUGGESTION_ID_PREFIX,
+  SUGGESTION_PROVIDER,
   SuggestionFirstGenerator,
   loadGrammar,
   renderAttempts,
@@ -328,6 +332,20 @@ export interface RepairExecutorOptions {
   tsr?: string;
   /** Reuse verification of byte-identical candidates (results are deterministic per `tsr` build). */
   cache?: Map<string, TesseraVerificationRecord>;
+  /** What selected the candidates this executor runs (read per candidate). */
+  selectionSource?: () => SelectionSource;
+}
+
+/** Candidates whose id carries the suggestion prefix came from `tsr`, not the generator. */
+export function candidateSource(candidateId: string): CandidateSource {
+  return candidateId.startsWith(SUGGESTION_ID_PREFIX) ? "compiler_suggestion" : "model_generator";
+}
+
+/** The offline stand-ins and the random baseline are policies, not models. */
+export function selectionSourceOf(identity: ProviderIdentity | undefined): SelectionSource {
+  return !identity || identity.provider === "stub" || identity.provider === "random"
+    ? "deterministic_policy"
+    : "model_decision";
 }
 
 export interface RepairExecutorStats {
@@ -337,8 +355,8 @@ export interface RepairExecutorStats {
   attempts: Attempt[];
   /** Checked whole-file repairs `tsr witness` offered, first seen first. */
   suggestions: WitnessSuggestion[];
-  /** Id of the candidate that passed, if any. */
-  acceptedId?: string;
+  /** Lineage of the candidate that passed, if any. */
+  accepted?: CandidateLineage;
   verifications: number;
   tsrProcesses: number;
   cacheHits: number;
@@ -381,10 +399,16 @@ export function createRepairExecutor(
         options.cache?.set(key, record);
       }
 
+      const lineage: CandidateLineage = {
+        candidateId: candidate.id,
+        candidateSource: candidateSource(candidate.id),
+        selectionSource: options.selectionSource?.() ?? "deterministic_policy",
+      };
+      record = { ...record, lineage };
       const verification = toVerificationRecord(record);
       if (verification.passed) {
         await writeFile(join(options.workspace, options.task.file), source, "utf8");
-        stats.acceptedId = candidate.id;
+        stats.accepted = lineage;
       } else {
         stats.tried.push(source);
         stats.attempts.push({ source, record });
@@ -472,8 +496,10 @@ export interface RepairRunReport {
   workspace?: string;
   /** Set when the run stopped on an error (e.g. the generator ran out of candidates). */
   error?: string;
-  /** The verified patch was one of `tsr witness`'s own suggestions. */
-  solvedBySuggestion?: boolean;
+  /** Where the verified patch came from and what selected it; set when solved. */
+  lineage?: CandidateLineage;
+  /** Rounds answered by `tsr` suggestions without calling the generator (not in `generator`). */
+  suggestionRounds: number;
 }
 
 function emptyTotals(): UsageTotals {
@@ -504,7 +530,14 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
 
   const inner = options.generator ?? new MutationRepairGenerator(original, seed);
   const decision = options.decision ?? new HeuristicRepairDecider(original);
-  const executor = createRepairExecutor({ task, workspace, tsr: options.tsr, cache: options.cache });
+  const decisionTotals: RepairRunReport["decision"] = emptyTotals();
+  const executor = createRepairExecutor({
+    task,
+    workspace,
+    tsr: options.tsr,
+    cache: options.cache,
+    selectionSource: () => selectionSourceOf(decisionTotals.identity),
+  });
   const generator =
     options.suggestions === false
       ? inner
@@ -512,8 +545,9 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
   const grammar = options.grammar === false ? undefined : await loadGrammar(options.tsr);
   let current: TesseraVerificationRecord | undefined;
 
+  // Model/generator spend only: rounds `tsr` answered are counted apart.
   const generatorTotals: RepairRunReport["generator"] = emptyTotals();
-  const decisionTotals: RepairRunReport["decision"] = emptyTotals();
+  let suggestionRounds = 0;
   let initialResultId: string | undefined;
   let tsrBuild: RepairRunReport["tsr"];
 
@@ -524,8 +558,12 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       event.type === "decision.requested" &&
       (proposal === "candidates.generated" || proposal === "candidates.rejected")
     ) {
-      generatorTotals.identity = payload.event.identity;
-      addUsage(generatorTotals, payload.event.usage, options.pricing);
+      if (payload.event.identity?.provider === SUGGESTION_PROVIDER) {
+        suggestionRounds++;
+      } else {
+        generatorTotals.identity = payload.event.identity;
+        addUsage(generatorTotals, payload.event.usage, options.pricing);
+      }
     } else if (event.type === "decision.completed" && payload?.type === "decision.completed") {
       decisionTotals.identity = payload.identity;
       addUsage(decisionTotals, payload.usage, options.pricing);
@@ -556,6 +594,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         : generatorTotals.costUsd + decisionTotals.costUsd,
     initialResultId,
     tsr: tsrBuild,
+    suggestionRounds,
   });
 
   let report: RepairRunReport;
@@ -586,8 +625,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       status,
       rounds: result.search?.rounds ?? 0,
       patch: status === "solved" ? await readFile(programPath, "utf8") : undefined,
-      solvedBySuggestion:
-        status === "solved" && Boolean(executor.stats.acceptedId?.startsWith(SUGGESTION_ID_PREFIX)),
+      lineage: status === "solved" ? executor.stats.accepted : undefined,
       runId: result.runId,
       eventLogPath: result.eventLogPath,
     };
@@ -595,7 +633,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
     report = {
       ...base(),
       status: "blocked",
-      rounds: generatorTotals.calls,
+      rounds: generatorTotals.calls + suggestionRounds,
       runId: "",
       eventLogPath: "",
       error: error instanceof Error ? error.message : String(error),

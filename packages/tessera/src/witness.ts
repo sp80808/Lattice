@@ -343,6 +343,17 @@ export interface TesseraVerifySpec extends WitnessOptions {
   cases?: RunCase[];
 }
 
+/** A candidate's author: `tsr`'s own checked suggestion, or the generator slot (a model, or the offline stub). */
+export type CandidateSource = "compiler_suggestion" | "model_generator";
+/** What picked the candidate for verification. */
+export type SelectionSource = "model_decision" | "deterministic_policy" | "human";
+
+export interface CandidateLineage {
+  candidateId: string;
+  candidateSource: CandidateSource;
+  selectionSource: SelectionSource;
+}
+
 /** What the run log stores for one verification; `replayVerification` re-derives it. */
 export interface TesseraVerificationRecord {
   schema: typeof VERIFICATION_SCHEMA;
@@ -351,6 +362,11 @@ export interface TesseraVerificationRecord {
   cases: RunCaseResult[];
   /** Set when this record was served from the in-process cache for identical source. */
   cached?: boolean;
+  /**
+   * Where the verified candidate came from and what chose it (repair runs
+   * only). Independent of the verdict, which comes from `tsr` alone.
+   */
+  lineage?: CandidateLineage;
 }
 
 export function validateVerifySpec(spec: TesseraVerifySpec): void {

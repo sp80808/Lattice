@@ -138,6 +138,8 @@ function zeroUsage() {
 
 /** Candidate id prefix for repairs `tsr` suggested. */
 export const SUGGESTION_ID_PREFIX = "tsr-";
+/** Provider identity of rounds answered by `tsr` suggestions instead of the generator. */
+export const SUGGESTION_PROVIDER = "tsr";
 
 /**
  * Offers `tsr`'s own checked suggestions before asking the model, so a repair
@@ -178,7 +180,7 @@ export class SuggestionFirstGenerator implements GeneratorProvider {
     }));
     return {
       text: JSON.stringify({ candidates }),
-      identity: { provider: "tsr", model: "witness-suggestions" },
+      identity: { provider: SUGGESTION_PROVIDER, model: "witness-suggestions" },
       usage: zeroUsage(),
     };
   }

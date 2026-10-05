@@ -85,14 +85,26 @@ export interface ArmSummary {
   arm: string;
   runs: number;
   solved: number;
-  /** Solved runs whose patch was a `tsr` suggestion (no generator tokens needed). */
-  solvedBySuggestion: number;
+  /** Solved by one of `tsr`'s own checked suggestions: a deterministic compiler repair, not a model result. */
+  solvedByCompilerRepair: number;
+  /** Solved by a candidate from the generator slot (the model, or the offline stub). */
+  solvedByModelGenerator: number;
+  unresolved: number;
   /** Means over solved runs; null when none solved. */
   meanRoundsToSolve: number | null;
   meanVerificationsToSolve: number | null;
   meanTokens: number;
   meanCostUsd: number | null;
-  /** Cost of all runs divided by solved runs: what one verified patch costs. */
+  /**
+   * Model efficiency: generator + decision spend of every run not solved by a
+   * compiler repair, divided by generator-solved runs. Null when none.
+   */
+  modelTokensPerModelPatch: number | null;
+  modelCostPerModelPatchUsd: number | null;
+  /**
+   * End-to-end workflow cost: all runs' spend divided by all solved runs,
+   * compiler repairs included. Not a measure of model efficiency.
+   */
   costPerVerifiedPatchUsd: number | null;
   tokensPerVerifiedPatch: number | null;
 }
@@ -104,12 +116,23 @@ export interface ComparisonReport {
   seeds: number[];
   maxRounds: number;
   candidatesPerRound: number;
+  /** Whether `tsr` suggestions were tried before the generator; false is the generator-only ablation. */
+  suggestions: boolean;
   runs: RepairRunReport[];
   summary: ArmSummary[];
 }
 
 const mean = (values: number[]) =>
   values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+
+const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+
+/** Sum of costs, or null when any is unknown. */
+const sumCost = (values: Array<number | null>) =>
+  values.includes(null) ? null : sum(values as number[]);
+
+const byCompiler = (r: RepairRunReport) =>
+  r.status === "solved" && r.lineage?.candidateSource === "compiler_suggestion";
 
 export function summarize(runs: RepairRunReport[]): ArmSummary[] {
   const groups = new Map<string, RepairRunReport[]>();
@@ -119,19 +142,26 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
   }
   return [...groups.values()].map((group) => {
     const solved = group.filter((r) => r.status === "solved");
-    const costs = group.map((r) => r.costUsd);
-    const totalCost = costs.includes(null) ? null : (costs as number[]).reduce((a, b) => a + b, 0);
-    const totalTokens = group.reduce((a, r) => a + r.tokens, 0);
+    const compiler = solved.filter(byCompiler);
+    const model = solved.length - compiler.length;
+    const totalCost = sumCost(group.map((r) => r.costUsd));
+    const totalTokens = sum(group.map((r) => r.tokens));
+    const modelRuns = group.filter((r) => !byCompiler(r));
+    const modelCost = sumCost(modelRuns.map((r) => r.costUsd));
     return {
       task: group[0]!.task,
       arm: group[0]!.arm,
       runs: group.length,
       solved: solved.length,
-      solvedBySuggestion: solved.filter((r) => r.solvedBySuggestion).length,
+      solvedByCompilerRepair: compiler.length,
+      solvedByModelGenerator: model,
+      unresolved: group.length - solved.length,
       meanRoundsToSolve: mean(solved.map((r) => r.rounds)),
       meanVerificationsToSolve: mean(solved.map((r) => r.verifications)),
       meanTokens: totalTokens / group.length,
       meanCostUsd: totalCost === null ? null : totalCost / group.length,
+      modelTokensPerModelPatch: model ? sum(modelRuns.map((r) => r.tokens)) / model : null,
+      modelCostPerModelPatchUsd: model && modelCost !== null ? modelCost / model : null,
       costPerVerifiedPatchUsd:
         totalCost === null || solved.length === 0 ? null : totalCost / solved.length,
       tokensPerVerifiedPatch: solved.length ? totalTokens / solved.length : null,
@@ -180,6 +210,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
     seeds: options.seeds,
     maxRounds: options.maxRounds ?? 6,
     candidatesPerRound: options.candidatesPerRound ?? 4,
+    suggestions: options.suggestions !== false,
     runs,
     summary: summarize(runs),
   };
@@ -189,12 +220,16 @@ const fmt = (value: number | null, digits = 2) => (value === null ? "-" : value.
 
 export function formatComparison(report: ComparisonReport): string {
   const lines = [
-    "| task | arm | solved | by tsr suggestion | mean rounds to solve | mean tsr verifications to solve | tokens / verified patch | cost / verified patch (USD) |",
-    "|---|---|---|---|---|---|---|---|",
+    report.suggestions
+      ? "tsr suggestions: ON (compiler repairs tried before the generator; compare with --no-suggestions)"
+      : "tsr suggestions: OFF (generator-only ablation)",
+    "",
+    "| task | arm | solved | by compiler repair | by generator | unresolved | mean rounds to solve | model tokens / generator patch | model cost / generator patch (USD) | end-to-end tokens / verified patch | end-to-end cost / verified patch (USD) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const s of report.summary) {
     lines.push(
-      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedBySuggestion} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.meanVerificationsToSolve)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
+      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedByCompilerRepair} | ${s.solvedByModelGenerator} | ${s.unresolved} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.modelTokensPerModelPatch, 0)} | ${fmt(s.modelCostPerModelPatchUsd, 6)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
     );
   }
   return lines.join("\n");

@@ -167,7 +167,7 @@ test("summaries report cost per verified patch", () => {
     task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0,
     generator: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 100 * rounds, costUsd: cost },
     decision: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
-    tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "",
+    tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "", suggestionRounds: 0,
   });
   const [a, b] = summarize([run("model", "solved", 1, 0.01), run("model", "budget_exhausted", 6, 0.05), run("random", "solved", 3, 0.03)]);
   assert.equal(a!.solved, 1);
@@ -308,17 +308,32 @@ test("tsr suggestions are offered once, for free, before the generator", async (
   assert.equal(modelCalls, 1, "after two offers the generator is asked");
 });
 
-test("summaries count patches tsr suggested", () => {
-  const base = {
-    task: "t", seed: 1, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0,
-    generator: { calls: 1, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
-    decision: { calls: 1, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
-    tokens: 0, costUsd: 0, runId: "r", eventLogPath: "",
-  };
+test("summaries keep compiler repairs apart from model results", () => {
+  const usage = (tokens: number, cost: number) => ({ calls: 1, inputTokens: 0, outputTokens: 0, totalTokens: tokens, costUsd: cost });
+  const run = (
+    status: RepairRunReport["status"],
+    source: "compiler_suggestion" | "model_generator" | undefined,
+    tokens: number,
+    cost: number,
+  ): RepairRunReport => ({
+    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0,
+    generator: usage(tokens, cost), decision: usage(0, 0), tokens, costUsd: cost,
+    runId: "r", eventLogPath: "", suggestionRounds: source === "compiler_suggestion" ? 1 : 0,
+    lineage: source && { candidateId: "c", candidateSource: source, selectionSource: "model_decision" },
+  });
   const [s] = summarize([
-    { ...base, arm: "a", status: "solved", solvedBySuggestion: true },
-    { ...base, arm: "a", status: "solved" },
+    run("solved", "compiler_suggestion", 0, 0),
+    run("solved", "compiler_suggestion", 40, 0.004), // a model decider still spent tokens
+    run("solved", "model_generator", 300, 0.03),
+    run("budget_exhausted", undefined, 500, 0.05),
   ]);
-  assert.equal(s!.solved, 2);
-  assert.equal(s!.solvedBySuggestion, 1);
+  assert.deepEqual(
+    [s!.solved, s!.solvedByCompilerRepair, s!.solvedByModelGenerator, s!.unresolved],
+    [3, 2, 1, 1],
+  );
+  assert.equal(s!.modelTokensPerModelPatch, 800, "model spend over model-generated patches only");
+  assert.ok(Math.abs(s!.modelCostPerModelPatchUsd! - 0.08) < 1e-12);
+  assert.equal(s!.tokensPerVerifiedPatch, 280, "end-to-end includes compiler repairs");
+  const [none] = summarize([run("solved", "compiler_suggestion", 0, 0)]);
+  assert.equal(none!.modelTokensPerModelPatch, null, "no model patch, no model efficiency");
 });
