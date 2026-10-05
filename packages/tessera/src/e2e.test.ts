@@ -97,3 +97,31 @@ test("repair loop: tsr decides, random baseline runs the same tasks", async () =
   assert.equal(random.arm, "random");
   assert.ok(["solved", "budget_exhausted", "blocked"].includes(random.status));
 });
+
+test("tsr's checked suggestion repairs Rust-style TC without the generator", async () => {
+  const task = await loadRepairTask(join(tasks, "foreign-syntax"));
+  let generatorCalls = 0;
+  const generator = {
+    async generate() {
+      generatorCalls++;
+      return { text: "{}", identity: { provider: "model" }, usage: { latencyMs: 1, totalTokens: 100 } };
+    },
+  };
+  const report = await runRepair({ task, seed: 1, generator });
+  assert.equal(report.status, "solved", report.error);
+  assert.equal(report.patch, "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.equal(report.solvedBySuggestion, true);
+  assert.equal(generatorCalls, 0, "no model call was needed");
+  assert.equal(report.tokens, 0);
+
+  const without = await runRepair({ task, seed: 1, suggestions: false, maxRounds: 2 });
+  assert.notEqual(without.status, "solved", "the mutation stub cannot read Rust syntax");
+});
+
+test("unbound names: tsr offers each closest parameter and the cases pick one", async () => {
+  const task = await loadRepairTask(join(tasks, "unbound-name"));
+  const report = await runRepair({ task, seed: 1 });
+  assert.equal(report.status, "solved", report.error);
+  assert.equal(report.patch, "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.equal(report.solvedBySuggestion, true);
+});

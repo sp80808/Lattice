@@ -28,14 +28,21 @@ behaviour `tsr run` must show (`add(2,3)=5`, `add(0,0)=0`, `add(7,-2)=5`).
 | `syntax-error` | `a+` | `tsr witness`: `E-syntax-expected` |
 | `unbound-name` | `a+c` | `tsr witness`: `E-resolve-unbound-name` |
 | `wrong-result` | `a+b+a` | compiles; `tsr run` returns the wrong value |
+| `foreign-syntax` | Rust-style `fn add(a: i64, ...) -> i64 { return a + b; }`, as models write TC | `tsr witness`: `E-syntax-foreign` |
 
 ## How a run works
 
 1. `tsr witness` runs on the broken program; its JSON document is stored in the
    run log and its diagnostics become verified `build` evidence.
-2. Each round the generator proposes candidate files (the rejected ones are fed
-   back so they are not proposed again), the decider picks one, and the
-   executor verifies it: `tsr witness`, then the `tsr run` cases if it compiles.
+2. Each round the generator proposes candidate files, the decider picks one,
+   and the executor verifies it: `tsr witness`, then the `tsr run` cases if it
+   compiles. The prompt carries `tsr grammar`, the current file's diagnostics
+   rendered with source line, caret and `help`, and the last rejected attempts
+   each paired with what `tsr` said about it (see "Why" below).
+   Before any generator call, the `suggestions` a `tsr witness` document lists
+   (whole files that already pass `tsr check`, e.g. the TC reading of a
+   Rust-style program) are offered as candidates at no token cost; they are
+   verified like any other. `--no-suggestions` measures the generator alone.
 3. Only a candidate `tsr` accepts is written back. The run ends `solved`, or
    `budget_exhausted` after `--max-rounds`.
 
@@ -75,3 +82,15 @@ node --input-type=module -e '
   import { replayRunLog } from "@lattice/tessera";
   console.log(await replayRunLog(process.argv[1]));' <run.jsonl>
 ```
+
+## Why the prompt and suggestions look like this
+
+First model runs: a local 7B model kept writing C/Rust-style TC after `tsr`
+rejected it, and the feedback it saw was a dozen cascading parser errors with
+no mention of the TC spelling. The changes follow published results on
+feedback quality in self-repair, paired attempt/error feedback, grammar
+prompting and deterministic repair of "parent language" output; sources and
+measurements are in Tessera's
+[`docs/research/2026-10-04-llm-repair.md`](https://github.com/sp80808/Tessera/blob/main/docs/research/2026-10-04-llm-repair.md).
+The comparison table's "by tsr suggestion" column counts runs whose verified
+patch came from `tsr` rather than the generator.

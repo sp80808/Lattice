@@ -50,6 +50,8 @@ const { values } = parseArgs({
     "claude-code": { type: "boolean" },
     out: { type: "string" },
     json: { type: "boolean" },
+    // Measure the generator alone: skip tsr witness's own checked suggestions.
+    "no-suggestions": { type: "boolean" },
   },
 });
 
@@ -119,6 +121,7 @@ const report = await compareRepair({
   maxRounds: Number(values["max-rounds"]),
   candidatesPerRound: Number(values.candidates),
   pricing,
+  suggestions: !values["no-suggestions"],
   onRun: (run) => {
     console.error(
       `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.error ? ` error=${run.error}` : ""}`,

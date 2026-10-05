@@ -37,6 +37,16 @@ import {
   type TesseraVerifySpec,
   type WitnessPhase,
 } from "./witness.js";
+import {
+  SUGGESTION_ID_PREFIX,
+  SuggestionFirstGenerator,
+  loadGrammar,
+  renderAttempts,
+  renderVerdict,
+  witnessSuggestions,
+  type Attempt,
+  type WitnessSuggestion,
+} from "./feedback.js";
 
 /** `task.json` in a repair task directory. */
 export interface RepairTask {
@@ -162,12 +172,12 @@ export class MutationRepairGenerator implements GeneratorProvider {
   private readonly header: string;
 
   constructor(original: string, seed: number) {
+    // Not TC at all (e.g. Rust-style): nothing to mutate, so it proposes nothing.
     const fn = parseTcFunction(original);
-    if (!fn) throw new Error("mutation generator could not find a TC function header");
-    this.queue = shuffle(mutationBodies(fn), seededRandom(seed)).map(
-      (body) => `${fn.header}${body}\n`,
-    );
-    this.header = fn.header;
+    this.queue = fn
+      ? shuffle(mutationBodies(fn), seededRandom(seed)).map((body) => `${fn.header}${body}\n`)
+      : [];
+    this.header = fn?.header ?? "";
   }
 
   /** Offers the first untried mutations; ones the context lists as tried are dropped. */
@@ -253,10 +263,20 @@ export class HeuristicRepairDecider implements DecisionProvider {
 
 export const TRIED_HEADER = "ALREADY TRIED AND REJECTED BY TSR (do not propose again):";
 
+export interface RepairFeedback {
+  /** `tsr grammar` output, when this `tsr` has the command. */
+  grammar?: string;
+  /** The latest verification of the current file. */
+  current?: () => TesseraVerificationRecord | undefined;
+  /** Rejected candidates with their verifications, oldest first. */
+  attempts?: () => Attempt[];
+}
+
 export function repairProposal(
   task: RepairTask,
   readSource: () => Promise<string>,
   tried: () => string[] = () => [],
+  feedback: RepairFeedback = {},
 ): ProposalPrompt {
   const cases = task.cases
     .map((c) => `${c.function}(${c.args.join(", ")}) must return ${c.expect}`)
@@ -278,8 +298,14 @@ export function repairProposal(
       ].join("\n"),
     context: async () => {
       const rejected = tried();
+      const source = await readSource();
+      const current = feedback.current?.();
+      const attempts = renderAttempts(feedback.attempts?.() ?? []);
       return [
-        `CURRENT ${task.file}:\n${await readSource()}`,
+        ...(feedback.grammar ? [`TC GRAMMAR (from tsr grammar; the only accepted syntax):\n${feedback.grammar}`] : []),
+        `CURRENT ${task.file}:\n${source}`,
+        ...(current ? [`TSR ON CURRENT ${task.file}:\n${renderVerdict(source, current)}`] : []),
+        ...(attempts ? [attempts] : []),
         ...(rejected.length ? [`${TRIED_HEADER}\n${rejected.map((s) => s.trim()).join("\n")}`] : []),
       ];
     },
@@ -288,6 +314,12 @@ export function repairProposal(
 
 // ---------------------------------------------------------------------------
 // Executor.
+
+function addSuggestions(pool: WitnessSuggestion[], found: WitnessSuggestion[]): void {
+  for (const s of found) {
+    if (!pool.some((p) => p.source === s.source)) pool.push(s);
+  }
+}
 
 export interface RepairExecutorOptions {
   task: RepairTask;
@@ -301,6 +333,12 @@ export interface RepairExecutorOptions {
 export interface RepairExecutorStats {
   /** Sources `tsr` rejected, in order. */
   tried: string[];
+  /** The same rejections with what `tsr` said about each. */
+  attempts: Attempt[];
+  /** Checked whole-file repairs `tsr witness` offered, first seen first. */
+  suggestions: WitnessSuggestion[];
+  /** Id of the candidate that passed, if any. */
+  acceptedId?: string;
   verifications: number;
   tsrProcesses: number;
   cacheHits: number;
@@ -309,7 +347,14 @@ export interface RepairExecutorStats {
 export function createRepairExecutor(
   options: RepairExecutorOptions,
 ): ExperimentExecutor & { stats: RepairExecutorStats } {
-  const stats: RepairExecutorStats = { tried: [], verifications: 0, tsrProcesses: 0, cacheHits: 0 };
+  const stats: RepairExecutorStats = {
+    tried: [],
+    attempts: [],
+    suggestions: [],
+    verifications: 0,
+    tsrProcesses: 0,
+    cacheHits: 0,
+  };
   const spec = verifySpecFor(options.task, options.tsr);
   let counter = 0;
   return {
@@ -339,8 +384,11 @@ export function createRepairExecutor(
       const verification = toVerificationRecord(record);
       if (verification.passed) {
         await writeFile(join(options.workspace, options.task.file), source, "utf8");
+        stats.acceptedId = candidate.id;
       } else {
         stats.tried.push(source);
+        stats.attempts.push({ source, record });
+        addSuggestions(stats.suggestions, witnessSuggestions(record.witness.document));
       }
       return {
         candidateId: candidate.id,
@@ -391,6 +439,13 @@ export interface RepairRunOptions {
   keepWorkspace?: boolean;
   /** Where run logs go (default: inside the workspace). */
   latticeDir?: string;
+  /**
+   * Try `tsr witness`'s checked suggestions before calling the generator
+   * (default true). They cost no tokens and are verified like any candidate.
+   */
+  suggestions?: boolean;
+  /** Put `tsr grammar` in the proposal context (default true). */
+  grammar?: boolean;
 }
 
 export interface RepairRunReport {
@@ -417,6 +472,8 @@ export interface RepairRunReport {
   workspace?: string;
   /** Set when the run stopped on an error (e.g. the generator ran out of candidates). */
   error?: string;
+  /** The verified patch was one of `tsr witness`'s own suggestions. */
+  solvedBySuggestion?: boolean;
 }
 
 function emptyTotals(): UsageTotals {
@@ -445,9 +502,15 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
   const programPath = join(workspace, task.file);
   const original = await readFile(programPath, "utf8");
 
-  const generator = options.generator ?? new MutationRepairGenerator(original, seed);
+  const inner = options.generator ?? new MutationRepairGenerator(original, seed);
   const decision = options.decision ?? new HeuristicRepairDecider(original);
   const executor = createRepairExecutor({ task, workspace, tsr: options.tsr, cache: options.cache });
+  const generator =
+    options.suggestions === false
+      ? inner
+      : new SuggestionFirstGenerator(inner, () => executor.stats.suggestions, () => executor.stats.tried);
+  const grammar = options.grammar === false ? undefined : await loadGrammar(options.tsr);
+  let current: TesseraVerificationRecord | undefined;
 
   const generatorTotals: RepairRunReport["generator"] = emptyTotals();
   const decisionTotals: RepairRunReport["decision"] = emptyTotals();
@@ -467,6 +530,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       decisionTotals.identity = payload.identity;
       addUsage(decisionTotals, payload.usage, options.pricing);
     } else if (event.type === "tool.completed" && payload?.tool === "tessera.witness") {
+      current = payload.record as TesseraVerificationRecord;
+      addSuggestions(executor.stats.suggestions, witnessSuggestions(current?.witness?.document));
       const document = payload.record?.witness?.document;
       initialResultId = document?.result_id;
       tsrBuild = document?.tool
@@ -508,7 +573,11 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         candidatesPerRound: options.candidatesPerRound ?? 4,
         topK: 1,
         autonomy: { mode: "autopilot" },
-        proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried),
+        proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried, {
+          grammar,
+          current: () => current,
+          attempts: () => executor.stats.attempts,
+        }),
       },
     });
     const status = result.search?.status ?? "blocked";
@@ -517,6 +586,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       status,
       rounds: result.search?.rounds ?? 0,
       patch: status === "solved" ? await readFile(programPath, "utf8") : undefined,
+      solvedBySuggestion:
+        status === "solved" && Boolean(executor.stats.acceptedId?.startsWith(SUGGESTION_ID_PREFIX)),
       runId: result.runId,
       eventLogPath: result.eventLogPath,
     };

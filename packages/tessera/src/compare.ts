@@ -75,6 +75,8 @@ export interface ComparisonOptions {
   /** Replay one generator stream per task and seed across arms (default true). */
   shareCandidates?: boolean;
   latticeDir?: string;
+  /** Try `tsr witness` suggestions before the generator (default true; see `runRepair`). */
+  suggestions?: boolean;
   onRun?: (report: RepairRunReport) => void;
 }
 
@@ -83,6 +85,8 @@ export interface ArmSummary {
   arm: string;
   runs: number;
   solved: number;
+  /** Solved runs whose patch was a `tsr` suggestion (no generator tokens needed). */
+  solvedBySuggestion: number;
   /** Means over solved runs; null when none solved. */
   meanRoundsToSolve: number | null;
   meanVerificationsToSolve: number | null;
@@ -123,6 +127,7 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       arm: group[0]!.arm,
       runs: group.length,
       solved: solved.length,
+      solvedBySuggestion: solved.filter((r) => r.solvedBySuggestion).length,
       meanRoundsToSolve: mean(solved.map((r) => r.rounds)),
       meanVerificationsToSolve: mean(solved.map((r) => r.verifications)),
       meanTokens: totalTokens / group.length,
@@ -161,6 +166,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           pricing: options.pricing,
           cache,
           latticeDir: options.latticeDir,
+          suggestions: options.suggestions,
         });
         runs.push(report);
         options.onRun?.(report);
@@ -183,12 +189,12 @@ const fmt = (value: number | null, digits = 2) => (value === null ? "-" : value.
 
 export function formatComparison(report: ComparisonReport): string {
   const lines = [
-    "| task | arm | solved | mean rounds to solve | mean tsr verifications to solve | tokens / verified patch | cost / verified patch (USD) |",
-    "|---|---|---|---|---|---|---|",
+    "| task | arm | solved | by tsr suggestion | mean rounds to solve | mean tsr verifications to solve | tokens / verified patch | cost / verified patch (USD) |",
+    "|---|---|---|---|---|---|---|---|",
   ];
   for (const s of report.summary) {
     lines.push(
-      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.meanVerificationsToSolve)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
+      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedBySuggestion} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.meanVerificationsToSolve)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
     );
   }
   return lines.join("\n");

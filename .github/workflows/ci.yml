@@ -31,7 +31,7 @@ jobs:
   tessera-witness:
     runs-on: ubuntu-latest
     env:
-      TESSERA_REF: e941def661cabfb32ac8e27cd0fe41ba7ce923d8
+      TESSERA_REF: 2e3dac20e04d5647b1be13f9ae418cf111e6ae1e
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
