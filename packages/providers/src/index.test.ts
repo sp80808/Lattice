@@ -138,8 +138,8 @@ process.stdin.on("data", (c) => (input += c)).on("end", () => {
   const args = process.argv.slice(2);
   const failing = input.includes("FAIL");
   console.log(JSON.stringify({
-    is_error: failing,
-    result: failing ? "You've hit your usage limit" : JSON.stringify({ args, input }),
+    is_error: failing || input.includes("LOGIN"),
+    result: input.includes("LOGIN") ? "Not logged in · Please run /login" : failing ? "You've hit your usage limit" : JSON.stringify({ args, input }),
     total_cost_usd: 0.25,
     usage: { input_tokens: 3, cache_creation_input_tokens: 100, cache_read_input_tokens: 7, output_tokens: 20 },
   }));
@@ -164,4 +164,5 @@ process.stdin.on("data", (c) => (input += c)).on("end", () => {
     { input: 110, output: 20, cost: 0.25 },
   );
   await assert.rejects(provider.generate({ prompt: "FAIL" }), /Provider request failed: 429/);
+  await assert.rejects(provider.generate({ prompt: "LOGIN" }), /Provider request failed: 401/);
 });
