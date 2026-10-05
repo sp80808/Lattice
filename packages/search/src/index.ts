@@ -182,6 +182,12 @@ export interface SearchLoopOptions {
   autonomy?: AutonomyPolicy;
   reviewer?: DecisionReviewer;
   proposal?: ProposalPrompt;
+  /**
+   * What to do when the decision layer selects none of the candidates.
+   * "block" (default) ends the run; "verify-top" runs the highest-scoring
+   * candidate anyway, because verification is what settles the question.
+   */
+  onAbstain?: "block" | "verify-top";
   onTrace?: (event: SearchTraceEvent) => void | Promise<void>;
 }
 
@@ -689,6 +695,18 @@ export async function runSearchLoop(
       if (review.note) {
         tap.context.push(`r${round}:human-review:${review.note}`);
       }
+    }
+
+    if (selectedIds.length === 0 && options.onAbstain === "verify-top" && candidates.length) {
+      const score = (id: string) => decision.scores[id] ?? 0;
+      selectedIds = [...candidates]
+        .sort((a, b) => score(b.id) - score(a.id))
+        .slice(0, topK)
+        .map((candidate) => candidate.id);
+      selectedCandidates = selectedIds.map((id) => candidates.find((candidate) => candidate.id === id)!);
+      tap.uncertainties.push(
+        `round ${round}: decision layer selected none; verifying the top-scored candidate ${selectedIds.join(", ")} anyway`,
+      );
     }
 
     if (selectedIds.length === 0) {

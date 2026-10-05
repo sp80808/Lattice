@@ -302,6 +302,36 @@ test("search blocks instead of guessing when decision selects unknown", async ()
 });
 
 
+test("verify-top runs the best-scored candidate when the decision selects none", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: [UNKNOWN_CHOICE_ID],
+        scores: { inspect: 0.1, repro: 0.3, [UNKNOWN_CHOICE_ID]: 0.6 },
+        confidence: 0.6,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+  let executed = "";
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    onAbstain: "verify-top",
+    executor: {
+      async execute(candidate) {
+        executed = candidate.id;
+        return { candidateId: candidate.id, status: "success", terminal: true, summary: "verified", evidence: [] };
+      },
+    },
+  });
+  assert.equal(result.status, "solved");
+  assert.equal(executed, "repro");
+  assert.ok(result.tap.uncertainties.some((u) => /selected none; verifying the top-scored candidate repro/.test(u)));
+});
+
 test("human reviewer can replace an insufficient-evidence decision", async () => {
   const decision: DecisionProvider = {
     async decide() {

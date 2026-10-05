@@ -508,6 +508,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         candidatesPerRound: options.candidatesPerRound ?? 4,
         topK: 1,
         autonomy: { mode: "autopilot" },
+        // A strong model abstains with "none of these" even when a fix is listed.
+        onAbstain: "verify-top",
         proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried),
       },
     });

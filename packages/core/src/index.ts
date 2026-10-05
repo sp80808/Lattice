@@ -44,6 +44,7 @@ export interface RunTaskOptions {
     autonomy?: AutonomyPolicy;
     reviewer?: DecisionReviewer;
     proposal?: ProposalPrompt;
+    onAbstain?: "block" | "verify-top";
   };
 }
 
@@ -234,6 +235,7 @@ export async function runTask(
         autonomy: options.search.autonomy,
         reviewer: options.search.reviewer,
         proposal: options.search.proposal,
+        onAbstain: options.search.onAbstain,
         onTrace: async (event) => {
           if (
             event.type === "candidates.generated" ||
