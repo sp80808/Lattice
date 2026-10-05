@@ -612,6 +612,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         candidatesPerRound: options.candidatesPerRound ?? 4,
         topK: 1,
         autonomy: { mode: "autopilot" },
+        // A strong model can abstain even when a viable repair is ranked; verify the top-scored candidate.
+        onAbstain: "verify-top",
         proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried, {
           grammar,
           current: () => current,
