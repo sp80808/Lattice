@@ -134,6 +134,21 @@ export type SearchTraceEvent =
       usage: ProviderUsage;
     }
   | {
+      /**
+       * A deterministic policy replaced the model's selection. `decision.completed`
+       * keeps what the model chose; this event records what ran and why, so
+       * calibration and mining can tell a model choice from a policy choice.
+       */
+      type: "decision.overridden";
+      round: number;
+      frameId: string;
+      modelSelected: string[];
+      effectiveSelected: string[];
+      selectedBy: "abstention-policy";
+      reason: "verify-top";
+      scores: Record<string, number>;
+    }
+  | {
       type: "decision.review.requested";
       round: number;
       frameId: string;
@@ -182,6 +197,14 @@ export interface SearchLoopOptions {
   autonomy?: AutonomyPolicy;
   reviewer?: DecisionReviewer;
   proposal?: ProposalPrompt;
+  /**
+   * What to do when the decision layer selects none of the candidates.
+   * "block" (default) ends the run; "verify-top" runs the highest-scoring
+   * candidate anyway, because verification is what settles the question.
+   * It only applies when at least one candidate has a positive score; with
+   * all scores zero or absent there is no ranking to follow, so the run blocks.
+   */
+  onAbstain?: "block" | "verify-top";
   onTrace?: (event: SearchTraceEvent) => void | Promise<void>;
 }
 
@@ -689,6 +712,32 @@ export async function runSearchLoop(
       if (review.note) {
         tap.context.push(`r${round}:human-review:${review.note}`);
       }
+    }
+
+    const score = (id: string) => decision.scores[id] ?? 0;
+    if (
+      selectedIds.length === 0 &&
+      options.onAbstain === "verify-top" &&
+      candidates.some((candidate) => score(candidate.id) > 0)
+    ) {
+      selectedIds = [...candidates]
+        .sort((a, b) => score(b.id) - score(a.id))
+        .slice(0, topK)
+        .map((candidate) => candidate.id);
+      selectedCandidates = selectedIds.map((id) => candidates.find((candidate) => candidate.id === id)!);
+      await options.onTrace?.({
+        type: "decision.overridden",
+        round,
+        frameId: frame.id,
+        modelSelected: decision.selected,
+        effectiveSelected: selectedIds,
+        selectedBy: "abstention-policy",
+        reason: "verify-top",
+        scores: decision.scores,
+      });
+      tap.uncertainties.push(
+        `round ${round}: decision layer selected none; verifying the top-scored candidate ${selectedIds.join(", ")} anyway`,
+      );
     }
 
     if (selectedIds.length === 0) {
