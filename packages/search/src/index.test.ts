@@ -315,11 +315,13 @@ test("verify-top runs the best-scored candidate when the decision selects none",
     },
   };
   let executed = "";
+  const events: SearchTraceEvent[] = [];
   const result = await runSearchLoop({
     tap: tap(),
     generator,
     decision,
     onAbstain: "verify-top",
+    onTrace: (event) => void events.push(event),
     executor: {
       async execute(candidate) {
         executed = candidate.id;
@@ -330,6 +332,50 @@ test("verify-top runs the best-scored candidate when the decision selects none",
   assert.equal(result.status, "solved");
   assert.equal(executed, "repro");
   assert.ok(result.tap.uncertainties.some((u) => /selected none; verifying the top-scored candidate repro/.test(u)));
+
+  // The model's abstention stays on record; the override says who chose what ran.
+  const completed = events.find((e) => e.type === "decision.completed");
+  assert.deepEqual(completed?.type === "decision.completed" && completed.selected, [UNKNOWN_CHOICE_ID]);
+  const overridden = events.find((e) => e.type === "decision.overridden");
+  assert.ok(overridden && overridden.type === "decision.overridden");
+  assert.deepEqual(
+    {
+      modelSelected: overridden.modelSelected,
+      effectiveSelected: overridden.effectiveSelected,
+      selectedBy: overridden.selectedBy,
+      reason: overridden.reason,
+    },
+    { modelSelected: [UNKNOWN_CHOICE_ID], effectiveSelected: ["repro"], selectedBy: "abstention-policy", reason: "verify-top" },
+  );
+});
+
+test("verify-top blocks instead of following candidate order when no candidate has a score", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: [UNKNOWN_CHOICE_ID],
+        scores: { [UNKNOWN_CHOICE_ID]: 1 },
+        confidence: 1,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+  const events: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    onAbstain: "verify-top",
+    onTrace: (event) => void events.push(event),
+    executor: {
+      async execute() {
+        throw new Error("executor should not run");
+      },
+    },
+  });
+  assert.equal(result.status, "blocked");
+  assert.ok(!events.some((e) => e.type === "decision.overridden"));
 });
 
 test("human reviewer can replace an insufficient-evidence decision", async () => {

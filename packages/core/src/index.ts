@@ -248,6 +248,7 @@ export async function runTask(
             });
           } else if (
             event.type === "decision.completed" ||
+            event.type === "decision.overridden" ||
             event.type === "decision.review.requested" ||
             event.type === "decision.review.completed"
           ) {
