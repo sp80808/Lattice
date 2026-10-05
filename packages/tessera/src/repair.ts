@@ -31,12 +31,26 @@ import {
   createWitnessVerifier,
   toVerificationRecord,
   verifyTessera,
+  type CandidateLineage,
+  type CandidateSource,
   type OverflowMode,
+  type SelectionSource,
   type RunCase,
   type TesseraVerificationRecord,
   type TesseraVerifySpec,
   type WitnessPhase,
 } from "./witness.js";
+import {
+  SUGGESTION_ID_PREFIX,
+  SUGGESTION_PROVIDER,
+  SuggestionFirstGenerator,
+  loadGrammar,
+  renderAttempts,
+  renderVerdict,
+  witnessSuggestions,
+  type Attempt,
+  type WitnessSuggestion,
+} from "./feedback.js";
 
 /** `task.json` in a repair task directory. */
 export interface RepairTask {
@@ -162,12 +176,12 @@ export class MutationRepairGenerator implements GeneratorProvider {
   private readonly header: string;
 
   constructor(original: string, seed: number) {
+    // Not TC at all (e.g. Rust-style): nothing to mutate, so it proposes nothing.
     const fn = parseTcFunction(original);
-    if (!fn) throw new Error("mutation generator could not find a TC function header");
-    this.queue = shuffle(mutationBodies(fn), seededRandom(seed)).map(
-      (body) => `${fn.header}${body}\n`,
-    );
-    this.header = fn.header;
+    this.queue = fn
+      ? shuffle(mutationBodies(fn), seededRandom(seed)).map((body) => `${fn.header}${body}\n`)
+      : [];
+    this.header = fn?.header ?? "";
   }
 
   /** Offers the first untried mutations; ones the context lists as tried are dropped. */
@@ -253,10 +267,20 @@ export class HeuristicRepairDecider implements DecisionProvider {
 
 export const TRIED_HEADER = "ALREADY TRIED AND REJECTED BY TSR (do not propose again):";
 
+export interface RepairFeedback {
+  /** `tsr grammar` output, when this `tsr` has the command. */
+  grammar?: string;
+  /** The latest verification of the current file. */
+  current?: () => TesseraVerificationRecord | undefined;
+  /** Rejected candidates with their verifications, oldest first. */
+  attempts?: () => Attempt[];
+}
+
 export function repairProposal(
   task: RepairTask,
   readSource: () => Promise<string>,
   tried: () => string[] = () => [],
+  feedback: RepairFeedback = {},
 ): ProposalPrompt {
   const cases = task.cases
     .map((c) => `${c.function}(${c.args.join(", ")}) must return ${c.expect}`)
@@ -278,8 +302,14 @@ export function repairProposal(
       ].join("\n"),
     context: async () => {
       const rejected = tried();
+      const source = await readSource();
+      const current = feedback.current?.();
+      const attempts = renderAttempts(feedback.attempts?.() ?? []);
       return [
-        `CURRENT ${task.file}:\n${await readSource()}`,
+        ...(feedback.grammar ? [`TC GRAMMAR (from tsr grammar; the only accepted syntax):\n${feedback.grammar}`] : []),
+        `CURRENT ${task.file}:\n${source}`,
+        ...(current ? [`TSR ON CURRENT ${task.file}:\n${renderVerdict(source, current)}`] : []),
+        ...(attempts ? [attempts] : []),
         ...(rejected.length ? [`${TRIED_HEADER}\n${rejected.map((s) => s.trim()).join("\n")}`] : []),
       ];
     },
@@ -289,6 +319,12 @@ export function repairProposal(
 // ---------------------------------------------------------------------------
 // Executor.
 
+function addSuggestions(pool: WitnessSuggestion[], found: WitnessSuggestion[]): void {
+  for (const s of found) {
+    if (!pool.some((p) => p.source === s.source)) pool.push(s);
+  }
+}
+
 export interface RepairExecutorOptions {
   task: RepairTask;
   /** Directory whose copy of `task.file` is repaired. */
@@ -296,11 +332,31 @@ export interface RepairExecutorOptions {
   tsr?: string;
   /** Reuse verification of byte-identical candidates (results are deterministic per `tsr` build). */
   cache?: Map<string, TesseraVerificationRecord>;
+  /** What selected a candidate this executor runs (asked per candidate, at execution). */
+  selectionSource?: (candidateId: string) => SelectionSource;
+}
+
+/** Candidates whose id carries the suggestion prefix came from `tsr`, not the generator. */
+export function candidateSource(candidateId: string): CandidateSource {
+  return candidateId.startsWith(SUGGESTION_ID_PREFIX) ? "compiler_suggestion" : "model_generator";
+}
+
+/** The offline stand-ins and the random baseline are policies, not models. */
+export function selectionSourceOf(identity: ProviderIdentity | undefined): SelectionSource {
+  return !identity || identity.provider === "stub" || identity.provider === "random"
+    ? "deterministic_policy"
+    : "model_decision";
 }
 
 export interface RepairExecutorStats {
   /** Sources `tsr` rejected, in order. */
   tried: string[];
+  /** The same rejections with what `tsr` said about each. */
+  attempts: Attempt[];
+  /** Checked whole-file repairs `tsr witness` offered, first seen first. */
+  suggestions: WitnessSuggestion[];
+  /** Lineage of the candidate that passed, if any. */
+  accepted?: CandidateLineage;
   verifications: number;
   tsrProcesses: number;
   cacheHits: number;
@@ -309,7 +365,14 @@ export interface RepairExecutorStats {
 export function createRepairExecutor(
   options: RepairExecutorOptions,
 ): ExperimentExecutor & { stats: RepairExecutorStats } {
-  const stats: RepairExecutorStats = { tried: [], verifications: 0, tsrProcesses: 0, cacheHits: 0 };
+  const stats: RepairExecutorStats = {
+    tried: [],
+    attempts: [],
+    suggestions: [],
+    verifications: 0,
+    tsrProcesses: 0,
+    cacheHits: 0,
+  };
   const spec = verifySpecFor(options.task, options.tsr);
   let counter = 0;
   return {
@@ -336,11 +399,20 @@ export function createRepairExecutor(
         options.cache?.set(key, record);
       }
 
+      const lineage: CandidateLineage = {
+        candidateId: candidate.id,
+        candidateSource: candidateSource(candidate.id),
+        selectionSource: options.selectionSource?.(candidate.id) ?? "deterministic_policy",
+      };
+      record = { ...record, lineage };
       const verification = toVerificationRecord(record);
       if (verification.passed) {
         await writeFile(join(options.workspace, options.task.file), source, "utf8");
+        stats.accepted = lineage;
       } else {
         stats.tried.push(source);
+        stats.attempts.push({ source, record });
+        addSuggestions(stats.suggestions, witnessSuggestions(record.witness.document));
       }
       return {
         candidateId: candidate.id,
@@ -391,6 +463,13 @@ export interface RepairRunOptions {
   keepWorkspace?: boolean;
   /** Where run logs go (default: inside the workspace). */
   latticeDir?: string;
+  /**
+   * Try `tsr witness`'s checked suggestions before calling the generator
+   * (default true). They cost no tokens and are verified like any candidate.
+   */
+  suggestions?: boolean;
+  /** Put `tsr grammar` in the proposal context (default true). */
+  grammar?: boolean;
 }
 
 export interface RepairRunReport {
@@ -417,6 +496,10 @@ export interface RepairRunReport {
   workspace?: string;
   /** Set when the run stopped on an error (e.g. the generator ran out of candidates). */
   error?: string;
+  /** Where the verified patch came from and what selected it; set when solved. */
+  lineage?: CandidateLineage;
+  /** Rounds answered by `tsr` suggestions without calling the generator (not in `generator`). */
+  suggestionRounds: number;
 }
 
 function emptyTotals(): UsageTotals {
@@ -445,12 +528,29 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
   const programPath = join(workspace, task.file);
   const original = await readFile(programPath, "utf8");
 
-  const generator = options.generator ?? new MutationRepairGenerator(original, seed);
+  const inner = options.generator ?? new MutationRepairGenerator(original, seed);
   const decision = options.decision ?? new HeuristicRepairDecider(original);
-  const executor = createRepairExecutor({ task, workspace, tsr: options.tsr, cache: options.cache });
-
-  const generatorTotals: RepairRunReport["generator"] = emptyTotals();
   const decisionTotals: RepairRunReport["decision"] = emptyTotals();
+  const overridden = new Set<string>();
+  const executor = createRepairExecutor({
+    task,
+    workspace,
+    tsr: options.tsr,
+    cache: options.cache,
+    // An abstention fallback ("verify-top") is a policy choice even when a model ranked the candidates.
+    selectionSource: (id) =>
+      overridden.has(id) ? "deterministic_policy" : selectionSourceOf(decisionTotals.identity),
+  });
+  const generator =
+    options.suggestions === false
+      ? inner
+      : new SuggestionFirstGenerator(inner, () => executor.stats.suggestions, () => executor.stats.tried);
+  const grammar = options.grammar === false ? undefined : await loadGrammar(options.tsr);
+  let current: TesseraVerificationRecord | undefined;
+
+  // Model/generator spend only: rounds `tsr` answered are counted apart.
+  const generatorTotals: RepairRunReport["generator"] = emptyTotals();
+  let suggestionRounds = 0;
   let initialResultId: string | undefined;
   let tsrBuild: RepairRunReport["tsr"];
 
@@ -461,12 +561,20 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       event.type === "decision.requested" &&
       (proposal === "candidates.generated" || proposal === "candidates.rejected")
     ) {
-      generatorTotals.identity = payload.event.identity;
-      addUsage(generatorTotals, payload.event.usage, options.pricing);
+      if (payload.event.identity?.provider === SUGGESTION_PROVIDER) {
+        suggestionRounds++;
+      } else {
+        generatorTotals.identity = payload.event.identity;
+        addUsage(generatorTotals, payload.event.usage, options.pricing);
+      }
+    } else if (event.type === "decision.completed" && payload?.type === "decision.overridden") {
+      for (const id of payload.effectiveSelected ?? []) overridden.add(id);
     } else if (event.type === "decision.completed" && payload?.type === "decision.completed") {
       decisionTotals.identity = payload.identity;
       addUsage(decisionTotals, payload.usage, options.pricing);
     } else if (event.type === "tool.completed" && payload?.tool === "tessera.witness") {
+      current = payload.record as TesseraVerificationRecord;
+      addSuggestions(executor.stats.suggestions, witnessSuggestions(current?.witness?.document));
       const document = payload.record?.witness?.document;
       initialResultId = document?.result_id;
       tsrBuild = document?.tool
@@ -491,6 +599,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         : generatorTotals.costUsd + decisionTotals.costUsd,
     initialResultId,
     tsr: tsrBuild,
+    suggestionRounds,
   });
 
   let report: RepairRunReport;
@@ -508,9 +617,13 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         candidatesPerRound: options.candidatesPerRound ?? 4,
         topK: 1,
         autonomy: { mode: "autopilot" },
-        // A strong model abstains with "none of these" even when a fix is listed.
+        // A strong model can abstain even when a viable repair is ranked; verify the top-scored candidate.
         onAbstain: "verify-top",
-        proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried),
+        proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried, {
+          grammar,
+          current: () => current,
+          attempts: () => executor.stats.attempts,
+        }),
       },
     });
     const status = result.search?.status ?? "blocked";
@@ -519,6 +632,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       status,
       rounds: result.search?.rounds ?? 0,
       patch: status === "solved" ? await readFile(programPath, "utf8") : undefined,
+      lineage: status === "solved" ? executor.stats.accepted : undefined,
       runId: result.runId,
       eventLogPath: result.eventLogPath,
     };
@@ -526,7 +640,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
     report = {
       ...base(),
       status: "blocked",
-      rounds: generatorTotals.calls,
+      rounds: generatorTotals.calls + suggestionRounds,
       runId: "",
       eventLogPath: "",
       error: error instanceof Error ? error.message : String(error),

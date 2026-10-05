@@ -1,0 +1,238 @@
+{
+  "artifacts": {},
+  "diagnostics": [
+    {
+      "code": "E-syntax-foreign",
+      "col": 1,
+      "fixes": [],
+      "help": "a TC program is one function: `f NAME(P:i64,...)>i64=EXPR`",
+      "line": 1,
+      "message": "this is not TC syntax: functions start with `f`, not `fn`; the return type is written `>i64`, not `->`; there are no braces: the body is one expression after `=`; there is no `return`: the expression after `=` is the result; there are no `;`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 2,
+        "start": 0
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 1,
+      "fixes": [],
+      "help": "a TC function is written `f NAME(P:i64,...)>i64=EXPR`",
+      "line": 1,
+      "message": "expected `f`, found identifier `fn`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 2,
+        "start": 0
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 4,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected `(`, found identifier",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 6,
+        "start": 3
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 7,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected parameter name, found `(`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 7,
+        "start": 6
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 8,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected `:`, found identifier",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 8,
+        "start": 7
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 9,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected type, found `:`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 9,
+        "start": 8
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 11,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected `)`, found identifier",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 13,
+        "start": 10
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 14,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected `=`, found `,`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 14,
+        "start": 13
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 14,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected `>`, found `,`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 14,
+        "start": 13
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 14,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected expression, found `,`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 14,
+        "start": 13
+      }
+    },
+    {
+      "code": "E-syntax-expected",
+      "col": 14,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "expected type, found `,`",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 14,
+        "start": 13
+      }
+    },
+    {
+      "code": "E-syntax-trailing-input",
+      "col": 14,
+      "fixes": [],
+      "help": null,
+      "line": 1,
+      "message": "trailing input after function",
+      "phase": "syntax",
+      "severity": "error",
+      "span": {
+        "end": 14,
+        "start": 13
+      }
+    }
+  ],
+  "error": null,
+  "invocation": {
+    "input": "tc",
+    "overflow": null,
+    "path": "examples/witness/foreign_syntax.tes",
+    "phase": "check"
+  },
+  "outcome": "fail",
+  "phases": [
+    {
+      "phase": "syntax",
+      "status": "fail"
+    },
+    {
+      "phase": "hir",
+      "status": "pass"
+    },
+    {
+      "phase": "resolve",
+      "status": "pass"
+    },
+    {
+      "phase": "typeck",
+      "status": "pass"
+    },
+    {
+      "phase": "tir",
+      "status": "pass"
+    }
+  ],
+  "representations": {
+    "source": {
+      "bytes": 52,
+      "sha256": "a6501a7f888d05cb3d5e995bd841bee4f3c348effdda136ef9c3b6cfbd3c5aaf",
+      "tessera_tokens": 21,
+      "tokenizers": {
+        "cl100k_base": 23,
+        "o200k_base": 23
+      }
+    }
+  },
+  "result_id": "sha256:4a0b1cb3318d1a3ddb7bb665568fed661e7fb5c123ddcd93a39ee947c35c59b2",
+  "schema": "tessera.witness/v0",
+  "source": {
+    "bytes": 52,
+    "sha256": "a6501a7f888d05cb3d5e995bd841bee4f3c348effdda136ef9c3b6cfbd3c5aaf"
+  },
+  "suggestions": [
+    {
+      "checked": "check",
+      "label": "rewrite in TC syntax",
+      "sha256": "ce4bfbeb0d4f631cac27f753f946e195058303513382bbacc61550f1322e1942",
+      "source": "f add(a:i64,b:i64)>i64=a+b\n"
+    }
+  ],
+  "timing": {
+    "compile_us": 604,
+    "total_us": 1524264
+  },
+  "tool": {
+    "commit": "2e3dac20e04d5647b1be13f9ae418cf111e6ae1e",
+    "dirty": false,
+    "name": "tsr",
+    "version": "0.0.1"
+  }
+}

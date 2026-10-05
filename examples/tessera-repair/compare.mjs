@@ -50,6 +50,10 @@ const { values } = parseArgs({
     "claude-code": { type: "boolean" },
     out: { type: "string" },
     json: { type: "boolean" },
+    // Measure the generator alone: skip tsr witness's own checked suggestions.
+    "no-suggestions": { type: "boolean" },
+    // Run with and without tsr suggestions and report both.
+    ablation: { type: "boolean" },
   },
 });
 
@@ -112,35 +116,46 @@ const tasks = await Promise.all(names.map((name) => loadRepairTask(join(here, "t
 const seedCount = Number(values.seeds);
 if (!Number.isInteger(seedCount) || seedCount < 1) fail("--seeds must be a positive integer");
 
-const report = await compareRepair({
-  tasks,
-  arms: [configured, randomArm(generator)],
-  seeds: Array.from({ length: seedCount }, (_, i) => i + 1),
-  maxRounds: Number(values["max-rounds"]),
-  candidatesPerRound: Number(values.candidates),
-  pricing,
-  onRun: (run) => {
-    console.error(
-      `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.error ? ` error=${run.error}` : ""}`,
-    );
-    // Auth, billing and rate-limit errors fail every later run the same way.
-    const status = /Provider request failed: (\d{3})/.exec(run.error ?? "")?.[1];
-    if (status && ["401", "402", "403", "429"].includes(status)) {
-      fail(`provider refused the request (HTTP ${status}); stopping instead of running the rest into the same error`);
-    }
-  },
-}).catch((error) => fail(error instanceof Error ? error.message : String(error)));
+const run = (suggestions) =>
+  compareRepair({
+    tasks,
+    arms: [configured, randomArm(generator)],
+    seeds: Array.from({ length: seedCount }, (_, i) => i + 1),
+    maxRounds: Number(values["max-rounds"]),
+    candidatesPerRound: Number(values.candidates),
+    pricing,
+    suggestions,
+    onRun: (run) => {
+      console.error(
+        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
+      );
+      // Auth, billing and rate-limit errors fail every later run the same way.
+      const status = /Provider request failed: (\d{3})/.exec(run.error ?? "")?.[1];
+      if (status && ["401", "402", "403", "429"].includes(status)) {
+        fail(`provider refused the request (HTTP ${status}); stopping instead of running the rest into the same error`);
+      }
+    },
+  }).catch((error) => fail(error instanceof Error ? error.message : String(error)));
 
-if (values.out) await writeFile(values.out, JSON.stringify(report, null, 2) + "\n");
-if (values.json) console.log(JSON.stringify(report, null, 2));
+// --ablation runs both configurations so the generator-only result is reported, not inferred.
+const reports = values.ablation
+  ? [await run(true), await run(false)]
+  : [await run(!values["no-suggestions"])];
+const output = reports.length === 1 ? reports[0] : { withSuggestions: reports[0], withoutSuggestions: reports[1] };
+
+if (values.out) await writeFile(values.out, JSON.stringify(output, null, 2) + "\n");
+if (values.json) console.log(JSON.stringify(output, null, 2));
 else {
-  console.log(`tsr ${report.tsr?.version}@${report.tsr?.commit?.slice(0, 12)}${report.tsr?.dirty ? "+dirty" : ""}, seeds 1..${seedCount}, ${report.maxRounds} rounds of ${report.candidatesPerRound} candidates`);
-  console.log(formatComparison(report));
-  const example = report.runs.find((run) => run.status === "solved");
-  if (example) console.log(`\nexample run log (replay with replayRunLog): ${example.eventLogPath}`);
+  for (const report of reports) {
+    console.log(`tsr ${report.tsr?.version}@${report.tsr?.commit?.slice(0, 12)}${report.tsr?.dirty ? "+dirty" : ""}, seeds 1..${seedCount}, ${report.maxRounds} rounds of ${report.candidatesPerRound} candidates`);
+    console.log(formatComparison(report));
+    console.log("");
+  }
+  const example = reports[0].runs.find((run) => run.status === "solved");
+  if (example) console.log(`example run log (replay with replayRunLog): ${example.eventLogPath}`);
 }
 
-const solved = report.runs.filter((run) => run.status === "solved").length;
+const solved = reports.flatMap((report) => report.runs).filter((run) => run.status === "solved").length;
 if (solved === 0) {
   console.error("compare: no run produced a verified patch");
   process.exitCode = 1;

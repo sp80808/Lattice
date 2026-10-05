@@ -31,7 +31,7 @@ jobs:
   tessera-witness:
     runs-on: ubuntu-latest
     env:
-      TESSERA_REF: e941def661cabfb32ac8e27cd0fe41ba7ce923d8
+      TESSERA_REF: 798cb798d63265c35e88451a445aaf83301b2de6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -56,4 +56,4 @@ jobs:
       - run: npm install
       - run: npm run build
       - run: node scripts/run-node-tests.mjs packages/tessera/dist/e2e.test.js
-      - run: node examples/tessera-repair/compare.mjs --seeds 3
+      - run: node examples/tessera-repair/compare.mjs --seeds 3 --ablation

@@ -7,18 +7,25 @@ import { fileURLToPath } from "node:url";
 import {
   HeuristicRepairDecider,
   MutationRepairGenerator,
+  ATTEMPTS_HEADER,
   RecordedRounds,
+  SuggestionFirstGenerator,
   TRIED_HEADER,
   classifyWitness,
   computeResultId,
   loadRepairTask,
+  runRepair,
   mutationBodies,
   parseTcFunction,
   parseWitness,
+  renderAttempts,
+  renderDiagnostics,
+  renderVerdict,
   repairProposal,
   replayVerification,
   summarize,
   verificationEvidence,
+  witnessSuggestions,
   type RepairRunReport,
   type TesseraVerificationRecord,
   type WitnessDocument,
@@ -36,6 +43,8 @@ const RECORDED: Array<[string, number, string]> = [
   ["semantic_error", 1, "fail"],
   ["unsupported", 3, "unsupported"],
   ["tool_error", 4, "tool_error"],
+  // Tessera 2e3dac2: help, fixes and suggestions.
+  ["foreign_syntax", 1, "fail"],
 ];
 
 async function recorded(name: string): Promise<WitnessDocument> {
@@ -159,7 +168,7 @@ test("summaries report cost per verified patch", () => {
     task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0,
     generator: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 100 * rounds, costUsd: cost },
     decision: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
-    tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "",
+    tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "", suggestionRounds: 0,
   });
   const [a, b] = summarize([run("model", "solved", 1, 0.01), run("model", "budget_exhausted", 6, 0.05), run("random", "solved", 3, 0.03)]);
   assert.equal(a!.solved, 1);
@@ -214,4 +223,143 @@ test("the repair prompt shows a valid program and rules out C-style bodies", () 
   );
   assert.match(prompt.system ?? "", /`f twice\(x:i64\)>i64=x\+x`/);
   assert.match(prompt.system ?? "", /no braces, `return`, semicolons/);
+});
+
+// ---------------------------------------------------------------------------
+// Feedback shown to the repair model, and tsr's own suggestions.
+
+const RUST_STYLE = "fn add(a: i64, b: i64) -> i64 {\n    return a + b;\n}\n";
+
+test("diagnostics render like a compiler: caret, help, cascades counted", async () => {
+  const document = await recorded("foreign_syntax");
+  const text = renderDiagnostics(RUST_STYLE, document.diagnostics);
+  const lines = text.split("\n");
+  assert.match(lines[0]!, /^error\[E-syntax-foreign\] 1:1: this is not TC syntax: functions start with `f`, not `fn`/);
+  assert.equal(lines[1], "  | fn add(a: i64, b: i64) -> i64 {");
+  assert.equal(lines[2], "  | ^^");
+  assert.match(lines[3]!, /^  help: a TC program is one function: `f NAME\(P:i64,...\)>i64=EXPR`$/);
+  assert.match(lines.at(-1)!, /^\(\d+ more, likely follow-on errors\)$/);
+  assert.ok(lines.length < 16, "capped, not eleven cascades");
+  // Documents from a tsr without `help` still render.
+  const older = renderDiagnostics("f add(a:i64)>i64=a+b\n", (await recorded("semantic_error")).diagnostics);
+  assert.ok(older.endsWith("\n  | f add(a:i64)>i64=a+b\n  | " + " ".repeat(19) + "^"), older);
+});
+
+test("each rejected attempt carries its own verdict", async () => {
+  const foreign = record(await recorded("foreign_syntax"), 1);
+  const wrong = record(await recorded("pass"), 0);
+  wrong.cases = [{ function: "add", args: ["2", "3"], expect: "5", actual: "6", exitCode: 0, passed: false }];
+  assert.match(renderVerdict("f add(a:i64,b:i64)>i64=a+b+1\n", wrong), /add\(2, 3\) returned 6, expected 5/);
+  const attempts = [
+    { source: RUST_STYLE, record: foreign },
+    { source: "f add(a:i64,b:i64)>i64=a+b+1\n", record: wrong },
+  ];
+  const text = renderAttempts(attempts)!;
+  assert.ok(text.startsWith(ATTEMPTS_HEADER));
+  assert.ok(text.indexOf("E-syntax-foreign") < text.indexOf("returned 6"), "in order, paired with its source");
+  assert.equal(renderAttempts([]), undefined);
+  assert.match(renderAttempts([...attempts, ...attempts], 2)!, /2 earlier attempts omitted/);
+});
+
+test("the prompt carries the grammar, the current verdict and paired attempts", async () => {
+  const task = { name: "t", dir: ".", description: "", file: "add.tes", overflow: "trapping" as const, cases: [] };
+  const foreign = record(await recorded("foreign_syntax"), 1);
+  const prompt = repairProposal(task, async () => RUST_STYLE, () => [RUST_STYLE], {
+    grammar: "program = function ;",
+    current: () => foreign,
+    attempts: () => [{ source: RUST_STYLE, record: foreign }],
+  });
+  const context = await prompt.context!({} as never);
+  assert.equal(context[0], "TC GRAMMAR (from tsr grammar; the only accepted syntax):\nprogram = function ;");
+  assert.ok(context.some((block) => block.startsWith("TSR ON CURRENT add.tes:\nerror[E-syntax-foreign]")));
+  assert.ok(context.some((block) => block.startsWith(ATTEMPTS_HEADER)));
+  assert.ok(context.at(-1)!.startsWith(TRIED_HEADER), "the tried list stays last for the mutation stub");
+  const bare = await repairProposal(task, async () => "x").context!({} as never);
+  assert.deepEqual(bare, ["CURRENT add.tes:\nx"], "without feedback the prompt is unchanged");
+});
+
+test("tsr suggestions are offered once, for free, before the generator", async () => {
+  assert.deepEqual(witnessSuggestions(await recorded("foreign_syntax")), [
+    { source: "f add(a:i64,b:i64)>i64=a+b\n", label: "rewrite in TC syntax" },
+  ]);
+  assert.deepEqual(witnessSuggestions(await recorded("semantic_error")), [], "older tsr: none");
+
+  let modelCalls = 0;
+  const model = {
+    async generate() {
+      modelCalls++;
+      return { text: "{}", identity: { provider: "model" }, usage: { latencyMs: 1, totalTokens: 50 } };
+    },
+  };
+  const pool = [
+    { source: "f add(a:i64,b:i64)>i64=a+a\n", label: "use parameter `a`" },
+    { source: "f add(a:i64,b:i64)>i64=a+b\n", label: "use parameter `b`" },
+  ];
+  const tried = ["f add(a:i64,b:i64)>i64=a+a\n"];
+  const generator = new SuggestionFirstGenerator(model, () => pool, () => tried);
+  const first = await generator.generate({ prompt: "Propose up to 4 distinct candidate repairs" });
+  const { candidates } = JSON.parse(first.text) as { candidates: Array<{ id: string; action: string }> };
+  assert.deepEqual(candidates.map((c) => c.action), ["f add(a:i64,b:i64)>i64=a+b\n"], "tried ones are skipped");
+  assert.match(candidates[0]!.id, /^tsr-[0-9a-f]{8}$/);
+  assert.equal(first.usage.totalTokens, 0);
+  assert.equal(first.identity.provider, "tsr");
+  const again = await generator.generate({ prompt: "Propose up to 4" });
+  assert.equal(again.identity.provider, "tsr", "not verified yet (the decider chose another), so offered again");
+  await generator.generate({ prompt: "Propose up to 4" });
+  assert.equal(modelCalls, 1, "after two offers the generator is asked");
+});
+
+test("summaries keep compiler repairs apart from model results", () => {
+  const usage = (tokens: number, cost: number) => ({ calls: 1, inputTokens: 0, outputTokens: 0, totalTokens: tokens, costUsd: cost });
+  const run = (
+    status: RepairRunReport["status"],
+    source: "compiler_suggestion" | "model_generator" | undefined,
+    tokens: number,
+    cost: number,
+  ): RepairRunReport => ({
+    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0,
+    generator: usage(tokens, cost), decision: usage(0, 0), tokens, costUsd: cost,
+    runId: "r", eventLogPath: "", suggestionRounds: source === "compiler_suggestion" ? 1 : 0,
+    lineage: source && { candidateId: "c", candidateSource: source, selectionSource: "model_decision" },
+  });
+  const [s] = summarize([
+    run("solved", "compiler_suggestion", 0, 0),
+    run("solved", "compiler_suggestion", 40, 0.004), // a model decider still spent tokens
+    run("solved", "model_generator", 300, 0.03),
+    run("budget_exhausted", undefined, 500, 0.05),
+  ]);
+  assert.deepEqual(
+    [s!.solved, s!.solvedByCompilerRepair, s!.solvedByModelGenerator, s!.unresolved],
+    [3, 2, 1, 1],
+  );
+  assert.equal(s!.modelTokensPerModelPatch, 800, "model spend over model-generated patches only");
+  assert.ok(Math.abs(s!.modelCostPerModelPatchUsd! - 0.08) < 1e-12);
+  assert.equal(s!.tokensPerVerifiedPatch, 280, "end-to-end includes compiler repairs");
+  const [none] = summarize([run("solved", "compiler_suggestion", 0, 0)]);
+  assert.equal(none!.modelTokensPerModelPatch, null, "no model patch, no model efficiency");
+});
+
+test("a candidate verified by the abstention fallback is a policy selection", async () => {
+  const task = await loadRepairTask(join(here, "..", "..", "..", "examples", "tessera-repair", "tasks", "wrong-result"));
+  // A model decider that ranks the candidates but selects none.
+  const abstainer = {
+    async decide(request: { choices: Array<{ id: string }> }) {
+      return {
+        selected: [] as string[],
+        scores: Object.fromEntries(request.choices.map((c, i) => [c.id, 1 / (i + 1)])),
+        identity: { provider: "model", model: "abstains" },
+        usage: { latencyMs: 1, totalTokens: 5 },
+      };
+    },
+  };
+  const report = await runRepair({ task, seed: 1, maxRounds: 1, decision: abstainer as never, suggestions: false, grammar: false, tsr: "/nonexistent/tsr" });
+  const log = (await readFile(report.eventLogPath, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const lineages = log
+    .filter((e) => e.type === "tool.completed" && e.payload?.tool === "experiment")
+    .flatMap((e) => e.payload.outcome?.records ?? [])
+    .map((r: { lineage?: unknown }) => r.lineage);
+  assert.ok(lineages.length > 0, "the fallback verified a candidate");
+  for (const lineage of lineages) {
+    assert.equal((lineage as { selectionSource: string }).selectionSource, "deterministic_policy");
+  }
 });
