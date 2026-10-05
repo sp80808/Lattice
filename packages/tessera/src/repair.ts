@@ -332,8 +332,8 @@ export interface RepairExecutorOptions {
   tsr?: string;
   /** Reuse verification of byte-identical candidates (results are deterministic per `tsr` build). */
   cache?: Map<string, TesseraVerificationRecord>;
-  /** What selected the candidates this executor runs (read per candidate). */
-  selectionSource?: () => SelectionSource;
+  /** What selected a candidate this executor runs (asked per candidate, at execution). */
+  selectionSource?: (candidateId: string) => SelectionSource;
 }
 
 /** Candidates whose id carries the suggestion prefix came from `tsr`, not the generator. */
@@ -402,7 +402,7 @@ export function createRepairExecutor(
       const lineage: CandidateLineage = {
         candidateId: candidate.id,
         candidateSource: candidateSource(candidate.id),
-        selectionSource: options.selectionSource?.() ?? "deterministic_policy",
+        selectionSource: options.selectionSource?.(candidate.id) ?? "deterministic_policy",
       };
       record = { ...record, lineage };
       const verification = toVerificationRecord(record);
@@ -531,12 +531,15 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
   const inner = options.generator ?? new MutationRepairGenerator(original, seed);
   const decision = options.decision ?? new HeuristicRepairDecider(original);
   const decisionTotals: RepairRunReport["decision"] = emptyTotals();
+  const overridden = new Set<string>();
   const executor = createRepairExecutor({
     task,
     workspace,
     tsr: options.tsr,
     cache: options.cache,
-    selectionSource: () => selectionSourceOf(decisionTotals.identity),
+    // An abstention fallback ("verify-top") is a policy choice even when a model ranked the candidates.
+    selectionSource: (id) =>
+      overridden.has(id) ? "deterministic_policy" : selectionSourceOf(decisionTotals.identity),
   });
   const generator =
     options.suggestions === false
@@ -564,6 +567,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         generatorTotals.identity = payload.event.identity;
         addUsage(generatorTotals, payload.event.usage, options.pricing);
       }
+    } else if (event.type === "decision.completed" && payload?.type === "decision.overridden") {
+      for (const id of payload.effectiveSelected ?? []) overridden.add(id);
     } else if (event.type === "decision.completed" && payload?.type === "decision.completed") {
       decisionTotals.identity = payload.identity;
       addUsage(decisionTotals, payload.usage, options.pricing);

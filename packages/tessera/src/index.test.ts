@@ -14,6 +14,7 @@ import {
   classifyWitness,
   computeResultId,
   loadRepairTask,
+  runRepair,
   mutationBodies,
   parseTcFunction,
   parseWitness,
@@ -336,4 +337,29 @@ test("summaries keep compiler repairs apart from model results", () => {
   assert.equal(s!.tokensPerVerifiedPatch, 280, "end-to-end includes compiler repairs");
   const [none] = summarize([run("solved", "compiler_suggestion", 0, 0)]);
   assert.equal(none!.modelTokensPerModelPatch, null, "no model patch, no model efficiency");
+});
+
+test("a candidate verified by the abstention fallback is a policy selection", async () => {
+  const task = await loadRepairTask(join(here, "..", "..", "..", "examples", "tessera-repair", "tasks", "wrong-result"));
+  // A model decider that ranks the candidates but selects none.
+  const abstainer = {
+    async decide(request: { choices: Array<{ id: string }> }) {
+      return {
+        selected: [] as string[],
+        scores: Object.fromEntries(request.choices.map((c, i) => [c.id, 1 / (i + 1)])),
+        identity: { provider: "model", model: "abstains" },
+        usage: { latencyMs: 1, totalTokens: 5 },
+      };
+    },
+  };
+  const report = await runRepair({ task, seed: 1, maxRounds: 1, decision: abstainer as never, suggestions: false, grammar: false, tsr: "/nonexistent/tsr" });
+  const log = (await readFile(report.eventLogPath, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const lineages = log
+    .filter((e) => e.type === "tool.completed" && e.payload?.tool === "experiment")
+    .flatMap((e) => e.payload.outcome?.records ?? [])
+    .map((r: { lineage?: unknown }) => r.lineage);
+  assert.ok(lineages.length > 0, "the fallback verified a candidate");
+  for (const lineage of lineages) {
+    assert.equal((lineage as { selectionSource: string }).selectionSource, "deterministic_policy");
+  }
 });
