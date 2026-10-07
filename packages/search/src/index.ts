@@ -37,6 +37,7 @@ export interface ExperimentOutcome {
   uncertainties?: string[];
   /** Raw tool records (e.g. witness documents) kept verbatim in the run log for replay. */
   records?: unknown[];
+  error?: { class: string; message: string };
 }
 
 export interface ExperimentExecutor {
@@ -165,6 +166,14 @@ export type SearchTraceEvent =
       type: "experiment.started";
       round: number;
       candidate: CandidateAction;
+    }
+  | {
+      type: "experiment.failed";
+      round: number;
+      candidateId: string;
+      errorClass: string;
+      message: string;
+      evidence?: EvidenceRef[];
     }
   | {
       type: "experiment.completed";
@@ -526,7 +535,9 @@ async function runLimited<T>(
       }
     },
   );
-  await Promise.all(workers);
+  const results = await Promise.allSettled(workers);
+  const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+  if (rejected) throw rejected.reason;
 }
 
 export async function runSearchLoop(
@@ -763,12 +774,55 @@ export async function runSearchLoop(
           candidate,
         });
 
-        const outcome = await options.executor.execute(candidate, tap);
-        if (outcome.candidateId !== candidate.id) {
-          throw new Error(
-            `Experiment outcome candidate mismatch: expected ${candidate.id}, got ${outcome.candidateId}`,
-          );
+        let outcome: ExperimentOutcome;
+        try {
+          outcome = await options.executor.execute(candidate, tap);
+          if (outcome.candidateId !== candidate.id) {
+            throw new Error(
+              `Experiment outcome candidate mismatch: expected ${candidate.id}, got ${outcome.candidateId}`,
+            );
+          }
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.includes("Experiment outcome candidate mismatch")
+          ) {
+            throw error;
+          }
+
+          const message = error instanceof Error ? error.message : String(error);
+          const errorClass = message.toLowerCase().includes("timeout")
+            ? "timeout"
+            : "tool_error";
+
+          const partialEvidence =
+            error instanceof Error && "evidence" in error && Array.isArray((error as any).evidence)
+              ? (error as any).evidence
+              : [];
+
+          await options.onTrace?.({
+            type: "experiment.failed",
+            round,
+            candidateId: candidate.id,
+            errorClass,
+            message,
+            evidence: partialEvidence.length ? partialEvidence : undefined,
+          });
+
+          outcomes[index] = {
+            candidateId: candidate.id,
+            status: "inconclusive",
+            terminal: false,
+            summary: `Tool error: ${message}`,
+            evidence: partialEvidence,
+            uncertainties: [
+              `round ${round} candidate ${candidate.id} execution failed: ${message}`,
+            ],
+            error: { class: errorClass, message },
+          };
+          return;
         }
+
         outcomes[index] = outcome;
 
         await options.onTrace?.({
