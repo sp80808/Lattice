@@ -1,0 +1,54 @@
+{
+  "schema": "lattice.dogfood.case/v0",
+  "id": "tessera-tcap-binder",
+  "version": 1,
+  "task_class": "semantic-multi-structure",
+  "repository": "sp80808/Tessera",
+  "base_sha": "7c82b87374cb34f27a643574f3a1c2007a25eea1",
+  "task_statement": "TCap derivation incorrectly resolves some variable reads. Every parameter read must target its own Remote place by binder/name (not a positional fallback). Nested let shadowing must select the innermost place; locals must drop at the correct scope exit. Both TCap derivation paths must agree on these rules. Add or fix deterministic tests that lock the behaviour.",
+  "allowed_tools": [
+    "shell",
+    "read",
+    "edit",
+    "git_worktree",
+    "cargo"
+  ],
+  "acceptance": {
+    "commands": [
+      "cargo test -p tessera-tcap",
+      "cargo test --workspace -- tcap"
+    ],
+    "must_fail_on_broken_base": true,
+    "must_pass_on_fixed_sha": true,
+    "notes": "Prefer targeted TCap/binder tests. If a named integration test path is missing at the frozen base, use the package tests that exercise TCap derivation equivalence and binder places. Broken base must fail at least one assertion about non-local name targeting; fixed SHA must pass."
+  },
+  "reference": {
+    "gold_fix_sha": "be4e31a25cd2e802f7bf5da2ac84238a01cdfeeb",
+    "gold_pr": "https://github.com/sp80808/Tessera/pull/38",
+    "relevant_files": [
+      "crates/tessera-tcap"
+    ],
+    "historical_notes": "Reads of non-local names incorrectly targeted parameter 0; parameters 1..n could miss read edges; let binder places/scoping were wrong."
+  },
+  "expected_unsupported": [],
+  "leakage_guard": {
+    "exclude_paths_from_context": [
+      "dogfood/cases/tessera-tcap-binder-v1.json"
+    ],
+    "exclude_commits_from_context": [
+      "be4e31a25cd2e802f7bf5da2ac84238a01cdfeeb"
+    ],
+    "forbid_future_files": true,
+    "contamination_risk": "medium",
+    "held_out_checks": [
+      "Multi-parameter function where each parameter is read exactly once \u2014 assert distinct Remote places.",
+      "Nested let shadowing of the same name \u2014 assert innermost place wins."
+    ]
+  },
+  "provenance": {
+    "source_issue": "https://github.com/sp80808/Lattice/issues/41",
+    "parent_issue": "https://github.com/sp80808/Lattice/issues/39",
+    "recorded_at": "2026-10-07",
+    "notes": "Seed case 2 \u2014 semantic multi-structure correctness."
+  }
+}
