@@ -52,6 +52,8 @@ const { values } = parseArgs({
     json: { type: "boolean" },
     // Measure the generator alone: skip tsr witness's own checked suggestions.
     "no-suggestions": { type: "boolean" },
+    // Also offer SEARCH/REPLACE edits in the prompt (whole files only by default).
+    edits: { type: "boolean" },
     // Run with and without tsr suggestions and report both.
     ablation: { type: "boolean" },
   },
@@ -125,9 +127,10 @@ const run = (suggestions) =>
     candidatesPerRound: Number(values.candidates),
     pricing,
     suggestions,
+    edits: values.edits,
     onRun: (run) => {
       console.error(
-        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
+        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.formatErrors ? ` format_errors=${run.formatErrors}` : ""}${run.editFailures ? ` edit_failures=${run.editFailures}` : ""}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
       );
       // Auth, billing and rate-limit errors fail every later run the same way.
       const status = /Provider request failed: (\d{3})/.exec(run.error ?? "")?.[1];

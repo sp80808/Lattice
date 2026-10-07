@@ -8,9 +8,15 @@ import {
   HeuristicRepairDecider,
   MutationRepairGenerator,
   ATTEMPTS_HEADER,
+  applyEditAction,
+  closestRegion,
+  createRepairExecutor,
+  isSearchReplace,
+  parseSearchReplace,
   RecordedRounds,
   SuggestionFirstGenerator,
   TRIED_HEADER,
+  candidateProgram,
   classifyWitness,
   computeResultId,
   loadRepairTask,
@@ -165,7 +171,7 @@ test("heuristic decider avoids names tsr reported unbound", async () => {
 
 test("summaries report cost per verified patch", () => {
   const run = (arm: string, status: RepairRunReport["status"], rounds: number, cost: number): RepairRunReport => ({
-    task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0,
+    task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0, formatErrors: 0, editFailures: 0,
     generator: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 100 * rounds, costUsd: cost },
     decision: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
     tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "", suggestionRounds: 0,
@@ -317,7 +323,7 @@ test("summaries keep compiler repairs apart from model results", () => {
     tokens: number,
     cost: number,
   ): RepairRunReport => ({
-    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0,
+    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0, formatErrors: 0, editFailures: 0,
     generator: usage(tokens, cost), decision: usage(0, 0), tokens, costUsd: cost,
     runId: "r", eventLogPath: "", suggestionRounds: source === "compiler_suggestion" ? 1 : 0,
     lineage: source && { candidateId: "c", candidateSource: source, selectionSource: "model_decision" },
@@ -362,4 +368,76 @@ test("a candidate verified by the abstention fallback is a policy selection", as
   for (const lineage of lineages) {
     assert.equal((lineage as { selectionSource: string }).selectionSource, "deterministic_policy");
   }
+});
+
+test("a fenced program is unwrapped before tsr sees it; anything else is kept", () => {
+  assert.equal(candidateProgram("```tc\nf add(a:i64,b:i64)>i64=a+b\n```"), "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.equal(candidateProgram("```\nf add(a:i64,b:i64)>i64=a+b```\n"), "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.equal(candidateProgram("f add(a:i64,b:i64)>i64=a+b"), "f add(a:i64,b:i64)>i64=a+b\n");
+  // Not a single fenced block: tsr judges it as written.
+  assert.equal(candidateProgram("here: ```f x(a:i64)>i64=a```"), "here: ```f x(a:i64)>i64=a```\n");
+});
+
+const edit = (search: string, replace: string) => `<<<<<<< SEARCH\n${search}\n=======\n${replace}\n>>>>>>> REPLACE`;
+
+test("search/replace edits match exactly, then line-trimmed, then ignoring whitespace", () => {
+  const file = "f add(a:i64,b:i64)>i64=\n    a+c\n";
+  assert.ok(isSearchReplace(edit("a+c", "a+b")));
+  assert.ok(!isSearchReplace("f add(a:i64,b:i64)>i64=a+b"));
+
+  const exact = applyEditAction(file, edit("a+c", "a+b"));
+  assert.deepEqual(exact, { ok: true, source: "f add(a:i64,b:i64)>i64=\n    a+b\n", applied: [{ strategy: "exact", line: 2 }] });
+
+  const trimmed = applyEditAction(file, edit("  f add(a:i64,b:i64)>i64=\na+c  ", "f add(a:i64,b:i64)>i64=a+b"));
+  assert.equal(trimmed.ok && trimmed.source, "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.equal(trimmed.ok && trimmed.applied[0]!.strategy, "line-trimmed");
+
+  const spaced = applyEditAction("f add(a:i64,b:i64)>i64=a+c\n", edit("a + c", "a+b"));
+  assert.equal(spaced.ok && spaced.source, "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.equal(spaced.ok && spaced.applied[0]!.strategy, "whitespace-insensitive");
+
+  // Blocks apply in order, each to the previous result.
+  const two = applyEditAction("x\ny\n", `${edit("x", "y2")}\n${edit("y2", "z")}`);
+  assert.equal(two.ok && two.source, "z\ny\n");
+});
+
+test("ambiguous, missing and malformed edits are refused with what to send instead", () => {
+  const ambiguous = applyEditAction("a\nb\na\n", edit("a", "c"));
+  assert.ok(!ambiguous.ok);
+  assert.match(ambiguous.error, /matches 2 places \(lines 1, 3\); include more surrounding text/);
+
+  const missing = applyEditAction("f add(a:i64,b:i64)>i64=a+c\n", edit("f add(a:i64,b:i64)>i64=a*c", "x"));
+  assert.ok(!missing.ok);
+  assert.match(missing.error, /does not match[\s\S]*Closest text \(line 1, 96% similar\):\nf add\(a:i64,b:i64\)>i64=a\+c/);
+
+  assert.match(parseSearchReplace("<<<<<<< SEARCH\na\n>>>>>>> REPLACE") as string, /expected =======/);
+  assert.match(parseSearchReplace("<<<<<<< SEARCH\na\n=======\nb") as string, /missing >>>>>>> REPLACE/);
+  assert.match(parseSearchReplace(edit("", "b")) as string, /SEARCH text is empty/);
+  assert.equal(closestRegion("one\ntwo\nthree", "tw0")?.line, 2);
+});
+
+test("an edit that does not apply is fed back without running tsr", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "lattice-edit-"));
+  await writeFile(join(workspace, "add.tes"), "f add(a:i64,b:i64)>i64=a+c\n");
+  const task = { name: "t", dir: workspace, description: "", file: "add.tes", overflow: "wrapping" as const, cases: [] };
+  const executor = createRepairExecutor({ task, workspace, tsr: "/nonexistent/tsr" });
+  const outcome = await executor.execute(
+    { id: "e", label: "fix c", action: edit("a+d", "a+b"), expectedEvidence: "" },
+    {} as never,
+  );
+  assert.equal(outcome.status, "failure");
+  assert.match(outcome.summary, /edit not applied: SEARCH block 1 does not match/);
+  assert.equal(executor.stats.editFailures, 1);
+  assert.equal(executor.stats.verifications, 0);
+  assert.deepEqual(executor.stats.tried, [], "nothing reached tsr");
+  const rendered = renderAttempts(executor.stats.attempts)!;
+  assert.match(rendered, />>> not applied: SEARCH block 1 does not match[\s\S]*Closest text \(line 1/);
+  assert.equal(await readFile(join(workspace, "add.tes"), "utf8"), "f add(a:i64,b:i64)>i64=a+c\n", "the file is untouched");
+});
+
+test("the edit format is offered only when asked for", async () => {
+  const task = { name: "t", dir: "/x", description: "", file: "add.tes", overflow: "wrapping" as const, cases: [] };
+  const read = async () => "f add(a:i64,b:i64)>i64=a+c\n";
+  assert.doesNotMatch(repairProposal(task, read).prompt!(4), /SEARCH/);
+  assert.match(repairProposal(task, read, () => [], { edits: true }).prompt!(4), /<<<<<<< SEARCH\n<exact lines/);
 });

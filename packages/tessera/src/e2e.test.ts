@@ -133,3 +133,45 @@ test("unbound names: tsr offers each closest parameter and the cases pick one", 
   const replayed = await replayRunLog(report.eventLogPath);
   assert.ok(replayed.every((r) => r.consistent), "lineage does not disturb replay");
 });
+
+test("a malformed model reply is sent back, and a fenced repair it then sends is verified", async () => {
+  const task = await loadRepairTask(join(tasks, "syntax-error"));
+  const replies = [
+    "Sure! The fix is to add `b` after the plus sign.",
+    // Fenced program and a raw newline inside the JSON string, as models write it.
+    '{"candidates":[{"id":"fix","label":"complete the sum","action":"```tc\nf add(a:i64,b:i64)>i64=a+b\n```","expectedEvidence":"cases match"}]}',
+  ];
+  const contexts: string[][] = [];
+  const model = {
+    async generate(request: { context?: string[] }) {
+      contexts.push(request.context ?? []);
+      return { text: replies.shift() ?? "{}", identity: { provider: "model", model: "flaky" }, usage: { latencyMs: 1, inputTokens: 10, outputTokens: 5 } };
+    },
+  };
+  const report = await runRepair({ task, seed: 1, maxRounds: 2, generator: model, suggestions: false });
+  assert.equal(report.status, "solved", report.error);
+  assert.equal(report.formatErrors, 1);
+  assert.equal(report.rounds, 1);
+  assert.equal(report.generator.calls, 2, "the failed reply's tokens are still counted");
+  assert.equal(report.patch, "f add(a:i64,b:i64)>i64=a+b\n");
+  assert.ok(contexts[1]!.some((block) => block.startsWith("YOUR PREVIOUS REPLY COULD NOT BE USED:")));
+});
+
+test("a search/replace edit is applied to the current file and judged by tsr", async () => {
+  const task = await loadRepairTask(join(tasks, "unbound-name"));
+  // Spaced differently from the file (`a+c`): matched ignoring whitespace.
+  const action = "<<<<<<< SEARCH\na + c\n=======\na+b\n>>>>>>> REPLACE";
+  const model = {
+    async generate() {
+      return {
+        text: JSON.stringify({ candidates: [{ id: "edit", label: "use b", action, expectedEvidence: "cases match" }] }),
+        identity: { provider: "model", model: "editor" },
+        usage: { latencyMs: 1 },
+      };
+    },
+  };
+  const report = await runRepair({ task, seed: 1, maxRounds: 1, generator: model, suggestions: false, edits: true });
+  assert.equal(report.status, "solved", report.error);
+  assert.equal(report.editFailures, 0);
+  assert.equal(report.patch, "f add(a:i64,b:i64)>i64=a+b\n");
+});

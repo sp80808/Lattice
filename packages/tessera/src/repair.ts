@@ -51,6 +51,7 @@ import {
   type Attempt,
   type WitnessSuggestion,
 } from "./feedback.js";
+import { DIVIDER_MARKER, REPLACE_MARKER, SEARCH_MARKER, applyEditAction, isSearchReplace } from "./edits.js";
 
 /** `task.json` in a repair task directory. */
 export interface RepairTask {
@@ -274,7 +275,19 @@ export interface RepairFeedback {
   current?: () => TesseraVerificationRecord | undefined;
   /** Rejected candidates with their verifications, oldest first. */
   attempts?: () => Attempt[];
+  /** Also offer SEARCH/REPLACE edits as a candidate format (default: whole files only). */
+  edits?: boolean;
 }
+
+const EDIT_FORMAT = [
+  `An action may instead be one or more SEARCH/REPLACE edits of the current file, each written as:`,
+  SEARCH_MARKER,
+  "<exact lines from the current file>",
+  DIVIDER_MARKER,
+  "<their replacement>",
+  REPLACE_MARKER,
+  "The SEARCH text must match exactly one place in the current file; prefer an edit when most of the file stays the same.",
+].join("\n");
 
 export function repairProposal(
   task: RepairTask,
@@ -297,6 +310,7 @@ export function repairProposal(
         `Propose up to ${count} distinct candidate repairs of ${task.file}.`,
         `Required behaviour: ${cases}.`,
         "Use the compiler diagnostics and run results in the evidence. Each candidate's `action` is the COMPLETE new file content, nothing else.",
+        ...(feedback.edits ? [EDIT_FORMAT] : []),
         "Return JSON only:",
         '{"candidates":[{"id":"a","label":"short neutral description of the change","action":"<complete file>","expectedEvidence":"tsr witness pass and cases match","estimatedCost":"low"}]}',
       ].join("\n"),
@@ -323,6 +337,17 @@ function addSuggestions(pool: WitnessSuggestion[], found: WitnessSuggestion[]): 
   for (const s of found) {
     if (!pool.some((p) => p.source === s.source)) pool.push(s);
   }
+}
+
+/**
+ * The program a candidate's `action` carries. Models often wrap the file in a
+ * markdown fence even inside JSON; the fence is not part of the program, so
+ * it is removed before `tsr` sees the file. Anything else is left as is.
+ */
+export function candidateProgram(action: string): string {
+  const fenced = /^\s*```[\w+-]*[ \t]*\n([\s\S]*?)\n?```\s*$/.exec(action);
+  const body = fenced ? fenced[1]! : action;
+  return body.endsWith("\n") ? body : `${body}\n`;
 }
 
 export interface RepairExecutorOptions {
@@ -360,6 +385,8 @@ export interface RepairExecutorStats {
   verifications: number;
   tsrProcesses: number;
   cacheHits: number;
+  /** SEARCH/REPLACE candidates that did not apply to the file (never verified). */
+  editFailures: number;
 }
 
 export function createRepairExecutor(
@@ -372,13 +399,35 @@ export function createRepairExecutor(
     verifications: 0,
     tsrProcesses: 0,
     cacheHits: 0,
+    editFailures: 0,
   };
   const spec = verifySpecFor(options.task, options.tsr);
   let counter = 0;
   return {
     stats,
     async execute(candidate: CandidateAction, _tap: TapPacket): Promise<ExperimentOutcome> {
-      const source = candidate.action.endsWith("\n") ? candidate.action : `${candidate.action}\n`;
+      let source: string;
+      let edit = "";
+      if (isSearchReplace(candidate.action)) {
+        // Edits apply to the file as it is now; only a verified candidate is ever written back.
+        const current = await readFile(join(options.workspace, options.task.file), "utf8");
+        const applied = applyEditAction(current, candidate.action);
+        if (!applied.ok) {
+          stats.editFailures++;
+          stats.attempts.push({ source: candidate.action, error: applied.error });
+          return {
+            candidateId: candidate.id,
+            status: "failure",
+            terminal: false,
+            summary: `${candidate.label}: edit not applied: ${applied.error.split("\n")[0]}`,
+            evidence: [],
+          };
+        }
+        source = applied.source.endsWith("\n") ? applied.source : `${applied.source}\n`;
+        edit = ` (search/replace: ${applied.applied.map((a) => a.strategy).join(", ")})`;
+      } else {
+        source = candidateProgram(candidate.action);
+      }
       const key = createHash("sha256")
         .update([spec.tsr ?? process.env.TSR ?? "tsr", spec.phase ?? "check", spec.overflow, JSON.stringify(spec.cases), source].join("\0"))
         .digest("hex");
@@ -418,7 +467,7 @@ export function createRepairExecutor(
         candidateId: candidate.id,
         status: verification.passed ? "success" : "failure",
         terminal: verification.passed,
-        summary: `${candidate.label}: ${verification.summary}`,
+        summary: `${candidate.label}${edit}: ${verification.summary}`,
         evidence: verification.evidence,
         records: [record],
       };
@@ -470,6 +519,10 @@ export interface RepairRunOptions {
   suggestions?: boolean;
   /** Put `tsr grammar` in the proposal context (default true). */
   grammar?: boolean;
+  /** Offer SEARCH/REPLACE edits in the proposal prompt (default false; edits are applied either way). */
+  edits?: boolean;
+  /** Unusable generator replies sent back for another attempt per round (default 2). */
+  formatRetries?: number;
 }
 
 export interface RepairRunReport {
@@ -500,6 +553,10 @@ export interface RepairRunReport {
   lineage?: CandidateLineage;
   /** Rounds answered by `tsr` suggestions without calling the generator (not in `generator`). */
   suggestionRounds: number;
+  /** Generator replies that could not be parsed (each retried or fatal); their tokens are in `generator`. */
+  formatErrors: number;
+  /** SEARCH/REPLACE candidates that did not apply; each was fed back without a `tsr` call. */
+  editFailures: number;
 }
 
 function emptyTotals(): UsageTotals {
@@ -551,6 +608,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
   // Model/generator spend only: rounds `tsr` answered are counted apart.
   const generatorTotals: RepairRunReport["generator"] = emptyTotals();
   let suggestionRounds = 0;
+  let formatErrors = 0;
+  let lastRound = 0;
   let initialResultId: string | undefined;
   let tsrBuild: RepairRunReport["tsr"];
 
@@ -561,6 +620,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       event.type === "decision.requested" &&
       (proposal === "candidates.generated" || proposal === "candidates.rejected")
     ) {
+      lastRound = Math.max(lastRound, payload.event.round ?? 0);
+      if (proposal === "candidates.rejected") formatErrors++;
       if (payload.event.identity?.provider === SUGGESTION_PROVIDER) {
         suggestionRounds++;
       } else {
@@ -600,6 +661,8 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
     initialResultId,
     tsr: tsrBuild,
     suggestionRounds,
+    formatErrors,
+    editFailures: executor.stats.editFailures,
   });
 
   let report: RepairRunReport;
@@ -619,10 +682,12 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         autonomy: { mode: "autopilot" },
         // A strong model can abstain even when a viable repair is ranked; verify the top-scored candidate.
         onAbstain: "verify-top",
+        formatRetries: options.formatRetries,
         proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried, {
           grammar,
           current: () => current,
           attempts: () => executor.stats.attempts,
+          edits: options.edits,
         }),
       },
     });
@@ -640,7 +705,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
     report = {
       ...base(),
       status: "blocked",
-      rounds: generatorTotals.calls + suggestionRounds,
+      rounds: lastRound,
       runId: "",
       eventLogPath: "",
       error: error instanceof Error ? error.message : String(error),

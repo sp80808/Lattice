@@ -77,6 +77,8 @@ export interface ComparisonOptions {
   latticeDir?: string;
   /** Try `tsr witness` suggestions before the generator (default true; see `runRepair`). */
   suggestions?: boolean;
+  /** Offer SEARCH/REPLACE edits in the proposal prompt (see `runRepair`). */
+  edits?: boolean;
   onRun?: (report: RepairRunReport) => void;
 }
 
@@ -107,6 +109,10 @@ export interface ArmSummary {
    */
   costPerVerifiedPatchUsd: number | null;
   tokensPerVerifiedPatch: number | null;
+  /** Generator replies that could not be parsed, across the group (retried or fatal). */
+  formatErrors: number;
+  /** SEARCH/REPLACE candidates that did not apply, across the group. */
+  editFailures: number;
 }
 
 export interface ComparisonReport {
@@ -165,6 +171,9 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       costPerVerifiedPatchUsd:
         totalCost === null || solved.length === 0 ? null : totalCost / solved.length,
       tokensPerVerifiedPatch: solved.length ? totalTokens / solved.length : null,
+      // Reports written before format retries existed have no count.
+      formatErrors: sum(group.map((r) => r.formatErrors ?? 0)),
+      editFailures: sum(group.map((r) => r.editFailures ?? 0)),
     };
   });
 }
@@ -197,6 +206,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           cache,
           latticeDir: options.latticeDir,
           suggestions: options.suggestions,
+          edits: options.edits,
         });
         runs.push(report);
         options.onRun?.(report);

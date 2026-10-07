@@ -45,6 +45,8 @@ export interface RunTaskOptions {
     reviewer?: DecisionReviewer;
     proposal?: ProposalPrompt;
     onAbstain?: "block" | "verify-top";
+    /** See `SearchLoopOptions.formatRetries`. */
+    formatRetries?: number;
   };
 }
 
@@ -236,6 +238,7 @@ export async function runTask(
         reviewer: options.search.reviewer,
         proposal: options.search.proposal,
         onAbstain: options.search.onAbstain,
+        formatRetries: options.search.formatRetries,
         onTrace: async (event) => {
           if (
             event.type === "candidates.generated" ||

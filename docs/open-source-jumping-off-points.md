@@ -119,6 +119,38 @@ Lattice adoption:
 - compiler/LSP/static facts should populate TCG before LLM extraction;
 - use adapter interfaces so richer language-specific indexes can replace fallback parsing.
 
+## Roo Code, Cline and Kilo Code — edit formats and error recovery
+
+Repositories:
+- https://github.com/RooCodeInc/Roo-Code (Apache-2.0)
+- https://github.com/cline/cline (Apache-2.0)
+- https://github.com/Kilo-Org/kilocode (MIT)
+
+Useful precedent:
+
+- an unusable model reply (no tool call, malformed arguments) is answered with
+  the error and the expected format, and the agent tries again; only a run of
+  consecutive mistakes stops it (Roo's `consecutiveMistakeLimit`, Cline's
+  mistake limit);
+- edits are SEARCH/REPLACE blocks rather than whole files, applied with
+  fallbacks: exact, then line-trimmed, then looser matching (Cline's
+  `replace_in_file`, Kilo's chain of replacers), or a Levenshtein search
+  around a `:start_line:` hint (Roo's `apply_diff`);
+- a failed edit reports the closest region and its similarity, so the next
+  attempt is grounded in the file as it is;
+- an ambiguous match is refused, not guessed.
+
+Lattice adoption:
+
+- the search loop sends unusable generator replies back with their error
+  (`formatRetries`, default 2) and keeps the well-formed candidates of a
+  partly malformed reply;
+- Tessera repair candidates may be SEARCH/REPLACE edits
+  (`packages/tessera/src/edits.ts`); an edit that does not apply is a
+  rejected attempt whose feedback quotes the closest text, at no `tsr` cost.
+
+Ideas only; no code was copied from these projects.
+
 ## Initial build-vs-borrow rule
 
 Prefer an upstream/open standard when the feature is commodity infrastructure:

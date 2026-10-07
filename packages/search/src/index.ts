@@ -104,14 +104,23 @@ export type SearchTraceEvent =
       type: "candidates.generated";
       round: number;
       candidates: CandidateAction[];
+      /** Why candidates in the reply were dropped while the rest were kept. */
+      dropped?: string[];
       identity?: ProviderIdentity;
       usage?: ProviderUsage;
     }
   | {
-      /** The generator answered but its reply was unusable; the run stops. */
+      /**
+       * The generator answered but its reply was unusable. With `retrying` the
+       * error was sent back to the generator for another attempt this round;
+       * otherwise the run stops.
+       */
       type: "candidates.rejected";
       round: number;
       error: string;
+      /** Which attempt of this round failed (1-based). */
+      attempt?: number;
+      retrying?: boolean;
       identity?: ProviderIdentity;
       usage?: ProviderUsage;
     }
@@ -205,6 +214,12 @@ export interface SearchLoopOptions {
    * all scores zero or absent there is no ranking to follow, so the run blocks.
    */
   onAbstain?: "block" | "verify-top";
+  /**
+   * How many times a round may send an unusable generator reply's error back
+   * to the generator and ask again before the run stops (default 2). Each
+   * retry is a separate, traced generator call.
+   */
+  formatRetries?: number;
   onTrace?: (event: SearchTraceEvent) => void | Promise<void>;
 }
 
@@ -219,6 +234,36 @@ interface CandidateEnvelope {
   candidates?: CandidateAction[];
 }
 
+/**
+ * Escapes raw control characters inside JSON string literals. Models often put
+ * a literal newline in a string value (e.g. a multi-line file), which
+ * `JSON.parse` rejects although the intent is unambiguous.
+ */
+export function escapeControlCharsInStrings(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      else if (ch === "\n") {
+        out += "\\n";
+        continue;
+      } else if (ch === "\r") {
+        out += "\\r";
+        continue;
+      } else if (ch === "\t") {
+        out += "\\t";
+        continue;
+      }
+    } else if (ch === '"') inString = true;
+    out += ch;
+  }
+  return out;
+}
+
 function jsonObject(text: string): unknown {
   const trimmed = text
     .trim()
@@ -229,19 +274,43 @@ function jsonObject(text: string): unknown {
   if (first === -1 || last < first) {
     throw new Error("Candidate generator returned no JSON object");
   }
-  return JSON.parse(trimmed.slice(first, last + 1));
+  const body = trimmed.slice(first, last + 1);
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    try {
+      return JSON.parse(escapeControlCharsInStrings(body));
+    } catch {
+      throw new Error(
+        `Candidate generator returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
-function parseCandidates(text: string, limit: number): CandidateAction[] {
+export interface ParsedCandidates {
+  candidates: CandidateAction[];
+  /** Why each dropped candidate was dropped. */
+  dropped: string[];
+}
+
+/**
+ * Keeps every well-formed candidate of a reply and reports the rest, so one
+ * malformed entry does not discard its siblings. Fails only when nothing
+ * usable remains.
+ */
+export function parseCandidates(text: string, limit: number): ParsedCandidates {
   const parsed = jsonObject(text) as CandidateEnvelope;
   if (!Array.isArray(parsed.candidates) || parsed.candidates.length === 0) {
     throw new Error("Candidate generator returned no candidates");
   }
 
-  const result: CandidateAction[] = [];
+  const candidates: CandidateAction[] = [];
+  const dropped: string[] = [];
   const ids = new Set<string>();
 
-  for (const raw of parsed.candidates.slice(0, limit)) {
+  parsed.candidates.forEach((raw, index) => {
+    if (candidates.length >= limit) return;
     if (
       !raw ||
       typeof raw.id !== "string" ||
@@ -249,16 +318,22 @@ function parseCandidates(text: string, limit: number): CandidateAction[] {
       typeof raw.action !== "string" ||
       typeof raw.expectedEvidence !== "string"
     ) {
-      throw new Error("Candidate generator returned an invalid candidate");
+      dropped.push(`candidate ${index + 1}: id, label, action and expectedEvidence must all be strings`);
+      return;
     }
 
     const id = raw.id.trim();
     if (!id || id === UNKNOWN_CHOICE_ID || ids.has(id)) {
-      throw new Error(`Invalid or duplicate candidate ID: ${id || "<empty>"}`);
+      dropped.push(`candidate ${index + 1}: invalid or duplicate id ${JSON.stringify(id)}`);
+      return;
+    }
+    if (!raw.action.trim()) {
+      dropped.push(`candidate ${index + 1} (${id}): empty action`);
+      return;
     }
     ids.add(id);
 
-    result.push({
+    candidates.push({
       id,
       label: raw.label.trim(),
       action: raw.action.trim(),
@@ -270,9 +345,25 @@ function parseCandidates(text: string, limit: number): CandidateAction[] {
           ? raw.estimatedCost
           : undefined,
     });
-  }
+  });
 
-  return result;
+  if (!candidates.length) {
+    throw new Error(`Candidate generator returned no valid candidates (${dropped.join("; ")})`);
+  }
+  return { candidates, dropped };
+}
+
+/** Context block that sends an unusable reply's error back to the generator. */
+export const FORMAT_ERROR_HEADER = "YOUR PREVIOUS REPLY COULD NOT BE USED:";
+
+function formatErrorFeedback(error: string, reply: string): string {
+  const excerpt = reply.length > 400 ? `${reply.slice(0, 400)}…` : reply;
+  return [
+    FORMAT_ERROR_HEADER,
+    error,
+    `Reply received (excerpt): ${excerpt}`,
+    'Answer again with one JSON object only, no prose or code fences: {"candidates":[{"id","label","action","expectedEvidence","estimatedCost"}]}. Every field is a string; escape newlines inside strings as \\n.',
+  ].join("\n");
 }
 
 function compactState(tap: TapPacket): string {
@@ -546,28 +637,40 @@ export async function runSearchLoop(
   for (let round = 1; round <= maxRounds; round++) {
     const state = compactState(tap);
     const proposal = options.proposal;
-    const generated = await options.generator.generate({
-      system:
-        proposal?.system ??
-        "You are the proposal stage of an evidence-first coding search. Do not fabricate repository facts.",
-      prompt: (proposal?.prompt ?? candidatePrompt)(candidatesPerRound),
-      context: [state, ...((await proposal?.context?.(tap)) ?? [])],
-      temperature: 0.3,
-    });
-
-    let candidates: CandidateAction[];
-    try {
-      candidates = parseCandidates(generated.text, candidatesPerRound);
-    } catch (error) {
-      // Record the call before failing so its tokens and cost are not lost.
-      await options.onTrace?.({
-        type: "candidates.rejected",
-        round,
-        error: error instanceof Error ? error.message : String(error),
-        identity: generated.identity,
-        usage: generated.usage,
+    const baseContext = [state, ...((await proposal?.context?.(tap)) ?? [])];
+    const formatRetries = Math.max(0, options.formatRetries ?? 2);
+    let feedback: string | undefined;
+    let candidates: CandidateAction[] = [];
+    let generated!: Awaited<ReturnType<GeneratorProvider["generate"]>>;
+    let dropped: string[] = [];
+    for (let attempt = 1; ; attempt++) {
+      generated = await options.generator.generate({
+        system:
+          proposal?.system ??
+          "You are the proposal stage of an evidence-first coding search. Do not fabricate repository facts.",
+        prompt: (proposal?.prompt ?? candidatePrompt)(candidatesPerRound),
+        context: feedback ? [...baseContext, feedback] : baseContext,
+        temperature: 0.3,
       });
-      throw error;
+      try {
+        ({ candidates, dropped } = parseCandidates(generated.text, candidatesPerRound));
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const retrying = attempt <= formatRetries;
+        // Record the call before retrying or failing so its tokens and cost are not lost.
+        await options.onTrace?.({
+          type: "candidates.rejected",
+          round,
+          error: message,
+          attempt,
+          retrying,
+          identity: generated.identity,
+          usage: generated.usage,
+        });
+        if (!retrying) throw error;
+        feedback = formatErrorFeedback(message, generated.text);
+      }
     }
     tap.candidateActions = candidates.map(
       (candidate) => `${candidate.id}:${candidate.label}`,
@@ -577,6 +680,7 @@ export async function runSearchLoop(
       type: "candidates.generated",
       round,
       candidates,
+      ...(dropped.length ? { dropped } : {}),
       identity: generated.identity,
       usage: generated.usage,
     });

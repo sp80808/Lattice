@@ -8,7 +8,10 @@ import {
   type TapPacket,
 } from "@lattice/protocol";
 import {
+  FORMAT_ERROR_HEADER,
   compileDecisionFrame,
+  escapeControlCharsInStrings,
+  parseCandidates,
   runSearchLoop,
   type ExperimentExecutor,
   type SearchTraceEvent,
@@ -481,6 +484,107 @@ test("an unusable generator reply is traced with its usage before the run fails"
     }),
     /no JSON object/,
   );
+  const rejected = trace.filter((event) => event.type === "candidates.rejected");
+  assert.equal(rejected.length, 3, "the default two retries, then the run fails");
+  assert.equal(rejected[0]?.type === "candidates.rejected" && rejected[0].usage?.inputTokens, 30);
+  assert.deepEqual(
+    rejected.map((event) => event.type === "candidates.rejected" && [event.attempt, event.retrying]),
+    [[1, true], [2, true], [3, false]],
+  );
+});
+
+const success: ExperimentExecutor = {
+  async execute(candidate) {
+    return { candidateId: candidate.id, status: "success", terminal: true, summary: "ok", evidence: [] };
+  },
+};
+const pickFirst: DecisionProvider = {
+  async decide(request) {
+    const id = request.choices[0]!.id;
+    return { selected: [id], scores: { [id]: 1 }, identity: { provider: "fixture" }, usage: { latencyMs: 0 } };
+  },
+};
+
+test("an unusable reply's error goes back to the generator and the round continues", async () => {
+  const requests: Array<{ context?: string[] }> = [];
+  const replies = ["Sure! I would change the parser.", undefined];
+  const flaky: GeneratorProvider = {
+    async generate(request) {
+      requests.push(request);
+      const text = replies.shift();
+      if (text !== undefined) return { text, identity: { provider: "model" }, usage: { latencyMs: 1, inputTokens: 7 } };
+      return generator.generate(request);
+    },
+  };
+  const trace: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator: flaky,
+    decision: pickFirst,
+    executor: success,
+    onTrace: (event) => {
+      trace.push(event);
+    },
+  });
+  assert.equal(result.status, "solved");
+  assert.equal(result.rounds, 1, "a retry is not a new round");
+  assert.equal(requests.length, 2);
+  assert.ok(!requests[0]!.context!.some((block) => block.startsWith(FORMAT_ERROR_HEADER)));
+  const feedback = requests[1]!.context!.find((block) => block.startsWith(FORMAT_ERROR_HEADER));
+  assert.match(feedback ?? "", /no JSON object[\s\S]*Sure! I would change the parser\./);
   const rejected = trace.find((event) => event.type === "candidates.rejected");
-  assert.equal(rejected?.type === "candidates.rejected" && rejected.usage?.inputTokens, 30);
+  assert.equal(rejected?.type === "candidates.rejected" && rejected.retrying, true);
+  assert.equal(rejected?.type === "candidates.rejected" && rejected.usage?.inputTokens, 7);
+});
+
+test("formatRetries 0 keeps the old fail-fast behaviour", async () => {
+  let calls = 0;
+  await assert.rejects(
+    runSearchLoop({
+      tap: tap(),
+      generator: { generate: async () => (calls++, { text: "{}", identity: { provider: "model" }, usage: { latencyMs: 0 } }) },
+      decision: pickFirst,
+      executor: success,
+      formatRetries: 0,
+    }),
+    /no candidates/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("one malformed candidate is dropped without discarding its siblings", async () => {
+  const text = JSON.stringify({
+    candidates: [
+      { id: "a", label: "missing action", expectedEvidence: "x" },
+      { id: "b", label: "ok", action: "do b", expectedEvidence: "x" },
+      { id: "b", label: "duplicate", action: "do b again", expectedEvidence: "x" },
+      { id: "c", label: "blank", action: "   ", expectedEvidence: "x" },
+    ],
+  });
+  const parsed = parseCandidates(text, 5);
+  assert.deepEqual(parsed.candidates.map((c) => c.id), ["b"]);
+  assert.equal(parsed.dropped.length, 3);
+  assert.match(parsed.dropped[1]!, /duplicate id "b"/);
+  assert.throws(() => parseCandidates(JSON.stringify({ candidates: [{ id: "a" }] }), 5), /no valid candidates \(candidate 1:/);
+
+  const trace: SearchTraceEvent[] = [];
+  await runSearchLoop({
+    tap: tap(),
+    generator: { generate: async () => ({ text, identity: { provider: "model" }, usage: { latencyMs: 0 } }) },
+    decision: pickFirst,
+    executor: success,
+    onTrace: (event) => {
+      trace.push(event);
+    },
+  });
+  const generated = trace.find((event) => event.type === "candidates.generated");
+  assert.equal(generated?.type === "candidates.generated" && generated.dropped?.length, 3);
+});
+
+test("raw newlines inside JSON strings are read as the model meant them", () => {
+  const text = '```json\n{"candidates":[{"id":"a","label":"two lines","action":"line one\nline\ttwo \\"q\\"","expectedEvidence":"x"}]}\n```';
+  assert.throws(() => JSON.parse(text.slice(8, -4)));
+  const [candidate] = parseCandidates(text, 5).candidates;
+  assert.equal(candidate!.action, 'line one\nline\ttwo "q"');
+  assert.equal(escapeControlCharsInStrings('{"a":"x\ny"}\n'), '{"a":"x\\ny"}\n', "newlines outside strings are kept");
 });
