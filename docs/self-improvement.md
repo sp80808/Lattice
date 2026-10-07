@@ -88,6 +88,13 @@ observed → inferred → verified → trusted
 
 No mined tile silently becomes trusted.
 
+First consumer: Tessera repair memory (`packages/tessera/src/memory.ts`,
+`compare.mjs --record-memory/--memory`). Pairs enter only once `tsr` verified
+the fix, are shown to the generator as worked examples rather than applied
+as rules, are never retrieved for the task they came from, and are used only
+when a run opts in; `examples/tessera-repair/heldout/` measures them on tasks
+the memory was not built from.
+
 ## L3 — Compress
 
 Compression targets, in order of frequency:

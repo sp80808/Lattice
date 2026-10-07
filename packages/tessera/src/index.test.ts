@@ -28,6 +28,13 @@ import {
   renderDiagnostics,
   renderVerdict,
   repairProposal,
+  retrieveRepairs,
+  renderRepairs,
+  MEMORY_HEADER,
+  MEMORY_SCHEMA,
+  type RepairMemoryEntry,
+  MINIMAL_CHANGE_RULE,
+  editDistance,
   replayVerification,
   summarize,
   verificationEvidence,
@@ -171,7 +178,7 @@ test("heuristic decider avoids names tsr reported unbound", async () => {
 
 test("summaries report cost per verified patch", () => {
   const run = (arm: string, status: RepairRunReport["status"], rounds: number, cost: number): RepairRunReport => ({
-    task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0, formatErrors: 0, editFailures: 0,
+    task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0, formatErrors: 0, editFailures: 0, repeatsDropped: 0, repeatReplies: 0, fmtProcesses: 0, memoryExamples: 0,
     generator: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 100 * rounds, costUsd: cost },
     decision: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
     tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "", suggestionRounds: 0,
@@ -323,7 +330,7 @@ test("summaries keep compiler repairs apart from model results", () => {
     tokens: number,
     cost: number,
   ): RepairRunReport => ({
-    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0, formatErrors: 0, editFailures: 0,
+    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0, formatErrors: 0, editFailures: 0, repeatsDropped: 0, repeatReplies: 0, fmtProcesses: 0, memoryExamples: 0,
     generator: usage(tokens, cost), decision: usage(0, 0), tokens, costUsd: cost,
     runId: "r", eventLogPath: "", suggestionRounds: source === "compiler_suggestion" ? 1 : 0,
     lineage: source && { candidateId: "c", candidateSource: source, selectionSource: "model_decision" },
@@ -440,4 +447,37 @@ test("the edit format is offered only when asked for", async () => {
   const read = async () => "f add(a:i64,b:i64)>i64=a+c\n";
   assert.doesNotMatch(repairProposal(task, read).prompt!(4), /SEARCH/);
   assert.match(repairProposal(task, read, () => [], { edits: true }).prompt!(4), /<<<<<<< SEARCH\n<exact lines/);
+});
+
+test("the minimal-change rule is in the prompt only when asked for", () => {
+  const task = { name: "t", dir: "/x", description: "", file: "add.tes", overflow: "wrapping" as const, cases: [] };
+  const read = async () => "f add(a:i64,b:i64)>i64=a+c\n";
+  assert.ok(!repairProposal(task, read).prompt!(4).includes(MINIMAL_CHANGE_RULE));
+  assert.ok(repairProposal(task, read, () => [], { minimal: true }).prompt!(4).includes(MINIMAL_CHANGE_RULE));
+});
+
+test("patch distance counts changed characters", () => {
+  assert.equal(editDistance("f add(a:i64,b:i64)>i64=a+c\n", "f add(a:i64,b:i64)>i64=a+b\n"), 1);
+  assert.equal(editDistance("", "ab"), 2);
+});
+
+test("repair memory retrieves other tasks' fixes of the same kind of failure", () => {
+  const entry = (task: string, codes: string[], before: string, after: string, failure = "error"): RepairMemoryEntry => ({
+    schema: MEMORY_SCHEMA, task, before, after, codes, failure, at: new Date(0).toISOString(),
+  });
+  const memory = [
+    entry("unbound-name", ["E-resolve-unbound-name"], "f add(a:i64,b:i64)>i64=a+c", "f add(a:i64,b:i64)>i64=a+b", "unbound variable `c`"),
+    entry("syntax-error", ["E-syntax-expected"], "f add(a:i64,b:i64)>i64=a+", "f add(a:i64,b:i64)>i64=a+b"),
+    entry("inc", ["E-resolve-unbound-name"], "f inc(x:i64)>i64=y+1", "f inc(x:i64)>i64=x+1"),
+  ];
+  const record = {
+    witness: { verdict: { outcome: "fail" }, document: { diagnostics: [{ code: "E-resolve-unbound-name", severity: "error", message: "unbound variable `y`" }] } },
+    cases: [],
+  } as never;
+  const found = retrieveRepairs(memory, "inc", "f inc(x:i64)>i64=y+1\n", record);
+  assert.deepEqual(found.map((r) => r.entry.task), ["unbound-name"], "own task excluded; a syntax fix is not similar");
+  const rendered = renderRepairs(found)!;
+  assert.ok(rendered.startsWith(MEMORY_HEADER));
+  assert.match(rendered, /--- broken:\nf add\(a:i64,b:i64\)>i64=a\+c\n>>> unbound variable `c`\n--- fixed:\nf add\(a:i64,b:i64\)>i64=a\+b/);
+  assert.equal(renderRepairs([]), undefined);
 });

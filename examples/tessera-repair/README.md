@@ -61,6 +61,23 @@ behaviour `tsr run` must show (`add(2,3)=5`, `add(0,0)=0`, `add(7,-2)=5`).
    file and its similarity. `--edits` offers this format in the prompt (whole
    files only by default, so earlier numbers stay comparable); `editFailures`
    counts edits that did not apply.
+   A candidate that repeats a program already verified is dropped before the
+   decider sees it, and so is a second candidate with the same program in one
+   reply. Programs are compared as `tsr fmt` spells them, so respacing, line
+   breaks or a comment do not make an old attempt new (Agentless dedupes
+   normalized patches the same way; OpenHands and opencode stop agents that
+   repeat themselves). A reply made only of repeats goes back to the generator
+   with the list, like an unusable reply; if the retries are spent, the run
+   ends `blocked` as stuck instead of re-running a known result. Reports count
+   `repeatsDropped`, `repeatReplies` and the `fmtProcesses` this cost (kept out
+   of `tsrProcesses`). `--repeats exact` compares text only, and
+   `--repeats allow` verifies repeats again as runs did before.
+   `--minimal` adds one rule to the prompt, the repair reading of
+   [Ponytail](https://github.com/DietrichGebert/ponytail)'s "lazy senior
+   developer" (MIT, idea only): work out what is actually wrong, then make the
+   smallest change that fixes it and leave the rest of the file alone. Every
+   solved run reports `patchDistance` (characters changed from the broken
+   program) so the rule's effect is measured, not assumed.
 3. Only a candidate `tsr` accepts is written back. The run ends `solved`, or
    `budget_exhausted` after `--max-rounds`.
 
@@ -100,6 +117,31 @@ node --input-type=module -e '
   import { replayRunLog } from "@lattice/tessera";
   console.log(await replayRunLog(process.argv[1]));' <run.jsonl>
 ```
+
+## Repair memory and held-out tasks
+
+`--record-memory mem.jsonl` appends every distinct verified repair of a
+comparison to a JSONL memory: the broken program, what `tsr` said about it
+(its diagnostic codes, or `behaviour` when it compiled but cases failed) and
+the fix that passed. `--memory mem.jsonl` shows the generator, before the
+current file, the two stored repairs whose failure shares the most diagnostic
+codes and words with the current one. Only `tsr`-verified pairs are stored, a
+task never retrieves its own repairs (so seeds cannot teach each other), and
+the memory is read-only during a comparison.
+
+`heldout/` holds four tasks with the same kinds of failure as `tasks/` on
+other programs. They are never in the default set, so memory is measured on
+tasks it was not built from:
+
+```bash
+node examples/tessera-repair/compare.mjs --generator model ... --record-memory mem.jsonl
+node examples/tessera-repair/compare.mjs --generator model ... --task-dir heldout --ablation
+node examples/tessera-repair/compare.mjs --generator model ... --task-dir heldout --ablation --memory mem.jsonl
+```
+
+`memoryExamples` in each run report (and `runsWithMemory` in the summary)
+says how many examples a run was shown. The offline stub ignores its prompt,
+so only a model arm can show an effect.
 
 ## Why the prompt and suggestions look like this
 

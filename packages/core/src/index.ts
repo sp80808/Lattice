@@ -13,6 +13,7 @@ import {
   type DecisionReviewer,
   type ExperimentExecutor,
   type ProposalPrompt,
+  type SearchLoopOptions,
 } from "@lattice/search";
 import {
   TAP_VERSION,
@@ -47,6 +48,10 @@ export interface RunTaskOptions {
     onAbstain?: "block" | "verify-top";
     /** See `SearchLoopOptions.formatRetries`. */
     formatRetries?: number;
+    /** See `SearchLoopOptions.actionKey`. */
+    actionKey?: SearchLoopOptions["actionKey"];
+    /** See `SearchLoopOptions.allowRepeats`. */
+    allowRepeats?: boolean;
   };
 }
 
@@ -239,6 +244,8 @@ export async function runTask(
         proposal: options.search.proposal,
         onAbstain: options.search.onAbstain,
         formatRetries: options.search.formatRetries,
+        actionKey: options.search.actionKey,
+        allowRepeats: options.search.allowRepeats,
         onTrace: async (event) => {
           if (
             event.type === "candidates.generated" ||

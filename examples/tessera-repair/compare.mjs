@@ -13,7 +13,7 @@
 // temporary copy of the task; `--keep` prints where. Nothing here is mocked on
 // the verification path: without a working tsr every candidate is a tool error.
 import { readdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
@@ -25,6 +25,8 @@ import {
   HeuristicRepairDecider,
   compareRepair,
   formatComparison,
+  appendRepairMemory,
+  loadRepairMemory,
   loadRepairTask,
   randomArm,
   runWitness,
@@ -54,6 +56,17 @@ const { values } = parseArgs({
     "no-suggestions": { type: "boolean" },
     // Also offer SEARCH/REPLACE edits in the prompt (whole files only by default).
     edits: { type: "boolean" },
+    // Task set: a directory of task directories (default tasks/; heldout/ is kept apart for memory runs).
+    "task-dir": { type: "string", default: "tasks" },
+    // Show the generator verified repairs of other tasks from this JSONL memory (read-only).
+    memory: { type: "string" },
+    // Append this comparison's verified repairs to a JSONL memory file.
+    "record-memory": { type: "string" },
+    // Ask for the smallest change that fixes the cause (Ponytail's rule; off by default).
+    minimal: { type: "boolean" },
+    // canonical (default): drop candidates whose `tsr fmt` form was already verified;
+    // exact: drop only textual repeats; allow: verify repeats again (pre-detection behaviour).
+    repeats: { type: "string", default: "canonical" },
     // Run with and without tsr suggestions and report both.
     ablation: { type: "boolean" },
   },
@@ -113,8 +126,11 @@ const pricing =
     ? { inputPerMTok: Number(values["price-in"] ?? 0), outputPerMTok: Number(values["price-out"] ?? 0) }
     : undefined;
 
-const names = values.tasks?.split(",") ?? (await readdir(join(here, "tasks"))).sort();
-const tasks = await Promise.all(names.map((name) => loadRepairTask(join(here, "tasks", name))));
+const taskDir = resolve(here, values["task-dir"]);
+const names = values.tasks?.split(",") ?? (await readdir(taskDir)).sort();
+const tasks = await Promise.all(names.map((name) => loadRepairTask(join(taskDir, name))));
+const memory = values.memory ? await loadRepairMemory(values.memory) : undefined;
+if (values.memory && !memory.length) fail(`${values.memory} holds no repair memory`);
 const seedCount = Number(values.seeds);
 if (!Number.isInteger(seedCount) || seedCount < 1) fail("--seeds must be a positive integer");
 
@@ -128,9 +144,12 @@ const run = (suggestions) =>
     pricing,
     suggestions,
     edits: values.edits,
+    minimal: values.minimal,
+    memory,
+    repeats: ["canonical", "exact", "allow"].includes(values.repeats) ? values.repeats : fail("--repeats must be canonical, exact or allow"),
     onRun: (run) => {
       console.error(
-        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.formatErrors ? ` format_errors=${run.formatErrors}` : ""}${run.editFailures ? ` edit_failures=${run.editFailures}` : ""}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
+        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.formatErrors ? ` format_errors=${run.formatErrors}` : ""}${run.editFailures ? ` edit_failures=${run.editFailures}` : ""}${run.repeatsDropped ? ` repeats_dropped=${run.repeatsDropped}` : ""}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
       );
       // Auth, billing and rate-limit errors fail every later run the same way.
       const status = /Provider request failed: (\d{3})/.exec(run.error ?? "")?.[1];
@@ -145,6 +164,22 @@ const reports = values.ablation
   ? [await run(true), await run(false)]
   : [await run(!values["no-suggestions"])];
 const output = reports.length === 1 ? reports[0] : { withSuggestions: reports[0], withoutSuggestions: reports[1] };
+
+if (values["record-memory"]) {
+  // One entry per distinct verified repair, whichever arm or seed found it.
+  const known = new Set((await loadRepairMemory(values["record-memory"])).map((e) => `${e.task}\0${e.after.trim()}`));
+  const fresh = [];
+  for (const run of reports.flatMap((report) => report.runs)) {
+    const entry = run.memoryEntry;
+    const key = entry && `${entry.task}\0${entry.after.trim()}`;
+    if (entry && !known.has(key)) {
+      known.add(key);
+      fresh.push(entry);
+    }
+  }
+  await appendRepairMemory(values["record-memory"], fresh);
+  console.error(`compare: recorded ${fresh.length} verified repair(s) in ${values["record-memory"]}`);
+}
 
 if (values.out) await writeFile(values.out, JSON.stringify(output, null, 2) + "\n");
 if (values.json) console.log(JSON.stringify(output, null, 2));

@@ -8,6 +8,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { runTask } from "@lattice/core";
+import { runCommand } from "@lattice/execution";
 import {
   UNKNOWN_CHOICE_ID,
   type DecisionProvider,
@@ -21,6 +22,7 @@ import {
   type TapPacket,
 } from "@lattice/protocol";
 import { seededRandom } from "@lattice/providers";
+import { defaultActionKey } from "@lattice/search";
 import type {
   CandidateAction,
   ExperimentExecutor,
@@ -29,6 +31,7 @@ import type {
 } from "@lattice/search";
 import {
   createWitnessVerifier,
+  resolveTsr,
   toVerificationRecord,
   verifyTessera,
   type CandidateLineage,
@@ -51,6 +54,7 @@ import {
   type Attempt,
   type WitnessSuggestion,
 } from "./feedback.js";
+import { memoryEntry, renderRepairs, retrieveRepairs, type RepairMemoryEntry } from "./memory.js";
 import { DIVIDER_MARKER, REPLACE_MARKER, SEARCH_MARKER, applyEditAction, isSearchReplace } from "./edits.js";
 
 /** `task.json` in a repair task directory. */
@@ -212,7 +216,8 @@ export class MutationRepairGenerator implements GeneratorProvider {
   }
 }
 
-function editDistance(a: string, b: string): number {
+/** Levenshtein distance in characters. */
+export function editDistance(a: string, b: string): number {
   const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let diag = prev[0]!;
@@ -277,7 +282,22 @@ export interface RepairFeedback {
   attempts?: () => Attempt[];
   /** Also offer SEARCH/REPLACE edits as a candidate format (default: whole files only). */
   edits?: boolean;
+  /** Ask for the smallest change that fixes the root cause (see `MINIMAL_CHANGE_RULE`). */
+  minimal?: boolean;
+  /** Worked examples from repair memory (see `retrieveRepairs`), placed before the current file. */
+  examples?: () => string | undefined;
 }
+
+/**
+ * The repair reading of Ponytail's "lazy senior developer" rule
+ * (github.com/DietrichGebert/ponytail, MIT; idea only): understand the
+ * failure first, then the shortest diff that fixes its cause wins. Off by
+ * default so earlier numbers compare; `patchDistance` measures its effect.
+ */
+export const MINIMAL_CHANGE_RULE = [
+  "Make the smallest change that fixes the cause of the failure: first read the diagnostics and failing cases and work out what is actually wrong,",
+  "then keep every part of the file they do not show to be wrong exactly as it is. Prefer deleting or replacing over adding; never rewrite working parts.",
+].join(" ");
 
 const EDIT_FORMAT = [
   `An action may instead be one or more SEARCH/REPLACE edits of the current file, each written as:`,
@@ -310,6 +330,7 @@ export function repairProposal(
         `Propose up to ${count} distinct candidate repairs of ${task.file}.`,
         `Required behaviour: ${cases}.`,
         "Use the compiler diagnostics and run results in the evidence. Each candidate's `action` is the COMPLETE new file content, nothing else.",
+        ...(feedback.minimal ? [MINIMAL_CHANGE_RULE] : []),
         ...(feedback.edits ? [EDIT_FORMAT] : []),
         "Return JSON only:",
         '{"candidates":[{"id":"a","label":"short neutral description of the change","action":"<complete file>","expectedEvidence":"tsr witness pass and cases match","estimatedCost":"low"}]}',
@@ -319,8 +340,10 @@ export function repairProposal(
       const source = await readSource();
       const current = feedback.current?.();
       const attempts = renderAttempts(feedback.attempts?.() ?? []);
+      const examples = feedback.examples?.();
       return [
         ...(feedback.grammar ? [`TC GRAMMAR (from tsr grammar; the only accepted syntax):\n${feedback.grammar}`] : []),
+        ...(examples ? [examples] : []),
         `CURRENT ${task.file}:\n${source}`,
         ...(current ? [`TSR ON CURRENT ${task.file}:\n${renderVerdict(source, current)}`] : []),
         ...(attempts ? [attempts] : []),
@@ -476,6 +499,55 @@ export function createRepairExecutor(
 }
 
 // ---------------------------------------------------------------------------
+// Repeat detection.
+
+export type RepeatMode = "canonical" | "exact" | "allow";
+
+export interface CanonicalKey {
+  (candidate: CandidateAction): Promise<string>;
+  /** `tsr fmt` processes spent (one per distinct program text). */
+  processes: () => number;
+}
+
+/**
+ * `actionKey` for repair candidates: the program as `tsr fmt` spells it, so a
+ * candidate that only respaces, re-breaks or comments an earlier attempt is
+ * recognised as the same program and never re-verified (Agentless dedupes
+ * normalized patches before testing them; OpenHands stops an agent repeating
+ * itself). A program `tsr fmt` cannot parse, and a SEARCH/REPLACE edit, fall
+ * back to the search loop's plain key.
+ */
+export function canonicalActionKey(workspace: string, tsr?: string): CanonicalKey {
+  const cache = new Map<string, Promise<string>>();
+  let processes = 0;
+  let counter = 0;
+  const key = (async (candidate: CandidateAction) => {
+    if (isSearchReplace(candidate.action)) return defaultActionKey(candidate);
+    const program = candidateProgram(candidate.action);
+    let pending = cache.get(program);
+    if (!pending) {
+      pending = (async () => {
+        const dir = join(workspace, ".lattice", "fmt");
+        await mkdir(dir, { recursive: true });
+        const file = join(dir, `${++counter}.tes`);
+        await writeFile(file, program, "utf8");
+        processes++;
+        const result = await runCommand({ command: resolveTsr(tsr), args: ["fmt", file], timeoutMs: 30_000 }).catch(
+          () => undefined,
+        );
+        return result?.exitCode === 0 && result.stdout.trim()
+          ? `tsr-fmt:${result.stdout.trim()}`
+          : defaultActionKey({ ...candidate, action: program });
+      })();
+      cache.set(program, pending);
+    }
+    return pending;
+  }) as CanonicalKey;
+  key.processes = () => processes;
+  return key;
+}
+
+// ---------------------------------------------------------------------------
 // One repair run, with metrics.
 
 export interface Pricing {
@@ -521,8 +593,23 @@ export interface RepairRunOptions {
   grammar?: boolean;
   /** Offer SEARCH/REPLACE edits in the proposal prompt (default false; edits are applied either way). */
   edits?: boolean;
+  /** Add the minimal-change rule to the proposal prompt (default false). */
+  minimal?: boolean;
+  /**
+   * Verified repairs of earlier runs; the two most similar failures from
+   * other tasks are shown to the generator as worked examples (default none).
+   */
+  memory?: RepairMemoryEntry[];
   /** Unusable generator replies sent back for another attempt per round (default 2). */
   formatRetries?: number;
+  /**
+   * How candidates that repeat an earlier attempt are handled. "canonical"
+   * (default) drops those whose `tsr fmt` form matches a program already
+   * verified; "exact" drops only textual repeats (modulo trailing
+   * whitespace); "allow" verifies them again, as runs did before repeat
+   * detection.
+   */
+  repeats?: RepeatMode;
 }
 
 export interface RepairRunReport {
@@ -540,6 +627,12 @@ export interface RepairRunReport {
   costUsd: number | null;
   /** Verified final program when solved. */
   patch?: string;
+  /** Characters changed from the broken program to `patch` (Levenshtein); set when solved. */
+  patchDistance?: number;
+  /** Memory entries shown to the generator (0 without memory or when none was similar). */
+  memoryExamples: number;
+  /** This run's verified repair as a memory entry; set when solved by a candidate (not when the program already passed). */
+  memoryEntry?: RepairMemoryEntry;
   /** Witness `result_id` of the initial (broken) program. */
   initialResultId?: string;
   /** The `tsr` build that judged this run, from its witness document. */
@@ -557,6 +650,12 @@ export interface RepairRunReport {
   formatErrors: number;
   /** SEARCH/REPLACE candidates that did not apply; each was fed back without a `tsr` call. */
   editFailures: number;
+  /** Candidates dropped before the decision because they repeated an attempt (or a sibling). */
+  repeatsDropped: number;
+  /** Replies whose candidates were all repeats (each retried, or the run stopped as stuck). */
+  repeatReplies: number;
+  /** `tsr fmt` processes spent recognising repeats (not in `tsrProcesses`). */
+  fmtProcesses: number;
 }
 
 function emptyTotals(): UsageTotals {
@@ -604,11 +703,26 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       : new SuggestionFirstGenerator(inner, () => executor.stats.suggestions, () => executor.stats.tried);
   const grammar = options.grammar === false ? undefined : await loadGrammar(options.tsr);
   let current: TesseraVerificationRecord | undefined;
+  let initial: TesseraVerificationRecord | undefined;
+  let memoryExamples = 0;
+  let examples: string | undefined | null = null;
+  const retrieve = () => {
+    if (examples === null && initial) {
+      const found = retrieveRepairs(options.memory ?? [], task.name, original, initial);
+      memoryExamples = found.length;
+      examples = renderRepairs(found);
+    }
+    return examples ?? undefined;
+  };
 
   // Model/generator spend only: rounds `tsr` answered are counted apart.
   const generatorTotals: RepairRunReport["generator"] = emptyTotals();
   let suggestionRounds = 0;
   let formatErrors = 0;
+  let repeatReplies = 0;
+  let repeatsDropped = 0;
+  const repeats = options.repeats ?? "canonical";
+  const actionKey = repeats === "canonical" ? canonicalActionKey(workspace, options.tsr) : undefined;
   let lastRound = 0;
   let initialResultId: string | undefined;
   let tsrBuild: RepairRunReport["tsr"];
@@ -621,7 +735,11 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       (proposal === "candidates.generated" || proposal === "candidates.rejected")
     ) {
       lastRound = Math.max(lastRound, payload.event.round ?? 0);
-      if (proposal === "candidates.rejected") formatErrors++;
+      if (proposal === "candidates.rejected") {
+        if (payload.event.reason === "repeat") repeatReplies++;
+        else formatErrors++;
+      }
+      repeatsDropped += payload.event.repeats ?? 0;
       if (payload.event.identity?.provider === SUGGESTION_PROVIDER) {
         suggestionRounds++;
       } else {
@@ -635,6 +753,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       addUsage(decisionTotals, payload.usage, options.pricing);
     } else if (event.type === "tool.completed" && payload?.tool === "tessera.witness") {
       current = payload.record as TesseraVerificationRecord;
+      initial ??= current;
       addSuggestions(executor.stats.suggestions, witnessSuggestions(current?.witness?.document));
       const document = payload.record?.witness?.document;
       initialResultId = document?.result_id;
@@ -663,6 +782,10 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
     suggestionRounds,
     formatErrors,
     editFailures: executor.stats.editFailures,
+    repeatsDropped,
+    repeatReplies,
+    fmtProcesses: actionKey?.processes() ?? 0,
+    memoryExamples,
   });
 
   let report: RepairRunReport;
@@ -683,20 +806,30 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
         // A strong model can abstain even when a viable repair is ranked; verify the top-scored candidate.
         onAbstain: "verify-top",
         formatRetries: options.formatRetries,
+        actionKey,
+        allowRepeats: repeats === "allow",
         proposal: repairProposal(task, () => readFile(programPath, "utf8"), () => executor.stats.tried, {
           grammar,
           current: () => current,
           attempts: () => executor.stats.attempts,
           edits: options.edits,
+          minimal: options.minimal,
+          ...(options.memory?.length ? { examples: retrieve } : {}),
         }),
       },
     });
     const status = result.search?.status ?? "blocked";
+    const patch = status === "solved" ? await readFile(programPath, "utf8") : undefined;
     report = {
       ...base(),
       status,
       rounds: result.search?.rounds ?? 0,
-      patch: status === "solved" ? await readFile(programPath, "utf8") : undefined,
+      patch,
+      patchDistance: patch === undefined ? undefined : editDistance(original, patch),
+      memoryEntry:
+        patch !== undefined && initial && !toVerificationRecord(initial).passed
+          ? memoryEntry(task.name, original, patch, initial)
+          : undefined,
       lineage: status === "solved" ? executor.stats.accepted : undefined,
       runId: result.runId,
       eventLogPath: result.eventLogPath,

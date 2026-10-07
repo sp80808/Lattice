@@ -106,6 +106,8 @@ export type SearchTraceEvent =
       candidates: CandidateAction[];
       /** Why candidates in the reply were dropped while the rest were kept. */
       dropped?: string[];
+      /** How many of the dropped candidates repeated an action already run or proposed twice. */
+      repeats?: number;
       identity?: ProviderIdentity;
       usage?: ProviderUsage;
     }
@@ -118,6 +120,10 @@ export type SearchTraceEvent =
       type: "candidates.rejected";
       round: number;
       error: string;
+      /** "repeat" when the reply was well formed but every candidate had already been tried. */
+      reason?: "format" | "repeat";
+      /** With reason "repeat": how many candidates the reply repeated. */
+      repeats?: number;
       /** Which attempt of this round failed (1-based). */
       attempt?: number;
       retrying?: boolean;
@@ -220,6 +226,19 @@ export interface SearchLoopOptions {
    * retry is a separate, traced generator call.
    */
   formatRetries?: number;
+  /**
+   * Identifies a candidate's action for repeat detection (default: the action
+   * with line endings and trailing whitespace normalized). A candidate whose
+   * key matches an action already run this search, or an earlier candidate in
+   * the same reply, is dropped before the decision. When every candidate of a
+   * reply is a repeat, the reply counts as unusable (see `formatRetries`) and,
+   * once retries are spent, the run stops as blocked rather than spending a
+   * round re-running a known result. Domain searches can pass a canonical form
+   * (e.g. a formatter's output) so trivially respelled repeats are caught too.
+   */
+  actionKey?: (candidate: CandidateAction) => string | Promise<string>;
+  /** Run repeated actions again instead of dropping them (default false; the behaviour before repeat detection). */
+  allowRepeats?: boolean;
   onTrace?: (event: SearchTraceEvent) => void | Promise<void>;
 }
 
@@ -355,6 +374,28 @@ export function parseCandidates(text: string, limit: number): ParsedCandidates {
 
 /** Context block that sends an unusable reply's error back to the generator. */
 export const FORMAT_ERROR_HEADER = "YOUR PREVIOUS REPLY COULD NOT BE USED:";
+/** Context block sent back when every candidate of a reply had already been tried. */
+export const REPEAT_ERROR_HEADER = "EVERY CANDIDATE IN YOUR PREVIOUS REPLY WAS ALREADY TRIED:";
+
+/** Default `actionKey`: the action as written, ignoring line endings and trailing whitespace. */
+export function defaultActionKey(candidate: CandidateAction): string {
+  return candidate.action
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+
+class RepeatError extends Error {}
+
+function repeatFeedback(repeated: CandidateAction[]): string {
+  return [
+    REPEAT_ERROR_HEADER,
+    ...repeated.map((c) => `- ${c.label}: ${c.action.length > 200 ? `${c.action.slice(0, 200)}…` : c.action}`),
+    "Their results are already in the evidence. Propose genuinely different actions; reformatting or renaming an earlier one does not count.",
+  ].join("\n");
+}
 
 function formatErrorFeedback(error: string, reply: string): string {
   const excerpt = reply.length > 400 ? `${reply.slice(0, 400)}…` : reply;
@@ -633,6 +674,9 @@ export async function runSearchLoop(
   const parallelism = Math.max(1, Math.min(options.parallelism ?? topK, topK));
   const autonomy = options.autonomy ?? { mode: "autopilot" };
   const selected: string[] = [];
+  const actionKey = options.actionKey ?? defaultActionKey;
+  /** Keys of actions whose experiments ran (OpenHands-style stuck detection, applied before the run). */
+  const attempted = new Set<string>();
 
   for (let round = 1; round <= maxRounds; round++) {
     const state = compactState(tap);
@@ -643,6 +687,8 @@ export async function runSearchLoop(
     let candidates: CandidateAction[] = [];
     let generated!: Awaited<ReturnType<GeneratorProvider["generate"]>>;
     let dropped: string[] = [];
+    let repeats = 0;
+    const keys = new Map<string, string>();
     for (let attempt = 1; ; attempt++) {
       generated = await options.generator.generate({
         system:
@@ -654,22 +700,61 @@ export async function runSearchLoop(
       });
       try {
         ({ candidates, dropped } = parseCandidates(generated.text, candidatesPerRound));
+        const fresh: CandidateAction[] = [];
+        const repeated: CandidateAction[] = [];
+        keys.clear();
+        const seen = new Map<string, string>();
+        for (const candidate of candidates) {
+          const key = await actionKey(candidate);
+          const twin = seen.get(key);
+          if (options.allowRepeats) {
+            fresh.push(candidate);
+            continue;
+          }
+          if (attempted.has(key)) {
+            repeated.push(candidate);
+            dropped.push(`candidate ${candidate.id}: repeats an action already tried`);
+          } else if (twin !== undefined) {
+            dropped.push(`candidate ${candidate.id}: same action as candidate ${twin}`);
+          } else {
+            seen.set(key, candidate.id);
+            keys.set(candidate.id, key);
+            fresh.push(candidate);
+          }
+        }
+        repeats = candidates.length - fresh.length;
+        if (!fresh.length) {
+          throw new RepeatError(
+            `every candidate repeats an action already tried (${repeated.map((c) => c.id).join(", ")})`,
+          );
+        }
+        candidates = fresh;
         break;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const repeat = error instanceof RepeatError;
         const retrying = attempt <= formatRetries;
         // Record the call before retrying or failing so its tokens and cost are not lost.
         await options.onTrace?.({
           type: "candidates.rejected",
           round,
           error: message,
+          reason: repeat ? "repeat" : "format",
+          ...(repeat ? { repeats } : {}),
           attempt,
           retrying,
           identity: generated.identity,
           usage: generated.usage,
         });
+        if (!retrying && repeat) {
+          // Stuck: re-running a known result cannot teach anything new.
+          tap.uncertainties.push(`round ${round}: stuck, the generator only proposed actions already tried`);
+          return { status: "blocked", rounds: round, tap, selected };
+        }
         if (!retrying) throw error;
-        feedback = formatErrorFeedback(message, generated.text);
+        feedback = repeat
+          ? repeatFeedback(candidates)
+          : formatErrorFeedback(message, generated.text);
       }
     }
     tap.candidateActions = candidates.map(
@@ -681,6 +766,7 @@ export async function runSearchLoop(
       round,
       candidates,
       ...(dropped.length ? { dropped } : {}),
+      ...(repeats ? { repeats } : {}),
       identity: generated.identity,
       usage: generated.usage,
     });
@@ -852,6 +938,7 @@ export async function runSearchLoop(
     }
 
     selected.push(...selectedIds);
+    for (const id of selectedIds) attempted.add(keys.get(id)!);
 
     const outcomes: Array<ExperimentOutcome | undefined> = new Array(
       selectedCandidates.length,

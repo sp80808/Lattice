@@ -13,9 +13,11 @@ import {
   runRepair,
   type Pricing,
   type RepairRunReport,
+  type RepeatMode,
   type RepairTask,
 } from "./repair.js";
 import type { TesseraVerificationRecord } from "./witness.js";
+import type { RepairMemoryEntry } from "./memory.js";
 
 export interface ComparisonArm {
   name: string;
@@ -79,6 +81,12 @@ export interface ComparisonOptions {
   suggestions?: boolean;
   /** Offer SEARCH/REPLACE edits in the proposal prompt (see `runRepair`). */
   edits?: boolean;
+  /** Add the minimal-change rule to the proposal prompt (see `runRepair`). */
+  minimal?: boolean;
+  /** Repair memory shown to the generator (see `runRepair`); read-only during the comparison. */
+  memory?: RepairMemoryEntry[];
+  /** How repeated candidates are handled (see `runRepair`; default "canonical"). */
+  repeats?: RepeatMode;
   onRun?: (report: RepairRunReport) => void;
 }
 
@@ -95,6 +103,10 @@ export interface ArmSummary {
   /** Means over solved runs; null when none solved. */
   meanRoundsToSolve: number | null;
   meanVerificationsToSolve: number | null;
+  /** Mean characters changed from the broken program, over solved runs. */
+  meanPatchDistance: number | null;
+  /** Runs that were shown at least one memory example. */
+  runsWithMemory: number;
   meanTokens: number;
   meanCostUsd: number | null;
   /**
@@ -113,6 +125,10 @@ export interface ArmSummary {
   formatErrors: number;
   /** SEARCH/REPLACE candidates that did not apply, across the group. */
   editFailures: number;
+  /** Candidates dropped as repeats of an attempt, across the group. */
+  repeatsDropped: number;
+  /** Generator replies made only of repeats, across the group (retried or stuck). */
+  repeatReplies: number;
 }
 
 export interface ComparisonReport {
@@ -124,6 +140,12 @@ export interface ComparisonReport {
   candidatesPerRound: number;
   /** Whether `tsr` suggestions were tried before the generator; false is the generator-only ablation. */
   suggestions: boolean;
+  /** Whether the minimal-change rule was in the prompt. */
+  minimal?: boolean;
+  /** Memory entries available to the runs (0: no memory). */
+  memoryEntries?: number;
+  /** How repeated candidates were handled; absent in reports from before repeat detection ("allow"). */
+  repeats?: RepeatMode;
   runs: RepairRunReport[];
   summary: ArmSummary[];
 }
@@ -164,6 +186,8 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       unresolved: group.length - solved.length,
       meanRoundsToSolve: mean(solved.map((r) => r.rounds)),
       meanVerificationsToSolve: mean(solved.map((r) => r.verifications)),
+      runsWithMemory: group.filter((r) => (r.memoryExamples ?? 0) > 0).length,
+      meanPatchDistance: mean(solved.flatMap((r) => (r.patchDistance === undefined ? [] : [r.patchDistance]))),
       meanTokens: totalTokens / group.length,
       meanCostUsd: totalCost === null ? null : totalCost / group.length,
       modelTokensPerModelPatch: model ? sum(modelRuns.map((r) => r.tokens)) / model : null,
@@ -174,6 +198,8 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       // Reports written before format retries existed have no count.
       formatErrors: sum(group.map((r) => r.formatErrors ?? 0)),
       editFailures: sum(group.map((r) => r.editFailures ?? 0)),
+      repeatsDropped: sum(group.map((r) => r.repeatsDropped ?? 0)),
+      repeatReplies: sum(group.map((r) => r.repeatReplies ?? 0)),
     };
   });
 }
@@ -207,6 +233,9 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           latticeDir: options.latticeDir,
           suggestions: options.suggestions,
           edits: options.edits,
+          minimal: options.minimal,
+          memory: options.memory,
+          repeats: options.repeats,
         });
         runs.push(report);
         options.onRun?.(report);
@@ -221,6 +250,9 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
     maxRounds: options.maxRounds ?? 6,
     candidatesPerRound: options.candidatesPerRound ?? 4,
     suggestions: options.suggestions !== false,
+    minimal: options.minimal ?? false,
+    memoryEntries: options.memory?.length ?? 0,
+    repeats: options.repeats ?? "canonical",
     runs,
     summary: summarize(runs),
   };
@@ -234,12 +266,12 @@ export function formatComparison(report: ComparisonReport): string {
       ? "tsr suggestions: ON (compiler repairs tried before the generator; compare with --no-suggestions)"
       : "tsr suggestions: OFF (generator-only ablation)",
     "",
-    "| task | arm | solved | by compiler repair | by generator | unresolved | mean rounds to solve | model tokens / generator patch | model cost / generator patch (USD) | end-to-end tokens / verified patch | end-to-end cost / verified patch (USD) |",
-    "|---|---|---|---|---|---|---|---|---|---|---|",
+    "| task | arm | solved | by compiler repair | by generator | unresolved | mean rounds to solve | mean patch distance | model tokens / generator patch | model cost / generator patch (USD) | end-to-end tokens / verified patch | end-to-end cost / verified patch (USD) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const s of report.summary) {
     lines.push(
-      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedByCompilerRepair} | ${s.solvedByModelGenerator} | ${s.unresolved} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.modelTokensPerModelPatch, 0)} | ${fmt(s.modelCostPerModelPatchUsd, 6)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
+      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedByCompilerRepair} | ${s.solvedByModelGenerator} | ${s.unresolved} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.meanPatchDistance, 1)} | ${fmt(s.modelTokensPerModelPatch, 0)} | ${fmt(s.modelCostPerModelPatchUsd, 6)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
     );
   }
   return lines.join("\n");

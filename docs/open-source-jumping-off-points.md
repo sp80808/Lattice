@@ -151,6 +151,55 @@ Lattice adoption:
 
 Ideas only; no code was copied from these projects.
 
+## OpenHands, opencode and Agentless — repeats and stuck agents
+
+Repositories:
+- https://github.com/All-Hands-AI/OpenHands (MIT, outside `enterprise/`)
+- https://github.com/anomalyco/opencode (MIT)
+- https://github.com/OpenAutoCoder/Agentless (MIT)
+
+Useful precedent:
+
+- OpenHands' stuck detector ends a run whose agent keeps issuing the same
+  action and getting the same observation, instead of letting it burn budget;
+- opencode asks before a "doom loop" (the same tool call with the same input
+  several times in a row);
+- Agentless normalizes candidate patches and drops duplicates before running
+  tests, so equivalent patches cost one verification.
+
+Lattice adoption:
+
+- the search loop drops candidates whose action was already run, or that
+  duplicate a sibling, before the decision (`actionKey`, `allowRepeats`); a
+  reply made only of repeats is sent back like a malformed one, and once
+  retries are spent the run stops as `blocked` (stuck) rather than spending a
+  round on a known result;
+- Tessera repairs compare programs by their `tsr fmt` canonical form, so the
+  compiler, not a regex, decides what counts as the same program.
+
+Ideas only; no code was copied from these projects.
+
+## Ponytail — smallest working diff
+
+Repository: https://github.com/DietrichGebert/ponytail (MIT)
+
+Useful precedent:
+
+- a single always-on rule makes coding agents stop at the first rung that
+  holds (does it need to exist, reuse, stdlib, one line, then the minimum),
+  but only after tracing the real problem; it reports less code and lower
+  cost with no safety loss on its own benchmark.
+
+Lattice adoption:
+
+- `--minimal` puts the repair reading of that rule in the Tessera proposal
+  prompt (fix the cause with the smallest diff, leave the rest alone), off by
+  default; `patchDistance` on every solved run measures it;
+- the rule itself suits the CLI agents Lattice delegates issue work to, as an
+  installed skill or `AGENTS.md`, rather than Lattice code.
+
+Ideas only; no code was copied.
+
 ## Initial build-vs-borrow rule
 
 Prefer an upstream/open standard when the feature is commodity infrastructure:
