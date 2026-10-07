@@ -302,9 +302,58 @@ export interface IsolatedAgentRunResult {
   workspaceRetained: boolean;
 }
 
+export interface ObjectiveVerificationStatus {
+  ran: boolean;
+  passed: boolean;
+  objective: boolean;
+  tool?: string;
+  evidenceIds: string[];
+  reason?: string;
+}
+
+export function objectiveVerification(
+  result: IsolatedAgentRunResult,
+): ObjectiveVerificationStatus {
+  if (result.verifierResult) {
+    return {
+      ran: true,
+      passed: result.verifierResult.passed,
+      objective: true,
+      tool: result.verifierResult.tool,
+      evidenceIds: result.verifierResult.evidence
+        ? result.verifierResult.evidence.map((e) => e.id)
+        : [],
+      reason: result.verifierResult.summary,
+    };
+  }
+
+  if (result.verification) {
+    return {
+      ran: true,
+      passed:
+        result.verification.exitCode === 0 && !result.verification.timedOut,
+      objective: true,
+      tool: "command",
+      evidenceIds: [],
+    };
+  }
+
+  return {
+    ran: false,
+    passed: false,
+    objective: false,
+    evidenceIds: [],
+    reason: "no verifier configured",
+  };
+}
+
 export async function runIsolatedAgent(
   options: IsolatedAgentRunOptions,
 ): Promise<IsolatedAgentRunResult> {
+  if (options.verifyCommand && options.verifier) {
+    throw new Error("Cannot specify both verifyCommand and verifier");
+  }
+
   const workspace = await createDetachedWorktree(
     options.repoRoot,
     options.baseRevision,
@@ -373,6 +422,7 @@ export interface ParallelAgentJob {
   task: AgentTask;
   adapter: AgentAdapter;
   verifyCommand?: CommandSpec;
+  verifier?: Verifier;
   cleanup?: CleanupPolicy;
 }
 
@@ -461,6 +511,7 @@ export async function runParallelAgents(
           task: job.task,
           adapter: job.adapter,
           verifyCommand: job.verifyCommand,
+          verifier: job.verifier,
           cleanup: job.cleanup,
         });
 
@@ -471,11 +522,7 @@ export async function runParallelAgents(
         };
         results[index] = item;
 
-        if (
-          result.success &&
-          result.verification?.exitCode === 0 &&
-          !result.verification.timedOut
-        ) {
+        if (result.success && objectiveVerification(result).passed) {
           verifiedFound = true;
         }
 
@@ -521,8 +568,7 @@ export function verifiedBatchResults(
     ): item is Extract<ParallelAgentJobResult, { status: "fulfilled" }> =>
       item.status === "fulfilled" &&
       item.result.success &&
-      item.result.verification?.exitCode === 0 &&
-      !item.result.verification.timedOut,
+      objectiveVerification(item.result).passed,
   );
 }
 
