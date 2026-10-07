@@ -94,8 +94,12 @@ export function renderVerdict(source: string, record: TesseraVerificationRecord)
 }
 
 export interface Attempt {
+  /** The verified file, or the action itself when an edit could not be applied. */
   source: string;
-  record: TesseraVerificationRecord;
+  /** Absent when the attempt never reached `tsr` (see `error`). */
+  record?: TesseraVerificationRecord;
+  /** Why the attempt was rejected before verification, e.g. a SEARCH block that matched nothing. */
+  error?: string;
 }
 
 export const ATTEMPTS_HEADER = "REJECTED ATTEMPTS AND WHAT TSR SAID (most recent last):";
@@ -108,7 +112,7 @@ export function renderAttempts(attempts: Attempt[], max = 3): string | undefined
     ATTEMPTS_HEADER,
     ...(attempts.length > shown.length ? [`(${attempts.length - shown.length} earlier attempts omitted)`] : []),
     ...shown.map(
-      (a, i) => `--- attempt ${attempts.length - shown.length + i + 1}:\n${a.source.trim()}\n>>> ${renderVerdict(a.source, a.record).replace(/\n/g, "\n    ")}`,
+      (a, i) => `--- attempt ${attempts.length - shown.length + i + 1}:\n${a.source.trim()}\n>>> ${(a.record ? renderVerdict(a.source, a.record) : `not applied: ${a.error ?? "unknown error"}`).replace(/\n/g, "\n    ")}`,
     ),
   ].join("\n");
 }

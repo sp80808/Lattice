@@ -44,6 +44,23 @@ behaviour `tsr run` must show (`add(2,3)=5`, `add(0,0)=0`, `add(7,-2)=5`).
    Rust-style program) are offered as candidates at no token cost; they are
    verified like any other. `--no-suggestions` measures the generator alone;
    `--ablation` reports both (see "Attribution" below).
+   A reply that is not usable JSON does not end the run: its parse error and
+   an excerpt go back to the generator, which answers again (two retries per
+   round by default, as Roo Code and Cline do with malformed tool calls).
+   Every retry is a traced call and its tokens count; `formatErrors` in each
+   run report says how many replies were unusable. Candidates with a missing
+   field are dropped while their siblings are kept, a raw newline inside a JSON
+   string is read as `\n`, and a program wrapped in a markdown fence is
+   unwrapped before `tsr` sees it.
+   A candidate may also be SEARCH/REPLACE blocks (`<<<<<<< SEARCH` /
+   `=======` / `>>>>>>> REPLACE`) applied to the current file, as Roo Code,
+   Cline and Kilo Code edit files: matched exactly, then line by line ignoring
+   indentation, then ignoring whitespace altogether, and refused when it
+   matches several places. An edit that matches nowhere costs no `tsr` call;
+   it becomes a rejected attempt whose feedback quotes the closest text in the
+   file and its similarity. `--edits` offers this format in the prompt (whole
+   files only by default, so earlier numbers stay comparable); `editFailures`
+   counts edits that did not apply.
 3. Only a candidate `tsr` accepts is written back. The run ends `solved`, or
    `budget_exhausted` after `--max-rounds`.
 
