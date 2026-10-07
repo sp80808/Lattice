@@ -39,6 +39,13 @@ export function claudeCodeArgs(system: string, options: ClaudeCodeOptions = {}):
   return [...args, ...(options.extraArgs ?? [])];
 }
 
+/** Failures that every later call will repeat map to the statuses the comparison stops on. */
+function failureStatus(message: string): number {
+  if (/not logged in|\/login|authentication/i.test(message)) return 401;
+  if (/limit/i.test(message)) return 429;
+  return 502;
+}
+
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -83,12 +90,12 @@ export function claudeCodeFetch(options: ClaudeCodeOptions = {}): typeof fetch {
       try {
         parsed = JSON.parse(stdout) as ClaudeCodeResult;
       } catch {
-        return json({ error: `${command} exited ${code}: ${(stderr || stdout).slice(0, 500)}` }, 502);
+        const message = `${command} exited ${code}: ${(stderr || stdout).slice(0, 500)}`;
+        return json({ error: message }, failureStatus(message));
       }
       if (parsed.is_error || code !== 0) {
-        // Plan limits stop every later call too; report them as rate limits.
-        const status = /limit/i.test(parsed.result ?? "") ? 429 : 502;
-        return json({ error: parsed.result ?? `${command} exited ${code}` }, status);
+        const message = parsed.result ?? `${command} exited ${code}`;
+        return json({ error: message }, failureStatus(message));
       }
 
       const usage = parsed.usage ?? {};
