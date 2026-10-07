@@ -1,0 +1,52 @@
+{
+  "schema": "lattice.dogfood.case/v0",
+  "id": "lattice-false-green",
+  "version": 1,
+  "task_class": "verification-integrity",
+  "repository": "sp80808/Lattice",
+  "base_sha": "ba2b6437c50539f15c334b4ce72ad914dc6c8dd1",
+  "task_statement": "Main CI and the example/demo verification path are reporting success incorrectly when underlying example commands fail. Make intentionally broken examples return non-zero, ensure the example checker cannot print overall success after a failed example, and make relevant Node/Python/example suites pass. Cancelled or skipped verification must not be silently accepted unless explicitly allow-listed.",
+  "allowed_tools": ["shell", "read", "edit", "git_worktree"],
+  "acceptance": {
+    "commands": [
+      "bash scripts/check-examples.sh",
+      "npm test"
+    ],
+    "must_fail_on_broken_base": true,
+    "must_pass_on_fixed_sha": true,
+    "notes": "At broken base, check-examples (or equivalent) must be red for an intentionally failing example and must not print a global success banner after that failure. At gold fix, the same commands are green."
+  },
+  "reference": {
+    "gold_fix_sha": "12bcae4a7def658b9266aa8136be59e076e9f448",
+    "gold_pr": "https://github.com/sp80808/Lattice/pull/37",
+    "relevant_files": [
+      "scripts/check-examples.sh",
+      "scripts/lib.sh",
+      "examples/demo/run-demo.sh",
+      "examples/demo-repo/package.json",
+      "packages/service/src/testing.ts",
+      "packages/service/src/index.test.ts"
+    ],
+    "historical_notes": "False-green: shell control flow allowed a failing example to still reach a success message; node:test path quirks obscured integrity."
+  },
+  "expected_unsupported": [],
+  "leakage_guard": {
+    "exclude_paths_from_context": [
+      "dogfood/cases/lattice-false-green-v1.json"
+    ],
+    "exclude_commits_from_context": [
+      "12bcae4a7def658b9266aa8136be59e076e9f448"
+    ],
+    "forbid_future_files": true,
+    "contamination_risk": "medium",
+    "held_out_checks": [
+      "Inject a deliberately failing example and assert the checker exits non-zero without printing overall success."
+    ]
+  },
+  "provenance": {
+    "source_issue": "https://github.com/sp80808/Lattice/issues/41",
+    "parent_issue": "https://github.com/sp80808/Lattice/issues/39",
+    "recorded_at": "2026-10-07",
+    "notes": "Seed case 1 — verification-integrity. Integrity layer tracked in #49."
+  }
+}

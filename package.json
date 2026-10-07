@@ -18,7 +18,8 @@
     "test:python": "python3 -m unittest discover -s sdks/python/tests",
     "test:examples": "scripts/check-examples.sh",
     "bootstrap": "scripts/bootstrap.sh",
-    "ci": "scripts/ci-health.sh"
+    "ci": "scripts/ci-health.sh",
+    "check:dogfood": "node scripts/check-dogfood-manifests.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sp80808/Lattice/dogfood/schema/case-manifest.v0.schema.json",
+  "title": "Lattice dogfood case manifest v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "version",
+    "task_class",
+    "repository",
+    "base_sha",
+    "task_statement",
+    "allowed_tools",
+    "acceptance",
+    "reference",
+    "leakage_guard",
+    "provenance"
+  ],
+  "properties": {
+    "schema": { "const": "lattice.dogfood.case/v0" },
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "task_class": {
+      "type": "string",
+      "enum": [
+        "verification-integrity",
+        "semantic-multi-structure",
+        "performance-semantic-preservation",
+        "cross-package-integration",
+        "retrieval-context",
+        "diagnostics-provenance",
+        "docs-spec-control"
+      ]
+    },
+    "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "task_statement": { "type": "string", "minLength": 20 },
+    "allowed_tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["commands", "must_fail_on_broken_base"],
+      "additionalProperties": false,
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "must_fail_on_broken_base": { "type": "boolean" },
+        "must_pass_on_fixed_sha": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "description": "Hidden from execution context. Post-run only.",
+      "required": ["gold_fix_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "gold_fix_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "gold_pr": { "type": "string" },
+        "relevant_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "historical_notes": { "type": "string" }
+      }
+    },
+    "expected_unsupported": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "leakage_guard": {
+      "type": "object",
+      "required": [
+        "exclude_paths_from_context",
+        "exclude_commits_from_context",
+        "forbid_future_files"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "exclude_paths_from_context": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "exclude_commits_from_context": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        },
+        "forbid_future_files": { "type": "boolean" },
+        "contamination_risk": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "unknown"]
+        },
+        "held_out_checks": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source_issue", "recorded_at"],
+      "additionalProperties": false,
+      "properties": {
+        "source_issue": { "type": "string" },
+        "parent_issue": { "type": "string" },
+        "recorded_at": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

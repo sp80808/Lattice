@@ -1,0 +1,56 @@
+{
+  "schema": "lattice.dogfood.case/v0",
+  "id": "tessera-mir-asymptotic",
+  "version": 1,
+  "task_class": "performance-semantic-preservation",
+  "repository": "sp80808/Tessera",
+  "base_sha": "bfb9e2e2db3d068f8139eb65882586e8eb07f3fb",
+  "task_statement": "TIR to MIR binder lookup makes parameter-heavy mir/run scale badly. Keep behaviour and shadowing semantics equivalent, remove the pathological quadratic lookup, and add a scaling/operation-count style regression that demonstrates the bad asymptotics are gone. Prefer robust scaling evidence over fragile absolute wall-clock thresholds.",
+  "allowed_tools": [
+    "shell",
+    "read",
+    "edit",
+    "git_worktree",
+    "cargo"
+  ],
+  "acceptance": {
+    "commands": [
+      "cargo test -p tessera-mir",
+      "cargo test --workspace -- mir"
+    ],
+    "must_fail_on_broken_base": true,
+    "must_pass_on_fixed_sha": true,
+    "notes": "Include a scaling or operation-count check that fails under reverse linear scans on large parameter counts and passes after logarithmic lookup. Historical wall times (20k\u22480.43s, 40k\u22481.96s, 80k\u22488.24s before) are reference-only and must not appear in the agent task prompt at run time."
+  },
+  "reference": {
+    "gold_fix_sha": "d5f3f7dce411a7e9241316fb6f00d861704d5c98",
+    "gold_pr": "https://github.com/sp80808/Tessera/pull/40",
+    "relevant_files": [
+      "crates/tessera-mir",
+      "crates/tessera-phases"
+    ],
+    "historical_notes": "TIR\u2192MIR binder lookup used reverse linear scans; parameter-heavy tsr mir/run scaled quadratically. Gold is Tessera PR #40 merge commit."
+  },
+  "expected_unsupported": [],
+  "leakage_guard": {
+    "exclude_paths_from_context": [
+      "dogfood/cases/tessera-mir-asymptotic-v1.json"
+    ],
+    "exclude_commits_from_context": [
+      "d5f3f7dce411a7e9241316fb6f00d861704d5c98",
+      "b1de1a56eaa850bde7df93a719d7ab1c044a2844"
+    ],
+    "forbid_future_files": true,
+    "contamination_risk": "medium",
+    "held_out_checks": [
+      "Behavioural/differential tests remain equivalent after the lookup change.",
+      "Scaling assertion prefers operation-count or relative growth over absolute wall-clock."
+    ]
+  },
+  "provenance": {
+    "source_issue": "https://github.com/sp80808/Lattice/issues/41",
+    "parent_issue": "https://github.com/sp80808/Lattice/issues/39",
+    "recorded_at": "2026-10-07",
+    "notes": "Seed case 3 \u2014 performance + semantic preservation. Historical timings are reference-only."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "lattice.dogfood.corpus/v0",
+  "id": "self-dogfood-seed",
+  "version": 1,
+  "parent_issue": "https://github.com/sp80808/Lattice/issues/39",
+  "source_issue": "https://github.com/sp80808/Lattice/issues/41",
+  "integrity_issue": "https://github.com/sp80808/Lattice/issues/49",
+  "cases": [
+    "cases/lattice-false-green-v1.json",
+    "cases/tessera-tcap-binder-v1.json",
+    "cases/tessera-mir-asymptotic-v1.json"
+  ],
+  "graduation": {
+    "min_cases_before_d7": 6,
+    "seed_count": 3,
+    "classes_present": [
+      "verification-integrity",
+      "semantic-multi-structure",
+      "performance-semantic-preservation"
+    ]
+  },
+  "notes": "Fixture definitions only. Execution harness (frozen worktrees, ledger wiring) follows; do not treat manifests as runnable Lattice jobs yet."
+}
