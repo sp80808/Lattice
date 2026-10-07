@@ -1,0 +1,11 @@
+{
+  "name": "foreign-syntax-double",
+  "description": "held out: the program is written in Rust syntax",
+  "file": "double.tes",
+  "phase": "check",
+  "overflow": "trapping",
+  "cases": [
+    { "function": "double", "args": [2], "expect": "4" },
+    { "function": "double", "args": [-3], "expect": "-6" }
+  ]
+}

@@ -17,6 +17,7 @@ import {
   type RepairTask,
 } from "./repair.js";
 import type { TesseraVerificationRecord } from "./witness.js";
+import type { RepairMemoryEntry } from "./memory.js";
 
 export interface ComparisonArm {
   name: string;
@@ -82,6 +83,8 @@ export interface ComparisonOptions {
   edits?: boolean;
   /** Add the minimal-change rule to the proposal prompt (see `runRepair`). */
   minimal?: boolean;
+  /** Repair memory shown to the generator (see `runRepair`); read-only during the comparison. */
+  memory?: RepairMemoryEntry[];
   /** How repeated candidates are handled (see `runRepair`; default "canonical"). */
   repeats?: RepeatMode;
   onRun?: (report: RepairRunReport) => void;
@@ -102,6 +105,8 @@ export interface ArmSummary {
   meanVerificationsToSolve: number | null;
   /** Mean characters changed from the broken program, over solved runs. */
   meanPatchDistance: number | null;
+  /** Runs that were shown at least one memory example. */
+  runsWithMemory: number;
   meanTokens: number;
   meanCostUsd: number | null;
   /**
@@ -137,6 +142,8 @@ export interface ComparisonReport {
   suggestions: boolean;
   /** Whether the minimal-change rule was in the prompt. */
   minimal?: boolean;
+  /** Memory entries available to the runs (0: no memory). */
+  memoryEntries?: number;
   /** How repeated candidates were handled; absent in reports from before repeat detection ("allow"). */
   repeats?: RepeatMode;
   runs: RepairRunReport[];
@@ -179,6 +186,7 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       unresolved: group.length - solved.length,
       meanRoundsToSolve: mean(solved.map((r) => r.rounds)),
       meanVerificationsToSolve: mean(solved.map((r) => r.verifications)),
+      runsWithMemory: group.filter((r) => (r.memoryExamples ?? 0) > 0).length,
       meanPatchDistance: mean(solved.flatMap((r) => (r.patchDistance === undefined ? [] : [r.patchDistance]))),
       meanTokens: totalTokens / group.length,
       meanCostUsd: totalCost === null ? null : totalCost / group.length,
@@ -226,6 +234,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           suggestions: options.suggestions,
           edits: options.edits,
           minimal: options.minimal,
+          memory: options.memory,
           repeats: options.repeats,
         });
         runs.push(report);
@@ -242,6 +251,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
     candidatesPerRound: options.candidatesPerRound ?? 4,
     suggestions: options.suggestions !== false,
     minimal: options.minimal ?? false,
+    memoryEntries: options.memory?.length ?? 0,
     repeats: options.repeats ?? "canonical",
     runs,
     summary: summarize(runs),

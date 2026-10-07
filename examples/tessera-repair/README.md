@@ -118,6 +118,31 @@ node --input-type=module -e '
   console.log(await replayRunLog(process.argv[1]));' <run.jsonl>
 ```
 
+## Repair memory and held-out tasks
+
+`--record-memory mem.jsonl` appends every distinct verified repair of a
+comparison to a JSONL memory: the broken program, what `tsr` said about it
+(its diagnostic codes, or `behaviour` when it compiled but cases failed) and
+the fix that passed. `--memory mem.jsonl` shows the generator, before the
+current file, the two stored repairs whose failure shares the most diagnostic
+codes and words with the current one. Only `tsr`-verified pairs are stored, a
+task never retrieves its own repairs (so seeds cannot teach each other), and
+the memory is read-only during a comparison.
+
+`heldout/` holds four tasks with the same kinds of failure as `tasks/` on
+other programs. They are never in the default set, so memory is measured on
+tasks it was not built from:
+
+```bash
+node examples/tessera-repair/compare.mjs --generator model ... --record-memory mem.jsonl
+node examples/tessera-repair/compare.mjs --generator model ... --task-dir heldout --ablation
+node examples/tessera-repair/compare.mjs --generator model ... --task-dir heldout --ablation --memory mem.jsonl
+```
+
+`memoryExamples` in each run report (and `runsWithMemory` in the summary)
+says how many examples a run was shown. The offline stub ignores its prompt,
+so only a model arm can show an effect.
+
 ## Why the prompt and suggestions look like this
 
 First model runs: a local 7B model kept writing C/Rust-style TC after `tsr`

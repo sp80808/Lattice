@@ -1,0 +1,11 @@
+{
+  "name": "unbound-name-inc",
+  "description": "held out: y is not a parameter",
+  "file": "inc.tes",
+  "phase": "check",
+  "overflow": "trapping",
+  "cases": [
+    { "function": "inc", "args": [1], "expect": "2" },
+    { "function": "inc", "args": [-5], "expect": "-4" }
+  ]
+}

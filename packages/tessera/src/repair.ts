@@ -54,6 +54,7 @@ import {
   type Attempt,
   type WitnessSuggestion,
 } from "./feedback.js";
+import { memoryEntry, renderRepairs, retrieveRepairs, type RepairMemoryEntry } from "./memory.js";
 import { DIVIDER_MARKER, REPLACE_MARKER, SEARCH_MARKER, applyEditAction, isSearchReplace } from "./edits.js";
 
 /** `task.json` in a repair task directory. */
@@ -283,6 +284,8 @@ export interface RepairFeedback {
   edits?: boolean;
   /** Ask for the smallest change that fixes the root cause (see `MINIMAL_CHANGE_RULE`). */
   minimal?: boolean;
+  /** Worked examples from repair memory (see `retrieveRepairs`), placed before the current file. */
+  examples?: () => string | undefined;
 }
 
 /**
@@ -337,8 +340,10 @@ export function repairProposal(
       const source = await readSource();
       const current = feedback.current?.();
       const attempts = renderAttempts(feedback.attempts?.() ?? []);
+      const examples = feedback.examples?.();
       return [
         ...(feedback.grammar ? [`TC GRAMMAR (from tsr grammar; the only accepted syntax):\n${feedback.grammar}`] : []),
+        ...(examples ? [examples] : []),
         `CURRENT ${task.file}:\n${source}`,
         ...(current ? [`TSR ON CURRENT ${task.file}:\n${renderVerdict(source, current)}`] : []),
         ...(attempts ? [attempts] : []),
@@ -590,6 +595,11 @@ export interface RepairRunOptions {
   edits?: boolean;
   /** Add the minimal-change rule to the proposal prompt (default false). */
   minimal?: boolean;
+  /**
+   * Verified repairs of earlier runs; the two most similar failures from
+   * other tasks are shown to the generator as worked examples (default none).
+   */
+  memory?: RepairMemoryEntry[];
   /** Unusable generator replies sent back for another attempt per round (default 2). */
   formatRetries?: number;
   /**
@@ -619,6 +629,10 @@ export interface RepairRunReport {
   patch?: string;
   /** Characters changed from the broken program to `patch` (Levenshtein); set when solved. */
   patchDistance?: number;
+  /** Memory entries shown to the generator (0 without memory or when none was similar). */
+  memoryExamples: number;
+  /** This run's verified repair as a memory entry; set when solved by a candidate (not when the program already passed). */
+  memoryEntry?: RepairMemoryEntry;
   /** Witness `result_id` of the initial (broken) program. */
   initialResultId?: string;
   /** The `tsr` build that judged this run, from its witness document. */
@@ -689,6 +703,17 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       : new SuggestionFirstGenerator(inner, () => executor.stats.suggestions, () => executor.stats.tried);
   const grammar = options.grammar === false ? undefined : await loadGrammar(options.tsr);
   let current: TesseraVerificationRecord | undefined;
+  let initial: TesseraVerificationRecord | undefined;
+  let memoryExamples = 0;
+  let examples: string | undefined | null = null;
+  const retrieve = () => {
+    if (examples === null && initial) {
+      const found = retrieveRepairs(options.memory ?? [], task.name, original, initial);
+      memoryExamples = found.length;
+      examples = renderRepairs(found);
+    }
+    return examples ?? undefined;
+  };
 
   // Model/generator spend only: rounds `tsr` answered are counted apart.
   const generatorTotals: RepairRunReport["generator"] = emptyTotals();
@@ -728,6 +753,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       addUsage(decisionTotals, payload.usage, options.pricing);
     } else if (event.type === "tool.completed" && payload?.tool === "tessera.witness") {
       current = payload.record as TesseraVerificationRecord;
+      initial ??= current;
       addSuggestions(executor.stats.suggestions, witnessSuggestions(current?.witness?.document));
       const document = payload.record?.witness?.document;
       initialResultId = document?.result_id;
@@ -759,6 +785,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
     repeatsDropped,
     repeatReplies,
     fmtProcesses: actionKey?.processes() ?? 0,
+    memoryExamples,
   });
 
   let report: RepairRunReport;
@@ -787,6 +814,7 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
           attempts: () => executor.stats.attempts,
           edits: options.edits,
           minimal: options.minimal,
+          ...(options.memory?.length ? { examples: retrieve } : {}),
         }),
       },
     });
@@ -798,6 +826,10 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
       rounds: result.search?.rounds ?? 0,
       patch,
       patchDistance: patch === undefined ? undefined : editDistance(original, patch),
+      memoryEntry:
+        patch !== undefined && initial && !toVerificationRecord(initial).passed
+          ? memoryEntry(task.name, original, patch, initial)
+          : undefined,
       lineage: status === "solved" ? executor.stats.accepted : undefined,
       runId: result.runId,
       eventLogPath: result.eventLogPath,

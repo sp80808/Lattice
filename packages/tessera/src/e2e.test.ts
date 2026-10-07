@@ -205,3 +205,28 @@ test("a respelled repeat of a rejected program is recognised by tsr fmt and neve
   assert.equal(exact.rounds, 3, "without tsr fmt the respelled repeat is verified again");
   assert.equal(exact.fmtProcesses, 0);
 });
+
+test("repair memory: a verified repair is recorded and shown on another task's similar failure", async () => {
+  const fix = (action: string) => ({
+    async generate(request: { context?: string[] }) {
+      contexts.push(request.context ?? []);
+      return { text: JSON.stringify({ candidates: [{ id: "c", label: "fix", action, expectedEvidence: "cases match" }] }), identity: { provider: "model", model: "m" }, usage: { latencyMs: 1 } };
+    },
+  });
+  const contexts: string[][] = [];
+  const first = await runRepair({ task: await loadRepairTask(join(tasks, "unbound-name")), seed: 1, maxRounds: 1, suggestions: false, generator: fix("f add(a:i64,b:i64)>i64=a+b") });
+  assert.equal(first.status, "solved", first.error);
+  assert.deepEqual(first.memoryEntry?.codes, ["E-resolve-unbound-name"]);
+  assert.equal(first.memoryExamples, 0);
+  assert.ok(!contexts[0]!.some((block) => block.startsWith("PAST VERIFIED REPAIRS")));
+
+  const heldout = await loadRepairTask(join(tasks, "..", "heldout", "unbound-name-inc"));
+  const second = await runRepair({ task: heldout, seed: 1, maxRounds: 1, suggestions: false, memory: [first.memoryEntry!], generator: fix("f inc(x:i64)>i64=x+1") });
+  assert.equal(second.status, "solved", second.error);
+  assert.equal(second.memoryExamples, 1);
+  const shown = contexts[1]!.find((block) => block.startsWith("PAST VERIFIED REPAIRS"));
+  assert.match(shown ?? "", /--- broken:\nf add\(a:i64,b:i64\)>i64=a\+c[\s\S]*--- fixed:\nf add\(a:i64,b:i64\)>i64=a\+b/);
+
+  const same = await runRepair({ task: await loadRepairTask(join(tasks, "unbound-name")), seed: 2, maxRounds: 1, suggestions: false, memory: [first.memoryEntry!], generator: fix("f add(a:i64,b:i64)>i64=a+b") });
+  assert.equal(same.memoryExamples, 0, "a task never sees its own fixes");
+});
