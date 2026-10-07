@@ -151,6 +151,34 @@ Lattice adoption:
 
 Ideas only; no code was copied from these projects.
 
+## OpenHands, opencode and Agentless — repeats and stuck agents
+
+Repositories:
+- https://github.com/All-Hands-AI/OpenHands (MIT, outside `enterprise/`)
+- https://github.com/anomalyco/opencode (MIT)
+- https://github.com/OpenAutoCoder/Agentless (MIT)
+
+Useful precedent:
+
+- OpenHands' stuck detector ends a run whose agent keeps issuing the same
+  action and getting the same observation, instead of letting it burn budget;
+- opencode asks before a "doom loop" (the same tool call with the same input
+  several times in a row);
+- Agentless normalizes candidate patches and drops duplicates before running
+  tests, so equivalent patches cost one verification.
+
+Lattice adoption:
+
+- the search loop drops candidates whose action was already run, or that
+  duplicate a sibling, before the decision (`actionKey`, `allowRepeats`); a
+  reply made only of repeats is sent back like a malformed one, and once
+  retries are spent the run stops as `blocked` (stuck) rather than spending a
+  round on a known result;
+- Tessera repairs compare programs by their `tsr fmt` canonical form, so the
+  compiler, not a regex, decides what counts as the same program.
+
+Ideas only; no code was copied from these projects.
+
 ## Initial build-vs-borrow rule
 
 Prefer an upstream/open standard when the feature is commodity infrastructure:

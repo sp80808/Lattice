@@ -9,6 +9,7 @@ import {
 } from "@lattice/protocol";
 import {
   FORMAT_ERROR_HEADER,
+  REPEAT_ERROR_HEADER,
   compileDecisionFrame,
   escapeControlCharsInStrings,
   parseCandidates,
@@ -587,4 +588,130 @@ test("raw newlines inside JSON strings are read as the model meant them", () => 
   const [candidate] = parseCandidates(text, 5).candidates;
   assert.equal(candidate!.action, 'line one\nline\ttwo "q"');
   assert.equal(escapeControlCharsInStrings('{"a":"x\ny"}\n'), '{"a":"x\\ny"}\n', "newlines outside strings are kept");
+});
+
+// ---------------------------------------------------------------------------
+// Repeat detection.
+
+const reply = (...actions: string[]) =>
+  JSON.stringify({
+    candidates: actions.map((action, i) => ({ id: `c${i}`, label: `try ${action}`, action, expectedEvidence: "x" })),
+  });
+
+/** Replies in order; the last one repeats forever. */
+function scripted(replies: string[], requests: Array<{ context?: string[] }> = []): GeneratorProvider {
+  return {
+    async generate(request) {
+      requests.push(request);
+      const text = replies.length > 1 ? replies.shift()! : replies[0]!;
+      return { text, identity: { provider: "model" }, usage: { latencyMs: 0, inputTokens: 1 } };
+    },
+  };
+}
+
+const failing = (ran: string[]): ExperimentExecutor => ({
+  async execute(candidate) {
+    ran.push(candidate.action);
+    return { candidateId: candidate.id, status: "failure", terminal: false, summary: "no", evidence: [] };
+  },
+});
+
+test("an action already run is dropped before the decision and counted", async () => {
+  const ran: string[] = [];
+  const trace: SearchTraceEvent[] = [];
+  await runSearchLoop({
+    tap: tap(),
+    generator: scripted([reply("a"), reply("a  \r\n", "b")]),
+    decision: pickFirst,
+    executor: failing(ran),
+    maxRounds: 2,
+    onTrace: (event) => {
+      trace.push(event);
+    },
+  });
+  assert.deepEqual(ran, ["a", "b"], "round 2 runs b, not a again");
+  const second = trace.filter((event) => event.type === "candidates.generated")[1];
+  assert.equal(second?.type === "candidates.generated" && second.repeats, 1);
+  assert.match(second?.type === "candidates.generated" ? second.dropped!.join() : "", /c0: repeats an action already tried/);
+});
+
+test("two candidates with the same action in one reply keep only the first", async () => {
+  const seen: string[][] = [];
+  await runSearchLoop({
+    tap: tap(),
+    generator: scripted([reply("a", "a", "b")]),
+    decision: {
+      async decide(request) {
+        seen.push(request.choices.map((c) => c.id));
+        return pickFirst.decide(request);
+      },
+    },
+    executor: success,
+  });
+  assert.deepEqual(seen[0], ["c0", "c2"]);
+});
+
+test("a reply of repeats goes back to the generator with what it repeated", async () => {
+  const ran: string[] = [];
+  const requests: Array<{ context?: string[] }> = [];
+  const trace: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator: scripted([reply("a"), reply("a"), reply("b")], requests),
+    decision: pickFirst,
+    executor: failing(ran),
+    maxRounds: 2,
+    onTrace: (event) => {
+      trace.push(event);
+    },
+  });
+  assert.equal(result.status, "budget_exhausted");
+  assert.deepEqual(ran, ["a", "b"]);
+  assert.equal(requests.length, 3, "round 2 retried once");
+  const feedback = requests[2]!.context!.find((block) => block.startsWith(REPEAT_ERROR_HEADER));
+  assert.match(feedback ?? "", /- try a: a/);
+  const rejected = trace.find((event) => event.type === "candidates.rejected");
+  assert.equal(rejected?.type === "candidates.rejected" && rejected.reason, "repeat");
+});
+
+test("a generator that only repeats itself stops the run as stuck instead of failing", async () => {
+  const ran: string[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator: scripted([reply("a")]),
+    decision: pickFirst,
+    executor: failing(ran),
+    maxRounds: 5,
+  });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.rounds, 2);
+  assert.deepEqual(ran, ["a"], "the known failure is not re-run");
+  assert.match(result.tap.uncertainties.join(), /stuck/);
+});
+
+test("actionKey decides what counts as the same action", async () => {
+  const ran: string[] = [];
+  await runSearchLoop({
+    tap: tap(),
+    generator: scripted([reply("a+b"), reply("a + b", "b+a")]),
+    decision: pickFirst,
+    executor: failing(ran),
+    maxRounds: 2,
+    actionKey: (candidate) => candidate.action.replace(/\s+/g, ""),
+  });
+  assert.deepEqual(ran, ["a+b", "b+a"]);
+});
+
+test("allowRepeats keeps the behaviour from before repeat detection", async () => {
+  const ran: string[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator: scripted([reply("a")]),
+    decision: pickFirst,
+    executor: failing(ran),
+    maxRounds: 3,
+    allowRepeats: true,
+  });
+  assert.equal(result.status, "budget_exhausted");
+  assert.deepEqual(ran, ["a", "a", "a"]);
 });

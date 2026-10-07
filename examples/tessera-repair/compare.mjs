@@ -54,6 +54,9 @@ const { values } = parseArgs({
     "no-suggestions": { type: "boolean" },
     // Also offer SEARCH/REPLACE edits in the prompt (whole files only by default).
     edits: { type: "boolean" },
+    // canonical (default): drop candidates whose `tsr fmt` form was already verified;
+    // exact: drop only textual repeats; allow: verify repeats again (pre-detection behaviour).
+    repeats: { type: "string", default: "canonical" },
     // Run with and without tsr suggestions and report both.
     ablation: { type: "boolean" },
   },
@@ -128,9 +131,10 @@ const run = (suggestions) =>
     pricing,
     suggestions,
     edits: values.edits,
+    repeats: ["canonical", "exact", "allow"].includes(values.repeats) ? values.repeats : fail("--repeats must be canonical, exact or allow"),
     onRun: (run) => {
       console.error(
-        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.formatErrors ? ` format_errors=${run.formatErrors}` : ""}${run.editFailures ? ` edit_failures=${run.editFailures}` : ""}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
+        `  ${run.task.padEnd(14)} ${run.arm.padEnd(12)} seed=${run.seed} ${run.status} rounds=${run.rounds} tokens=${run.tokens}${run.formatErrors ? ` format_errors=${run.formatErrors}` : ""}${run.editFailures ? ` edit_failures=${run.editFailures}` : ""}${run.repeatsDropped ? ` repeats_dropped=${run.repeatsDropped}` : ""}${run.lineage ? ` by=${run.lineage.candidateSource}` : ""}${run.error ? ` error=${run.error}` : ""}`,
       );
       // Auth, billing and rate-limit errors fail every later run the same way.
       const status = /Provider request failed: (\d{3})/.exec(run.error ?? "")?.[1];

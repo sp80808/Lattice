@@ -171,7 +171,7 @@ test("heuristic decider avoids names tsr reported unbound", async () => {
 
 test("summaries report cost per verified patch", () => {
   const run = (arm: string, status: RepairRunReport["status"], rounds: number, cost: number): RepairRunReport => ({
-    task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0, formatErrors: 0, editFailures: 0,
+    task: "t", arm, seed: 1, status, rounds, verifications: rounds, tsrProcesses: rounds, cacheHits: 0, formatErrors: 0, editFailures: 0, repeatsDropped: 0, repeatReplies: 0, fmtProcesses: 0,
     generator: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 100 * rounds, costUsd: cost },
     decision: { calls: rounds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
     tokens: 100 * rounds, costUsd: cost, runId: "r", eventLogPath: "", suggestionRounds: 0,
@@ -323,7 +323,7 @@ test("summaries keep compiler repairs apart from model results", () => {
     tokens: number,
     cost: number,
   ): RepairRunReport => ({
-    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0, formatErrors: 0, editFailures: 0,
+    task: "t", arm: "a", seed: 1, status, rounds: 1, verifications: 1, tsrProcesses: 1, cacheHits: 0, formatErrors: 0, editFailures: 0, repeatsDropped: 0, repeatReplies: 0, fmtProcesses: 0,
     generator: usage(tokens, cost), decision: usage(0, 0), tokens, costUsd: cost,
     runId: "r", eventLogPath: "", suggestionRounds: source === "compiler_suggestion" ? 1 : 0,
     lineage: source && { candidateId: "c", candidateSource: source, selectionSource: "model_decision" },

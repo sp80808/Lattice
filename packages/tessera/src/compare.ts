@@ -13,6 +13,7 @@ import {
   runRepair,
   type Pricing,
   type RepairRunReport,
+  type RepeatMode,
   type RepairTask,
 } from "./repair.js";
 import type { TesseraVerificationRecord } from "./witness.js";
@@ -79,6 +80,8 @@ export interface ComparisonOptions {
   suggestions?: boolean;
   /** Offer SEARCH/REPLACE edits in the proposal prompt (see `runRepair`). */
   edits?: boolean;
+  /** How repeated candidates are handled (see `runRepair`; default "canonical"). */
+  repeats?: RepeatMode;
   onRun?: (report: RepairRunReport) => void;
 }
 
@@ -113,6 +116,10 @@ export interface ArmSummary {
   formatErrors: number;
   /** SEARCH/REPLACE candidates that did not apply, across the group. */
   editFailures: number;
+  /** Candidates dropped as repeats of an attempt, across the group. */
+  repeatsDropped: number;
+  /** Generator replies made only of repeats, across the group (retried or stuck). */
+  repeatReplies: number;
 }
 
 export interface ComparisonReport {
@@ -124,6 +131,8 @@ export interface ComparisonReport {
   candidatesPerRound: number;
   /** Whether `tsr` suggestions were tried before the generator; false is the generator-only ablation. */
   suggestions: boolean;
+  /** How repeated candidates were handled; absent in reports from before repeat detection ("allow"). */
+  repeats?: RepeatMode;
   runs: RepairRunReport[];
   summary: ArmSummary[];
 }
@@ -174,6 +183,8 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       // Reports written before format retries existed have no count.
       formatErrors: sum(group.map((r) => r.formatErrors ?? 0)),
       editFailures: sum(group.map((r) => r.editFailures ?? 0)),
+      repeatsDropped: sum(group.map((r) => r.repeatsDropped ?? 0)),
+      repeatReplies: sum(group.map((r) => r.repeatReplies ?? 0)),
     };
   });
 }
@@ -207,6 +218,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           latticeDir: options.latticeDir,
           suggestions: options.suggestions,
           edits: options.edits,
+          repeats: options.repeats,
         });
         runs.push(report);
         options.onRun?.(report);
@@ -221,6 +233,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
     maxRounds: options.maxRounds ?? 6,
     candidatesPerRound: options.candidatesPerRound ?? 4,
     suggestions: options.suggestions !== false,
+    repeats: options.repeats ?? "canonical",
     runs,
     summary: summarize(runs),
   };

@@ -61,6 +61,17 @@ behaviour `tsr run` must show (`add(2,3)=5`, `add(0,0)=0`, `add(7,-2)=5`).
    file and its similarity. `--edits` offers this format in the prompt (whole
    files only by default, so earlier numbers stay comparable); `editFailures`
    counts edits that did not apply.
+   A candidate that repeats a program already verified is dropped before the
+   decider sees it, and so is a second candidate with the same program in one
+   reply. Programs are compared as `tsr fmt` spells them, so respacing, line
+   breaks or a comment do not make an old attempt new (Agentless dedupes
+   normalized patches the same way; OpenHands and opencode stop agents that
+   repeat themselves). A reply made only of repeats goes back to the generator
+   with the list, like an unusable reply; if the retries are spent, the run
+   ends `blocked` as stuck instead of re-running a known result. Reports count
+   `repeatsDropped`, `repeatReplies` and the `fmtProcesses` this cost (kept out
+   of `tsrProcesses`). `--repeats exact` compares text only, and
+   `--repeats allow` verifies repeats again as runs did before.
 3. Only a candidate `tsr` accepts is written back. The run ends `solved`, or
    `budget_exhausted` after `--max-rounds`.
 

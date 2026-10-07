@@ -175,3 +175,32 @@ test("a search/replace edit is applied to the current file and judged by tsr", a
   assert.equal(report.editFailures, 0);
   assert.equal(report.patch, "f add(a:i64,b:i64)>i64=a+b\n");
 });
+
+test("a respelled repeat of a rejected program is recognised by tsr fmt and never re-verified", async () => {
+  const task = await loadRepairTask(join(tasks, "wrong-result"));
+  const one = (action: string) => JSON.stringify({ candidates: [{ id: "c", label: "try", action, expectedEvidence: "cases match" }] });
+  const script = () => [
+    one("f add(a:i64,b:i64)>i64=a+a"),
+    // Same program, respaced and commented: a repeat, not a new attempt.
+    one("f add(a: i64, b: i64) > i64 =\n  a + a // doubled\n"),
+    one("f add(a:i64,b:i64)>i64=a+b"),
+  ];
+  const model = (replies: string[]) => ({
+    async generate() {
+      return { text: replies.shift() ?? "{}", identity: { provider: "model", model: "repeater" }, usage: { latencyMs: 1 } };
+    },
+  });
+
+  const report = await runRepair({ task, seed: 1, maxRounds: 3, generator: model(script()), suggestions: false });
+  assert.equal(report.status, "solved", report.error);
+  assert.equal(report.rounds, 2, "the repeat cost a retry, not a round");
+  assert.equal(report.verifications, 2);
+  assert.equal(report.repeatReplies, 1);
+  assert.equal(report.repeatsDropped, 1);
+  assert.equal(report.fmtProcesses, 3);
+
+  const exact = await runRepair({ task, seed: 1, maxRounds: 3, generator: model(script()), suggestions: false, repeats: "exact" });
+  assert.equal(exact.status, "solved", exact.error);
+  assert.equal(exact.rounds, 3, "without tsr fmt the respelled repeat is verified again");
+  assert.equal(exact.fmtProcesses, 0);
+});
