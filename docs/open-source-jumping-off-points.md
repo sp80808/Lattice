@@ -179,6 +179,27 @@ Lattice adoption:
 
 Ideas only; no code was copied from these projects.
 
+## Ponytail — smallest working diff
+
+Repository: https://github.com/DietrichGebert/ponytail (MIT)
+
+Useful precedent:
+
+- a single always-on rule makes coding agents stop at the first rung that
+  holds (does it need to exist, reuse, stdlib, one line, then the minimum),
+  but only after tracing the real problem; it reports less code and lower
+  cost with no safety loss on its own benchmark.
+
+Lattice adoption:
+
+- `--minimal` puts the repair reading of that rule in the Tessera proposal
+  prompt (fix the cause with the smallest diff, leave the rest alone), off by
+  default; `patchDistance` on every solved run measures it;
+- the rule itself suits the CLI agents Lattice delegates issue work to, as an
+  installed skill or `AGENTS.md`, rather than Lattice code.
+
+Ideas only; no code was copied.
+
 ## Initial build-vs-borrow rule
 
 Prefer an upstream/open standard when the feature is commodity infrastructure:

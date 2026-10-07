@@ -28,6 +28,8 @@ import {
   renderDiagnostics,
   renderVerdict,
   repairProposal,
+  MINIMAL_CHANGE_RULE,
+  editDistance,
   replayVerification,
   summarize,
   verificationEvidence,
@@ -440,4 +442,16 @@ test("the edit format is offered only when asked for", async () => {
   const read = async () => "f add(a:i64,b:i64)>i64=a+c\n";
   assert.doesNotMatch(repairProposal(task, read).prompt!(4), /SEARCH/);
   assert.match(repairProposal(task, read, () => [], { edits: true }).prompt!(4), /<<<<<<< SEARCH\n<exact lines/);
+});
+
+test("the minimal-change rule is in the prompt only when asked for", () => {
+  const task = { name: "t", dir: "/x", description: "", file: "add.tes", overflow: "wrapping" as const, cases: [] };
+  const read = async () => "f add(a:i64,b:i64)>i64=a+c\n";
+  assert.ok(!repairProposal(task, read).prompt!(4).includes(MINIMAL_CHANGE_RULE));
+  assert.ok(repairProposal(task, read, () => [], { minimal: true }).prompt!(4).includes(MINIMAL_CHANGE_RULE));
+});
+
+test("patch distance counts changed characters", () => {
+  assert.equal(editDistance("f add(a:i64,b:i64)>i64=a+c\n", "f add(a:i64,b:i64)>i64=a+b\n"), 1);
+  assert.equal(editDistance("", "ab"), 2);
 });

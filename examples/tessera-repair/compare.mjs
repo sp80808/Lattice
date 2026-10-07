@@ -54,6 +54,8 @@ const { values } = parseArgs({
     "no-suggestions": { type: "boolean" },
     // Also offer SEARCH/REPLACE edits in the prompt (whole files only by default).
     edits: { type: "boolean" },
+    // Ask for the smallest change that fixes the cause (Ponytail's rule; off by default).
+    minimal: { type: "boolean" },
     // canonical (default): drop candidates whose `tsr fmt` form was already verified;
     // exact: drop only textual repeats; allow: verify repeats again (pre-detection behaviour).
     repeats: { type: "string", default: "canonical" },
@@ -131,6 +133,7 @@ const run = (suggestions) =>
     pricing,
     suggestions,
     edits: values.edits,
+    minimal: values.minimal,
     repeats: ["canonical", "exact", "allow"].includes(values.repeats) ? values.repeats : fail("--repeats must be canonical, exact or allow"),
     onRun: (run) => {
       console.error(

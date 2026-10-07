@@ -72,6 +72,12 @@ behaviour `tsr run` must show (`add(2,3)=5`, `add(0,0)=0`, `add(7,-2)=5`).
    `repeatsDropped`, `repeatReplies` and the `fmtProcesses` this cost (kept out
    of `tsrProcesses`). `--repeats exact` compares text only, and
    `--repeats allow` verifies repeats again as runs did before.
+   `--minimal` adds one rule to the prompt, the repair reading of
+   [Ponytail](https://github.com/DietrichGebert/ponytail)'s "lazy senior
+   developer" (MIT, idea only): work out what is actually wrong, then make the
+   smallest change that fixes it and leave the rest of the file alone. Every
+   solved run reports `patchDistance` (characters changed from the broken
+   program) so the rule's effect is measured, not assumed.
 3. Only a candidate `tsr` accepts is written back. The run ends `solved`, or
    `budget_exhausted` after `--max-rounds`.
 

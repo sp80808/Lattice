@@ -215,7 +215,8 @@ export class MutationRepairGenerator implements GeneratorProvider {
   }
 }
 
-function editDistance(a: string, b: string): number {
+/** Levenshtein distance in characters. */
+export function editDistance(a: string, b: string): number {
   const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let diag = prev[0]!;
@@ -280,7 +281,20 @@ export interface RepairFeedback {
   attempts?: () => Attempt[];
   /** Also offer SEARCH/REPLACE edits as a candidate format (default: whole files only). */
   edits?: boolean;
+  /** Ask for the smallest change that fixes the root cause (see `MINIMAL_CHANGE_RULE`). */
+  minimal?: boolean;
 }
+
+/**
+ * The repair reading of Ponytail's "lazy senior developer" rule
+ * (github.com/DietrichGebert/ponytail, MIT; idea only): understand the
+ * failure first, then the shortest diff that fixes its cause wins. Off by
+ * default so earlier numbers compare; `patchDistance` measures its effect.
+ */
+export const MINIMAL_CHANGE_RULE = [
+  "Make the smallest change that fixes the cause of the failure: first read the diagnostics and failing cases and work out what is actually wrong,",
+  "then keep every part of the file they do not show to be wrong exactly as it is. Prefer deleting or replacing over adding; never rewrite working parts.",
+].join(" ");
 
 const EDIT_FORMAT = [
   `An action may instead be one or more SEARCH/REPLACE edits of the current file, each written as:`,
@@ -313,6 +327,7 @@ export function repairProposal(
         `Propose up to ${count} distinct candidate repairs of ${task.file}.`,
         `Required behaviour: ${cases}.`,
         "Use the compiler diagnostics and run results in the evidence. Each candidate's `action` is the COMPLETE new file content, nothing else.",
+        ...(feedback.minimal ? [MINIMAL_CHANGE_RULE] : []),
         ...(feedback.edits ? [EDIT_FORMAT] : []),
         "Return JSON only:",
         '{"candidates":[{"id":"a","label":"short neutral description of the change","action":"<complete file>","expectedEvidence":"tsr witness pass and cases match","estimatedCost":"low"}]}',
@@ -573,6 +588,8 @@ export interface RepairRunOptions {
   grammar?: boolean;
   /** Offer SEARCH/REPLACE edits in the proposal prompt (default false; edits are applied either way). */
   edits?: boolean;
+  /** Add the minimal-change rule to the proposal prompt (default false). */
+  minimal?: boolean;
   /** Unusable generator replies sent back for another attempt per round (default 2). */
   formatRetries?: number;
   /**
@@ -600,6 +617,8 @@ export interface RepairRunReport {
   costUsd: number | null;
   /** Verified final program when solved. */
   patch?: string;
+  /** Characters changed from the broken program to `patch` (Levenshtein); set when solved. */
+  patchDistance?: number;
   /** Witness `result_id` of the initial (broken) program. */
   initialResultId?: string;
   /** The `tsr` build that judged this run, from its witness document. */
@@ -767,15 +786,18 @@ export async function runRepair(options: RepairRunOptions): Promise<RepairRunRep
           current: () => current,
           attempts: () => executor.stats.attempts,
           edits: options.edits,
+          minimal: options.minimal,
         }),
       },
     });
     const status = result.search?.status ?? "blocked";
+    const patch = status === "solved" ? await readFile(programPath, "utf8") : undefined;
     report = {
       ...base(),
       status,
       rounds: result.search?.rounds ?? 0,
-      patch: status === "solved" ? await readFile(programPath, "utf8") : undefined,
+      patch,
+      patchDistance: patch === undefined ? undefined : editDistance(original, patch),
       lineage: status === "solved" ? executor.stats.accepted : undefined,
       runId: result.runId,
       eventLogPath: result.eventLogPath,

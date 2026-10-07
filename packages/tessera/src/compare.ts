@@ -80,6 +80,8 @@ export interface ComparisonOptions {
   suggestions?: boolean;
   /** Offer SEARCH/REPLACE edits in the proposal prompt (see `runRepair`). */
   edits?: boolean;
+  /** Add the minimal-change rule to the proposal prompt (see `runRepair`). */
+  minimal?: boolean;
   /** How repeated candidates are handled (see `runRepair`; default "canonical"). */
   repeats?: RepeatMode;
   onRun?: (report: RepairRunReport) => void;
@@ -98,6 +100,8 @@ export interface ArmSummary {
   /** Means over solved runs; null when none solved. */
   meanRoundsToSolve: number | null;
   meanVerificationsToSolve: number | null;
+  /** Mean characters changed from the broken program, over solved runs. */
+  meanPatchDistance: number | null;
   meanTokens: number;
   meanCostUsd: number | null;
   /**
@@ -131,6 +135,8 @@ export interface ComparisonReport {
   candidatesPerRound: number;
   /** Whether `tsr` suggestions were tried before the generator; false is the generator-only ablation. */
   suggestions: boolean;
+  /** Whether the minimal-change rule was in the prompt. */
+  minimal?: boolean;
   /** How repeated candidates were handled; absent in reports from before repeat detection ("allow"). */
   repeats?: RepeatMode;
   runs: RepairRunReport[];
@@ -173,6 +179,7 @@ export function summarize(runs: RepairRunReport[]): ArmSummary[] {
       unresolved: group.length - solved.length,
       meanRoundsToSolve: mean(solved.map((r) => r.rounds)),
       meanVerificationsToSolve: mean(solved.map((r) => r.verifications)),
+      meanPatchDistance: mean(solved.flatMap((r) => (r.patchDistance === undefined ? [] : [r.patchDistance]))),
       meanTokens: totalTokens / group.length,
       meanCostUsd: totalCost === null ? null : totalCost / group.length,
       modelTokensPerModelPatch: model ? sum(modelRuns.map((r) => r.tokens)) / model : null,
@@ -218,6 +225,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
           latticeDir: options.latticeDir,
           suggestions: options.suggestions,
           edits: options.edits,
+          minimal: options.minimal,
           repeats: options.repeats,
         });
         runs.push(report);
@@ -233,6 +241,7 @@ export async function compareRepair(options: ComparisonOptions): Promise<Compari
     maxRounds: options.maxRounds ?? 6,
     candidatesPerRound: options.candidatesPerRound ?? 4,
     suggestions: options.suggestions !== false,
+    minimal: options.minimal ?? false,
     repeats: options.repeats ?? "canonical",
     runs,
     summary: summarize(runs),
@@ -247,12 +256,12 @@ export function formatComparison(report: ComparisonReport): string {
       ? "tsr suggestions: ON (compiler repairs tried before the generator; compare with --no-suggestions)"
       : "tsr suggestions: OFF (generator-only ablation)",
     "",
-    "| task | arm | solved | by compiler repair | by generator | unresolved | mean rounds to solve | model tokens / generator patch | model cost / generator patch (USD) | end-to-end tokens / verified patch | end-to-end cost / verified patch (USD) |",
-    "|---|---|---|---|---|---|---|---|---|---|---|",
+    "| task | arm | solved | by compiler repair | by generator | unresolved | mean rounds to solve | mean patch distance | model tokens / generator patch | model cost / generator patch (USD) | end-to-end tokens / verified patch | end-to-end cost / verified patch (USD) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const s of report.summary) {
     lines.push(
-      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedByCompilerRepair} | ${s.solvedByModelGenerator} | ${s.unresolved} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.modelTokensPerModelPatch, 0)} | ${fmt(s.modelCostPerModelPatchUsd, 6)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
+      `| ${s.task} | ${s.arm} | ${s.solved}/${s.runs} | ${s.solvedByCompilerRepair} | ${s.solvedByModelGenerator} | ${s.unresolved} | ${fmt(s.meanRoundsToSolve)} | ${fmt(s.meanPatchDistance, 1)} | ${fmt(s.modelTokensPerModelPatch, 0)} | ${fmt(s.modelCostPerModelPatchUsd, 6)} | ${fmt(s.tokensPerVerifiedPatch, 0)} | ${fmt(s.costPerVerifiedPatchUsd, 6)} |`,
     );
   }
   return lines.join("\n");

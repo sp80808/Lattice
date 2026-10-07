@@ -83,6 +83,7 @@ test("repair loop: tsr decides, random baseline runs the same tasks", async () =
   const report = await runRepair({ task, seed: 1, maxRounds: 8 });
   assert.equal(report.status, "solved", report.error);
   assert.match(report.patch!, /^f add\(a:i64,b:i64\)>i64=(a\+b|b\+a)\n$/);
+  assert.ok(report.patchDistance! >= 1, "the broken program was changed");
   assert.equal(report.tokens, 0, "offline stubs spend no tokens");
   assert.ok(report.initialResultId?.startsWith("sha256:"));
 
