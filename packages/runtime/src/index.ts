@@ -7,6 +7,15 @@ import {
   type CleanupPolicy,
 } from "@lattice/agents";
 import type { RunTaskOptions } from "@lattice/core";
+import { runCommand } from "@lattice/execution";
+import {
+  cassetteCommandRunner,
+  cassetteDecision,
+  cassetteExecutor,
+  cassetteGenerator,
+  cassetteVerifier,
+  type CassetteIo,
+} from "./cassette.js";
 import type { DecisionProvider, Verifier } from "@lattice/protocol";
 import {
   createWitnessVerifier,
@@ -346,9 +355,38 @@ export function createDecisionProvider(
   return new OpenAICompatibleDecisionProvider(endpointConfig(model));
 }
 
+export * from "./cassette.js";
+
 export function createRunTaskOptions(
   config: LatticeConfig,
-  hooks: { reviewer?: DecisionReviewer } = {},
+  hooks: { reviewer?: DecisionReviewer; cassette?: CassetteIo } = {},
+): RunTaskOptions {
+  const options = buildRunTaskOptions(config, hooks);
+  return hooks.cassette ? withCassette(options, hooks.cassette) : options;
+}
+
+/** Route every non-deterministic call of a run through a cassette. */
+function withCassette(options: RunTaskOptions, io: CassetteIo): RunTaskOptions {
+  return {
+    ...options,
+    commandRunner: cassetteCommandRunner(io, options.commandRunner ?? runCommand),
+    ...(options.verifier ? { verifier: cassetteVerifier(io, options.verifier) } : {}),
+    ...(options.search
+      ? {
+          search: {
+            ...options.search,
+            generator: cassetteGenerator(io, options.search.generator),
+            decision: cassetteDecision(io, options.search.decision),
+            executor: cassetteExecutor(io, options.search.executor),
+          },
+        }
+      : {}),
+  };
+}
+
+function buildRunTaskOptions(
+  config: LatticeConfig,
+  hooks: { reviewer?: DecisionReviewer },
 ): RunTaskOptions {
   const verify = config.verify;
   const verifier: Verifier | undefined =

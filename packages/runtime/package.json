@@ -15,6 +15,8 @@
     "@lattice/core": "0.0.1",
     "@lattice/providers": "0.0.1",
     "@lattice/tessera": "0.0.1",
-    "@lattice/protocol": "0.0.1"
+    "@lattice/protocol": "0.0.1",
+    "@lattice/execution": "0.0.1",
+    "@lattice/search": "0.0.1"
   }
 }

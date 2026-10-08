@@ -5,6 +5,7 @@ import {
   collectRepositorySnapshot,
   digest,
   runCommand,
+  type CommandResult,
   type CommandSpec,
 } from "@lattice/execution";
 import {
@@ -31,6 +32,10 @@ export interface RunTaskOptions {
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
+  /** Where this run came from, recorded on `run.started` (e.g. the run it replays). */
+  lineage?: { replayOf?: string };
+  /** Runs `verifyCommand`; defaults to `runCommand`. Replay swaps in recorded results. */
+  commandRunner?: (spec: CommandSpec) => Promise<CommandResult>;
   /** Structured verifier (e.g. `tsr witness`); its record is stored in the run log. */
   verifier?: Verifier;
   search?: {
@@ -108,7 +113,11 @@ export async function runTask(
     join(runsDir, `${runId}.jsonl`),
     options.onEvent,
   );
-  await log.append("run.started", { task: trimmed, cwd });
+  await log.append("run.started", {
+    task: trimmed,
+    cwd,
+    ...(options.lineage ? { lineage: options.lineage } : {}),
+  });
 
   try {
     await log.append("tool.started", {
@@ -168,7 +177,7 @@ export async function runTask(
         args: command.args ?? [],
       });
 
-      const result = await runCommand(command);
+      const result = await (options.commandRunner ?? runCommand)(command);
       await log.append("tool.completed", {
         tool: "command",
         result,

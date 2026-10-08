@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  cassetteDecision,
+  cassetteGenerator,
+  loadCassette,
+  recordCassette,
+  replayCassette,
+  ReplayDivergenceError,
   createDecisionProvider,
   createRunTaskOptions,
   describeVerify,
@@ -111,4 +117,58 @@ test("models.decision provider random is a seeded baseline", async () => {
     () => parseLatticeConfig({ models: { decision: { provider: "random", seed: 1.5 } } }),
     /seed must be an integer/,
   );
+});
+
+test("cassette replays recorded calls without touching live providers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-cassette-"));
+  const path = join(dir, "run.cassette.jsonl");
+  let liveCalls = 0;
+  const live = {
+    async generate(request: { prompt: string }) {
+      liveCalls++;
+      return { text: `echo:${request.prompt}`, identity: { provider: "fake" }, usage: { latencyMs: liveCalls } };
+    },
+  };
+  const failing = {
+    async decide(): Promise<never> {
+      throw new Error("provider down");
+    },
+  };
+
+  const record = recordCassette(path);
+  const generator = cassetteGenerator(record, live as never);
+  assert.equal((await generator.generate({ prompt: "one" })).text, "echo:one");
+  await assert.rejects(cassetteDecision(record, failing as never).decide({ question: "q", choices: [] }), /provider down/);
+  assert.equal((await generator.generate({ prompt: "two" })).text, "echo:two");
+  assert.equal(liveCalls, 2);
+
+  const entries = await loadCassette(path);
+  assert.deepEqual(entries.map((entry) => entry.kind), ["generator", "decision", "generator"]);
+
+  const never = { async generate(): Promise<never> { throw new Error("live call during replay"); } };
+  const neverDecide = { async decide(): Promise<never> { throw new Error("live call during replay"); } };
+  const replay = replayCassette(entries);
+  const g = cassetteGenerator(replay, never as never);
+  const replayed = await g.generate({ prompt: "one" });
+  assert.equal(replayed.text, "echo:one");
+  assert.equal(replayed.usage.latencyMs, 1);
+  // The recorded failure replays as the same failure.
+  await assert.rejects(cassetteDecision(replay, neverDecide as never).decide({ question: "q", choices: [] }), /provider down/);
+  // A changed request is reported at its call with the field that changed.
+  await assert.rejects(g.generate({ prompt: "TWO" }), (error: unknown) => {
+    assert.ok(error instanceof ReplayDivergenceError);
+    assert.equal(error.seq, 3);
+    assert.equal(error.reason, "request");
+    assert.deepEqual(error.changedFields, ["prompt"]);
+    return true;
+  });
+
+  // Fewer calls than recorded is a divergence too.
+  const short = replayCassette(entries);
+  await cassetteGenerator(short, never as never).generate({ prompt: "one" });
+  assert.throws(() => short.assertConsumed(), /call 2/);
+  // More calls than recorded fails loudly.
+  const long = replayCassette(entries.slice(0, 1));
+  await cassetteGenerator(long, never as never).generate({ prompt: "one" });
+  await assert.rejects(cassetteGenerator(long, never as never).generate({ prompt: "x" }), /no recorded generator call/);
 });

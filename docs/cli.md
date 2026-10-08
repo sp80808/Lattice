@@ -26,6 +26,27 @@ Without a config the run is *evidence-only* (repository snapshot). With
 `mode: auto` it runs the model search loop and coding agents in isolated
 worktrees; supervised/manual autonomy prompts at the TTY and blocks without one.
 
+### `lattice replay [id|latest] [--json]`
+
+Re-runs a run made with `lattice run --record` using only its recorded I/O.
+`--record` writes `.lattice/runs/<id>.cassette.jsonl`: one line per model,
+verify command, structured verifier and experiment call, holding the
+canonical request and its response (or error). Cassettes contain prompts,
+model replies and command output; they stay on disk next to the run log.
+
+Replay builds the run from the current config exactly as before, but every
+one of those calls is served from the cassette and none reaches a model, a
+command or a coding agent. Calls must arrive in the recorded order with the
+recorded request; the first that does not is reported as the divergence, with
+its call number, kind and the request fields that changed (for example
+`call 1 (command): request changed in args` after editing `verify`). A replay
+that makes fewer or more calls than the recording also diverges. The replay is
+a new run whose `run.started` event carries `lineage.replayOf`. Exit status is
+0 only when nothing diverged and the outcome matches the recording.
+
+Forking a run at an event and refreshing selected calls live are not
+implemented yet (#51).
+
 ### `lattice runs [-n N] [--json]`
 
 Recorded runs in `.lattice/runs/`, newest first, with status (`completed`,

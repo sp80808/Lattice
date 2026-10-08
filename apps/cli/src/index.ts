@@ -7,6 +7,7 @@ import {
   mcpCommand,
   mineCommand,
   policySimCommand,
+  replayCommand,
   runCommand,
   runsCommand,
   serveCommand,
@@ -22,7 +23,8 @@ Usage:
   lattice <command> [options]
 
 Tasks:
-  run <task...>        run a task          [--config path] [--observe] [--json]
+  run <task...>        run a task          [--config path] [--observe] [--record] [--json]
+  replay [id|latest]   re-run a --record run from recorded I/O only [--config path] [--json]
   runs                 list recorded runs  [-n limit] [--json]
   show [id|latest]     show one run        [--events] [-f|--follow] [--json]
 
@@ -55,6 +57,7 @@ Docs: docs/cli.md`;
 
 const COMMANDS: Record<string, (args: string[]) => Promise<number>> = {
   run: runCommand,
+  replay: replayCommand,
   init: initCommand,
   doctor: doctorCommand,
   runs: runsCommand,
