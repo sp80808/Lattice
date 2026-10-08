@@ -195,10 +195,17 @@ export async function doctorCommand(args: string[]): Promise<number> {
   return report.ok ? 0 : 1;
 }
 
+/** `running`/`interrupted` say more than `incomplete` when the lease knows. */
+function statusLabel(run: RunSummary): string {
+  return run.status === "incomplete" && run.liveness && run.liveness !== "unknown"
+    ? run.liveness
+    : run.status;
+}
+
 function runRow(run: RunSummary): string {
   return [
     run.runId.slice(0, 8),
-    run.status.padEnd(10),
+    statusLabel(run).padEnd(11),
     when(run.startedAt),
     `ev=${run.evidence} dec=${run.decisions} exp=${run.experiments}`.padEnd(20),
     truncate(run.task, 60),
@@ -229,7 +236,7 @@ function eventLine(event: RunEvent): string {
 
 function printRun(run: RunDetail): void {
   console.log(`run:      ${run.runId}`);
-  console.log(`status:   ${run.status}`);
+  console.log(`status:   ${statusLabel(run)}`);
   console.log(`task:     ${run.task ?? "-"}`);
   console.log(`cwd:      ${run.cwd ?? "-"}`);
   console.log(`started:  ${when(run.startedAt)}   ended: ${when(run.endedAt)}`);

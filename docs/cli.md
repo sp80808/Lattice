@@ -29,8 +29,17 @@ worktrees; supervised/manual autonomy prompts at the TTY and blocks without one.
 ### `lattice runs [-n N] [--json]`
 
 Recorded runs in `.lattice/runs/`, newest first, with status (`completed`,
-`failed`, or `incomplete` for a run that is still going or crashed) and
-evidence/decision/experiment counts.
+`failed`, `running`, or `interrupted`) and evidence/decision/experiment
+counts.
+
+While a run is going, the process executing it holds
+`.lattice/runs/<id>.lease.json` and renews it every 10 seconds; the lease is
+removed once the run ends. A run with no terminal event is `running` while its
+lease is fresh and `interrupted` once it is not: on the same machine as soon
+as the holder's pid is gone, elsewhere once 30 seconds pass without a
+heartbeat. JSON output keeps `status: "incomplete"` for both and adds
+`liveness` (`running`, `interrupted`, or `unknown` for runs logged before
+leases existed). Resuming an interrupted run is not implemented yet (#67).
 
 ### `lattice show [id|latest] [--events] [--json]`
 

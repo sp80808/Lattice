@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { buildStatsReport, type StatsReport } from "@lattice/analytics";
-import { runTask } from "@lattice/core";
+import { leaseLiveness, readRunLease, runLeasePath, runTask } from "@lattice/core";
 import { runCommand } from "@lattice/execution";
 import { RandomDecisionProvider } from "@lattice/providers";
 import {
@@ -393,6 +393,31 @@ export function summarizeRunEvents(
   return detail;
 }
 
+/** Read a run's log and, when it has not ended, check its lease for liveness. */
+async function readRunDetail(path: string): Promise<RunDetail> {
+  const detail = summarizeRunEvents(await readEvents(path), path);
+  if (detail.status === "incomplete") {
+    const leaseFile = runLeasePath(dirname(path), basename(path, ".jsonl"));
+    if (await fileExists(leaseFile)) {
+      // A crash leaves the lease behind; a malformed one fails closed.
+      detail.liveness = leaseLiveness(await readRunLease(leaseFile));
+    } else {
+      // Runs logged before leases existed carry no lease at all.
+      detail.liveness = "unknown";
+    }
+  }
+  return detail;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function stripTap(detail: RunDetail): RunSummary {
   const { tap: _tap, ...summary } = detail;
   return summary;
@@ -423,7 +448,7 @@ export async function listRuns(options: ListRunsOptions = {}): Promise<RunSummar
   const summaries = await Promise.all(
     (await runFiles(cwd)).map(async (name) => {
       const path = join(dir, name);
-      return stripTap(summarizeRunEvents(await readEvents(path), path));
+      return stripTap(await readRunDetail(path));
     }),
   );
   return summaries
@@ -463,7 +488,7 @@ export async function getRun(
 ): Promise<RunDetail> {
   const runId = await resolveRunId(reference, cwd);
   const path = join(runsDirectory(cwd), `${runId}.jsonl`);
-  return summarizeRunEvents(await readEvents(path), path);
+  return readRunDetail(path);
 }
 
 export async function getRunEvents(

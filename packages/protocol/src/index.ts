@@ -198,6 +198,28 @@ export interface TaskAccepted {
 
 export type RunStatus = "completed" | "failed" | "incomplete";
 
+/**
+ * Held by the process executing a run, renewed by heartbeat and removed when
+ * the run ends. Lets readers tell a live run from one whose process died.
+ */
+export interface RunLease {
+  schema: "lattice.run-lease/v1";
+  runId: string;
+  pid: number;
+  host: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+  /** The lease is stale once `heartbeatAt + ttlMs` has passed. */
+  ttlMs: number;
+}
+
+/**
+ * Liveness of an `incomplete` run: `running` while its lease is fresh,
+ * `interrupted` once the holder is gone (dead pid on this host, or an expired
+ * lease), `unknown` for runs logged before leases existed.
+ */
+export type RunLiveness = "running" | "interrupted" | "unknown";
+
 export interface RunSummary {
   runId: string;
   status: RunStatus;
@@ -212,6 +234,8 @@ export interface RunSummary {
   decisions: number;
   experiments: number;
   logPath: string;
+  /** Set for `incomplete` runs; see {@link RunLiveness}. */
+  liveness?: RunLiveness;
 }
 
 export interface RunDetail extends RunSummary {
