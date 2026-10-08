@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import {
   buildCommandEnv,
@@ -136,4 +137,64 @@ test("killTree timeout kills descendants holding the output pipe", { skip: !posi
   assert.ok(Date.now() - started < 5_000, "timeout was not bounded");
   const pid = Number(await readFile(pidFile, "utf8"));
   assert.ok(await waitFor(() => !alive(pid)), `descendant ${pid} survived`);
+});
+
+test("abort before dispatch never starts the command", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-abort-"));
+  const marker = join(dir, "ran");
+  const controller = new AbortController();
+  controller.abort(new Error("user cancelled"));
+  const result = await runCommand({
+    command: process.execPath,
+    args: ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)},'x')`],
+    signal: controller.signal,
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelReason, "user cancelled");
+  assert.equal(result.exitCode, null);
+  await assert.rejects(readFile(marker));
+});
+
+test("abort stops the whole tree once and records the first cause", { skip: !posix }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-abort-"));
+  const pidFile = join(dir, "pid");
+  const controller = new AbortController();
+  const running = runCommand({
+    command: process.execPath,
+    args: [
+      "-e",
+      `const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000);`,
+    ],
+    killTree: true,
+    timeoutMs: 30_000,
+    killGraceMs: 200,
+    signal: controller.signal,
+  });
+  assert.ok(await waitFor(() => existsSync(pidFile)));
+  controller.abort("first");
+  // A second trigger is a no-op, not a second outcome.
+  controller.abort("second");
+  const result = await running;
+  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelReason, "first");
+  assert.equal(result.timedOut, false);
+  const pid = Number(await readFile(pidFile, "utf8"));
+  assert.ok(await waitFor(() => !alive(pid)), `descendant ${pid} survived`);
+});
+
+test("a timeout that fires first stays the cause when abort follows", async () => {
+  const controller = new AbortController();
+  const result = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],
+    timeoutMs: 200,
+    killGraceMs: 300,
+    signal: controller.signal,
+  });
+  controller.abort("late");
+  assert.equal(result.timedOut, true);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancelReason, undefined);
+  // SIGTERM was ignored, so the bounded stop had to escalate.
+  assert.equal(result.signal, "SIGKILL");
 });
