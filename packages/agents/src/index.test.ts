@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -351,4 +352,72 @@ test("experiment evidence records the worker env policy and names", async () => 
   assert.ok(model, "missing model evidence");
   assert.match(JSON.stringify(model), /env=minimal:[^"]*PATH/);
   assert.doesNotMatch(JSON.stringify(model), /undefined/);
+});
+
+test("cancelling a run stops the worker, skips verification and keeps its evidence", async () => {
+  const repo = await createRepo();
+  const controller = new AbortController();
+  const verifyRan = join(await mkdtemp(join(tmpdir(), "lattice-cancel-")), "verified");
+  const adapter = new ProcessAgentAdapter({
+    name: "slow-agent",
+    command: process.execPath,
+    args: [
+      "-e",
+      "require('fs').appendFileSync('base.txt','partial\\n');setInterval(()=>{},1000)",
+    ],
+  });
+  setTimeout(() => controller.abort(new Error("operator stop")), 300);
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "never finishes", timeoutMs: 30_000 },
+    adapter,
+    verifyCommand: {
+      command: process.execPath,
+      args: ["-e", `require('fs').writeFileSync(${JSON.stringify(verifyRan)},'x')`],
+    },
+    cleanup: "always",
+    signal: controller.signal,
+  });
+  assert.equal(result.success, false);
+  assert.deepEqual(result.cancelled, { reason: "operator stop", stage: "agent" });
+  assert.equal(result.execution.cancelled, true);
+  assert.equal(result.verification, undefined);
+  assert.equal(await workspaceExists(verifyRan), false);
+  // What the worker did before the stop is still captured as evidence.
+  assert.ok(result.changes.changedFiles.includes("base.txt"));
+});
+
+test("cancelling during verification records the verify stage", async () => {
+  const repo = await createRepo();
+  const controller = new AbortController();
+  const started = join(await mkdtemp(join(tmpdir(), "lattice-cancel-")), "started");
+  const watcher = setInterval(() => {
+    if (existsSync(started)) controller.abort("deadline");
+  }, 25);
+  try {
+    const result = await runIsolatedAgent({
+      repoRoot: repo,
+      task: { prompt: "quick" },
+      adapter: new ProcessAgentAdapter({
+        name: "quick-agent",
+        command: process.execPath,
+        args: ["-e", "0"],
+      }),
+      verifyCommand: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `require('fs').writeFileSync(${JSON.stringify(started)},'x');setInterval(()=>{},1000)`,
+        ],
+        timeoutMs: 30_000,
+      },
+      cleanup: "always",
+      signal: controller.signal,
+    });
+    assert.equal(result.success, false);
+    assert.deepEqual(result.cancelled, { reason: "deadline", stage: "verify" });
+    assert.equal(result.verification?.cancelled, true);
+  } finally {
+    clearInterval(watcher);
+  }
 });

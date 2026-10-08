@@ -27,8 +27,13 @@ export interface CommandSpec {
    * sandbox closes that gap.
    */
   killTree?: boolean;
-  /** Grace period between SIGTERM and SIGKILL when a tree is killed. */
+  /** Grace period between SIGTERM and SIGKILL when a command is stopped. */
   killGraceMs?: number;
+  /**
+   * Cancels the command. Stopping is idempotent: the first of timeout or
+   * abort is the recorded cause and later triggers change nothing.
+   */
+  signal?: AbortSignal;
 }
 
 export type EnvPolicy = "inherit" | "minimal";
@@ -67,6 +72,10 @@ export interface CommandResult {
   stderr: string;
   durationMs: number;
   timedOut: boolean;
+  /** True when `signal` aborted the command before it finished on its own. */
+  cancelled: boolean;
+  /** The abort reason, as text, when `cancelled`. */
+  cancelReason?: string;
   outputTruncated: boolean;
   envPolicy: EnvPolicy;
   /** Names (never values) of the variables the command received. */
@@ -158,6 +167,13 @@ function killWindowsTree(pid: number): void {
   }
 }
 
+export function abortReasonText(signal: AbortSignal): string {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason.message || reason.name;
+  if (reason === undefined) return "aborted";
+  return String(reason);
+}
+
 export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const cwd = resolve(spec.cwd ?? process.cwd());
   const args = spec.args ?? [];
@@ -168,6 +184,26 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const killGraceMs = spec.killGraceMs ?? 2_000;
   const posixGroup = spec.killTree === true && process.platform !== "win32";
   const started = performance.now();
+
+  if (spec.signal?.aborted) {
+    // Never start work that was cancelled before it was dispatched.
+    return {
+      command: spec.command,
+      args,
+      cwd,
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      durationMs: 0,
+      timedOut: false,
+      cancelled: true,
+      cancelReason: abortReasonText(spec.signal),
+      outputTruncated: false,
+      envPolicy,
+      envNames: Object.keys(env).sort(),
+    };
+  }
 
   return await new Promise<CommandResult>((resolvePromise, reject) => {
     const child = spawn(spec.command, args, {
@@ -205,34 +241,49 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     });
 
     let forceTimer: NodeJS.Timeout | undefined;
+    let cancelled = false;
+    let cancelReason: string | undefined;
+    let stopping = false;
+
+    const stop = (cause: "timeout" | "cancel"): void => {
+      if (stopping) return;
+      stopping = true;
+      if (cause === "timeout") timedOut = true;
+      else {
+        cancelled = true;
+        cancelReason = abortReasonText(spec.signal!);
+      }
+      if (groupPid !== undefined) signalGroup(groupPid, "SIGTERM");
+      else {
+        // taskkill walks the tree from the live parent, so it goes first.
+        if (spec.killTree && child.pid !== undefined) killWindowsTree(child.pid);
+        child.kill("SIGTERM");
+      }
+      forceTimer = setTimeout(() => {
+        if (groupPid !== undefined) signalGroup(groupPid, "SIGKILL");
+        else child.kill("SIGKILL");
+        // A descendant that escaped the group can still hold our pipes open;
+        // stop waiting on them so the stop is actually bounded.
+        setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        }, 500).unref();
+      }, killGraceMs);
+      forceTimer.unref();
+    };
+
+    const onAbort = (): void => stop("cancel");
+    spec.signal?.addEventListener("abort", onAbort, { once: true });
 
     child.once("error", (error) => {
       if (groupPid !== undefined) liveGroups.delete(groupPid);
       clearTimeout(timer);
       clearTimeout(forceTimer);
+      spec.signal?.removeEventListener("abort", onAbort);
       reject(error);
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      if (groupPid !== undefined) {
-        signalGroup(groupPid, "SIGTERM");
-        forceTimer = setTimeout(() => {
-          signalGroup(groupPid, "SIGKILL");
-          // A descendant that escaped the group can still hold our pipes open;
-          // stop waiting on them so the timeout is actually bounded.
-          setTimeout(() => {
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-          }, 500).unref();
-        }, killGraceMs);
-        forceTimer.unref();
-      } else {
-        // taskkill walks the tree from the live parent, so it goes first.
-        if (spec.killTree && child.pid !== undefined) killWindowsTree(child.pid);
-        child.kill("SIGTERM");
-      }
-    }, timeoutMs);
+    const timer = setTimeout(() => stop("timeout"), timeoutMs);
 
     let descendantsKilled: boolean | undefined;
     child.once("exit", () => {
@@ -246,6 +297,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
       clearTimeout(forceTimer);
+      spec.signal?.removeEventListener("abort", onAbort);
       resolvePromise({
         command: spec.command,
         args,
@@ -256,6 +308,8 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
         stderr,
         durationMs: performance.now() - started,
         timedOut,
+        cancelled,
+        ...(cancelReason !== undefined ? { cancelReason } : {}),
         outputTruncated,
         envPolicy,
         envNames: Object.keys(env).sort(),

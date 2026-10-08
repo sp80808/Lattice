@@ -74,6 +74,13 @@ What Lattice enforces today for every process agent:
   running is killed. A process that calls `setsid()` itself escapes this
   until a real sandbox backend exists. On Windows, timeouts use
   `taskkill /T`.
+- **Cancellation.** `runCommand`, `AgentTask`, `runIsolatedAgent` and
+  `createAgentExperimentExecutor` accept an `AbortSignal`. Aborting stops the
+  worker or verify command and its process tree with the same bounded
+  SIGTERM-then-SIGKILL path as a timeout. Stopping is idempotent: the first
+  of timeout or abort is the recorded cause. A run cancelled during the agent
+  stage never starts verification, and the changes captured so far are kept
+  as evidence (`cancelled=<stage>:<reason>`, outcome `inconclusive`).
 - **Explicit opt-out.** `trustedHost: true` (config `agent.trustedHost`)
   passes the full parent environment. Use it for local debugging only;
   Lattice never falls back to it on its own.
