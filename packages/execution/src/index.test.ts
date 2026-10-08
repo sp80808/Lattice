@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  canonicalJson,
   collectRepositorySnapshot,
+  commandEvidenceIdentity,
   digest,
   runCommand,
 } from "./index.js";
@@ -43,4 +45,29 @@ test("collectRepositorySnapshot falls back to filesystem facts", async () => {
 test("digest is deterministic", () => {
   assert.equal(digest("same"), digest("same"));
   assert.notEqual(digest("same"), digest("different"));
+});
+
+test("command identity ignores timing and cwd but not full output or revision", async () => {
+  const result = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write('x'.repeat(64))"],
+    maxOutputBytes: 8,
+  });
+  assert.equal(result.outputTruncated, true);
+  assert.equal(result.stdout, "x".repeat(8));
+  // The digest covers the whole stream, not the captured prefix.
+  assert.equal(result.stdoutSha256, digest("x".repeat(64)));
+
+  const base = commandEvidenceIdentity(result, "abc");
+  assert.match(base.id, /^ev1:/);
+  assert.equal(
+    commandEvidenceIdentity({ ...result, durationMs: 99_999, cwd: "/elsewhere" }, "abc").id,
+    base.id,
+  );
+  assert.notEqual(commandEvidenceIdentity(result, "def").id, base.id);
+  assert.notEqual(
+    commandEvidenceIdentity({ ...result, stdoutSha256: digest("y") }, "abc").id,
+    base.id,
+  );
+  assert.equal(canonicalJson({ b: 1, a: { d: 2, c: 3 } }), '{"a":{"c":3,"d":2},"b":1}');
 });

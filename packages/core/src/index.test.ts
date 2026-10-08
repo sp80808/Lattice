@@ -95,3 +95,31 @@ test("runTask reports each appended event to onEvent, ignoring listener errors",
     "run.completed",
   ]);
 });
+
+test("equivalent repeated runs share deterministic evidence IDs", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-"));
+  const run = (text: string) =>
+    runTask("identity", {
+      cwd,
+      verifyCommand: {
+        command: process.execPath,
+        // Random wall-clock duration, identical observable result.
+        args: ["-e", `setTimeout(()=>process.stdout.write(${JSON.stringify(text)}),Math.random()*150)`],
+      },
+    });
+  const fast = await run("same");
+  const slow = await run("same");
+  const changed = await run("other");
+
+  const [repoA, cmdA] = fast.tap.evidence;
+  const [repoB, cmdB] = slow.tap.evidence;
+  assert.match(cmdA!.id, /^ev1:/);
+  assert.equal(cmdA!.identity?.scheme, "lattice.evidence/v1");
+  assert.equal(cmdA!.verdict, "pass");
+  assert.equal(repoA!.id, repoB!.id);
+  // The display summary includes duration and differs; the identity does not.
+  assert.equal(cmdA!.id, cmdB!.id);
+  assert.notEqual(cmdA!.id, changed.tap.evidence[1]!.id);
+  // Only the args changed, so the request differs too.
+  assert.notEqual(cmdA!.identity?.request, changed.tap.evidence[1]!.identity?.request);
+});

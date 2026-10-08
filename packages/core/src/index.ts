@@ -2,8 +2,11 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
+  canonicalJson,
   collectRepositorySnapshot,
+  commandEvidenceIdentity,
   digest,
+  evidenceIdentityV1,
   runCommand,
   type CommandSpec,
 } from "@lattice/execution";
@@ -130,11 +133,31 @@ export async function runTask(
       .filter(Boolean)
       .join(" ");
 
-    const repositoryEvidence = evidence(
-      "repository",
-      snapshot.source === "git" ? "git" : "filesystem",
-      repoSummary,
-    );
+    // A dirty tree is not identified by its revision alone; mark it so its
+    // observations never share identity with the clean revision's.
+    const subjectRevision = snapshot.revision
+      ? `${snapshot.revision}${snapshot.dirty ? "+dirty" : ""}`
+      : undefined;
+    const repositoryIdentity = evidenceIdentityV1("repository", {
+      revision: subjectRevision,
+      request: digest(canonicalJson({ tool: "repository.snapshot", source: snapshot.source })),
+      result: digest(
+        canonicalJson({
+          revision: snapshot.revision ?? null,
+          dirty: snapshot.dirty ?? null,
+          trackedFiles: snapshot.trackedFiles,
+        }),
+      ),
+    });
+    const repositoryEvidence: EvidenceRef = {
+      ...evidence(
+        "repository",
+        snapshot.source === "git" ? "git" : "filesystem",
+        repoSummary,
+      ),
+      ...repositoryIdentity,
+      verdict: "informational",
+    };
 
     let tap: TapPacket = {
       version: TAP_VERSION,
@@ -190,12 +213,21 @@ export async function runTask(
         .filter(Boolean)
         .join(" ");
 
-      const commandEvidence = evidence(
-        "command",
-        source,
-        summary,
-        result.exitCode !== null && !result.timedOut,
-      );
+      const commandEvidence: EvidenceRef = {
+        ...evidence(
+          "command",
+          source,
+          summary,
+          result.exitCode !== null && !result.timedOut,
+        ),
+        ...commandEvidenceIdentity(result, subjectRevision),
+        verdict:
+          result.timedOut || result.exitCode === null
+            ? "tool_error"
+            : result.exitCode === 0
+              ? "pass"
+              : "fail",
+      };
       tap.evidence.push(commandEvidence);
       tap.verification.push(commandEvidence.id);
     }

@@ -24,6 +24,10 @@ export interface CommandResult {
   durationMs: number;
   timedOut: boolean;
   outputTruncated: boolean;
+  /** sha256 of the complete stdout stream, including any truncated tail. */
+  stdoutSha256: string;
+  /** sha256 of the complete stderr stream, including any truncated tail. */
+  stderrSha256: string;
 }
 
 export interface RepositorySnapshot {
@@ -72,16 +76,20 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
 
     let stdout = "";
     let stderr = "";
+    const stdoutHash = createHash("sha256");
+    const stderrHash = createHash("sha256");
     let outputTruncated = false;
     let timedOut = false;
 
     child.stdout?.on("data", (chunk: Buffer) => {
+      stdoutHash.update(chunk);
       const appended = appendLimited(stdout, chunk, maxOutputBytes);
       stdout = appended.value;
       outputTruncated ||= appended.truncated;
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
+      stderrHash.update(chunk);
       const appended = appendLimited(stderr, chunk, maxOutputBytes);
       stderr = appended.value;
       outputTruncated ||= appended.truncated;
@@ -107,6 +115,8 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
         durationMs: performance.now() - started,
         timedOut,
         outputTruncated,
+        stdoutSha256: stdoutHash.digest("hex"),
+        stderrSha256: stderrHash.digest("hex"),
       });
     });
   });
@@ -172,4 +182,64 @@ export async function collectRepositorySnapshot(
 
 export function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/** JSON with object keys sorted, so equal values always hash equally. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.entries(item as Record<string, unknown>).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+          ),
+        )
+      : item,
+  );
+}
+
+/**
+ * Deterministic identity for a command observation: what ran, against which
+ * revision, and its complete outputs. Duration, timestamps, cwd and display
+ * text are deliberately excluded so repeated equivalent runs share an ID.
+ */
+export function commandEvidenceIdentity(
+  result: CommandResult,
+  revision?: string,
+): { id: string; identity: EvidenceIdentityV1 } {
+  const request = digest(
+    canonicalJson({ tool: "command", command: result.command, args: result.args }),
+  );
+  const outcome = digest(
+    canonicalJson({
+      exitCode: result.exitCode,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      outputTruncated: result.outputTruncated,
+      stdout: result.stdoutSha256,
+      stderr: result.stderrSha256,
+    }),
+  );
+  return evidenceIdentityV1("command", { revision, request, result: outcome });
+}
+
+export interface EvidenceIdentityV1 {
+  scheme: "lattice.evidence/v1";
+  revision?: string;
+  request: string;
+  result: string;
+}
+
+/** `ev1:` IDs live apart from legacy `ev:` IDs, so the two never collide. */
+export function evidenceIdentityV1(
+  kind: string,
+  parts: { revision?: string; request: string; result: string },
+): { id: string; identity: EvidenceIdentityV1 } {
+  const identity: EvidenceIdentityV1 = {
+    scheme: "lattice.evidence/v1",
+    ...(parts.revision ? { revision: parts.revision } : {}),
+    request: parts.request,
+    result: parts.result,
+  };
+  const id = `ev1:${digest(canonicalJson({ kind, ...identity })).slice(0, 24)}`;
+  return { id, identity };
 }
