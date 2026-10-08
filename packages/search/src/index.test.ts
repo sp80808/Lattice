@@ -152,7 +152,7 @@ test("contextual router does not promote ambiguous generated text into authority
   ]);
   assert.equal(route.class, "next-action");
   assert.equal(route.reason, "mixed-actions");
-  assert.match(route.question, /using only the supplied evidence/i);
+  assert.match(route.question, /use only the supplied evidence/i);
 });
 
 test("search passes the contextual question and internal mode to the decision provider", async () => {
