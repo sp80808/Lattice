@@ -8,6 +8,7 @@
 import { createInterface } from "node:readline";
 import { isAbsolute, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import type { TaskIntent } from "@lattice/protocol";
 import {
   decide,
   executeTask,
@@ -90,6 +91,14 @@ function tools(reviews: ReviewBroker): ToolDefinition[] {
         properties: {
           task: { type: "string", description: "The coding task in plain language." },
           mode: { type: "string", enum: ["observe", "configured"], default: "observe" },
+          intent: {
+            type: "string",
+            enum: ["auto", "plan", "act", "debug", "review"],
+            default: "auto",
+            description:
+              "Narrows what the run may do; never widens mode. plan/review only read the repository, " +
+              "debug also runs the verifier, act/auto allow what the config grants.",
+          },
           wait: { type: "boolean", default: true, description: "false: return as soon as the run starts." },
           review: {
             type: "string",
@@ -120,6 +129,8 @@ function tools(reviews: ReviewBroker): ToolDefinition[] {
         const taskOptions = {
           cwd,
           mode: mode as "observe" | "configured",
+          // executeTask validates the value and rejects unknown intents.
+          intent: stringArg(args, "intent") as TaskIntent | undefined,
           reviewer: review === "remote" ? reviews.reviewerFor(() => runId) : undefined,
           onEvent: (event: { runId: string }) => {
             runId ??= event.runId;
@@ -144,6 +155,7 @@ function tools(reviews: ReviewBroker): ToolDefinition[] {
           status: result.status,
           summary: result.summary,
           mode: outcome.mode,
+          intent: outcome.intent,
           runtimeMode: outcome.runtimeMode,
           evidence: result.tap.evidence.map(({ id, kind, verified, summary }) => ({ id, kind, verified, summary })),
           uncertainties: result.tap.uncertainties,

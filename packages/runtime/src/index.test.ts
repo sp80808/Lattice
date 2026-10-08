@@ -7,6 +7,7 @@ import {
   createDecisionProvider,
   createRunTaskOptions,
   describeVerify,
+  effectivePermissions,
   loadLatticeConfig,
   parseLatticeConfig,
 } from "./index.js";
@@ -111,4 +112,40 @@ test("models.decision provider random is a seeded baseline", async () => {
     () => parseLatticeConfig({ models: { decision: { provider: "random", seed: 1.5 } } }),
     /seed must be an integer/,
   );
+});
+
+test("intents narrow the config and never widen it", () => {
+  const auto = parseLatticeConfig({
+    mode: "auto",
+    model: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen-test" },
+    agent: { preset: "qwen-code" },
+    verify: { command: "npm", args: ["test"] },
+  });
+  const observe = parseLatticeConfig({ mode: "observe", verify: { command: "npm" } });
+
+  for (const intent of ["plan", "review"] as const) {
+    const options = createRunTaskOptions(auto, { intent });
+    assert.equal(options.search, undefined);
+    assert.equal(options.verifyCommand, undefined);
+    assert.equal(options.verifier, undefined);
+    assert.equal(options.intent, intent);
+  }
+
+  const debug = createRunTaskOptions(auto, { intent: "debug" });
+  assert.equal(debug.search, undefined);
+  assert.equal(debug.verifyCommand?.command, "npm");
+
+  assert.ok(createRunTaskOptions(auto, { intent: "act" }).search);
+  assert.ok(createRunTaskOptions(auto).search);
+
+  // act cannot elevate an observe config.
+  const act = createRunTaskOptions(observe, { intent: "act" });
+  assert.equal(act.search, undefined);
+  assert.deepEqual(effectivePermissions(observe, "act"), {
+    read: "allow",
+    verify: "allow",
+    search: "deny",
+    agent: "deny",
+  });
+  assert.throws(() => effectivePermissions(auto, "yolo" as never), /unknown intent/);
 });

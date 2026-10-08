@@ -11,7 +11,7 @@ import {
   buildPolicySimulation,
   formatPolicySimulation,
 } from "@lattice/policy";
-import type { DoctorStatus, RunDetail, RunEvent, RunSummary } from "@lattice/protocol";
+import { TASK_INTENTS, type DoctorStatus, type RunDetail, type RunEvent, type RunSummary, type TaskIntent } from "@lattice/protocol";
 import { startLatticeServer } from "@lattice/server";
 import {
   buildInitConfig,
@@ -72,9 +72,14 @@ export async function runCommand(args: string[]): Promise<number> {
   const { values, positionals } = parse(args, {
     config: { type: "string" },
     observe: { type: "boolean" },
+    intent: { type: "string" },
   });
   const task = positionals.join(" ").trim();
   if (!task) throw new UsageError("run requires a task");
+  const intent = values.intent ?? "auto";
+  if (!(TASK_INTENTS as readonly string[]).includes(intent)) {
+    throw new UsageError(`--intent must be one of ${TASK_INTENTS.join(", ")}`);
+  }
 
   let outcome;
   try {
@@ -82,6 +87,7 @@ export async function runCommand(args: string[]): Promise<number> {
       cwd: cwdOf(values),
       configPath: values.config,
       mode: values.observe ? "observe" : "configured",
+      intent: intent as TaskIntent,
       reviewer: cliReviewer,
     });
   } catch (error) {
@@ -91,11 +97,12 @@ export async function runCommand(args: string[]): Promise<number> {
   const { result } = outcome;
 
   if (values.json) {
-    printJson({ ...result, mode: outcome.mode, runtimeMode: outcome.runtimeMode, configPath: outcome.configPath });
+    printJson({ ...result, mode: outcome.mode, intent: outcome.intent, runtimeMode: outcome.runtimeMode, configPath: outcome.configPath });
     return 0;
   }
   console.log(`config: ${outcome.configPath ?? "none (evidence-only bootstrap mode)"}`);
   console.log(`mode: ${outcome.runtimeMode}`);
+  if (outcome.intent !== "auto") console.log(`intent: ${outcome.intent}`);
   console.log(`run: ${result.runId}`);
   console.log(result.summary);
   console.log(`evidence: ${result.tap.evidence.length}`);

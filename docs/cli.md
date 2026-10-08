@@ -20,11 +20,21 @@ treated as a task, so `lattice "fix the parser tests"` is shorthand.
 |---|---|
 | `--config <path>` | explicit config (otherwise `$LATTICE_CONFIG`, `.lattice/config.json`, `lattice.config.json`) |
 | `--observe` | gather evidence and run the verifier only, even if the config says `mode: auto` |
-| `--json` | print the `RunResult` plus `mode`, `runtimeMode`, `configPath` |
+| `--intent <i>` | `plan`/`review`: read the repository only; `debug`: also run the verifier; `act`/`auto` (default): whatever the config grants |
+| `--json` | print the `RunResult` plus `mode`, `intent`, `runtimeMode`, `configPath` |
 
 Without a config the run is *evidence-only* (repository snapshot). With
 `mode: auto` it runs the model search loop and coding agents in isolated
 worktrees; supervised/manual autonomy prompts at the TTY and blocks without one.
+
+`--intent` is enforced by what the runtime builds, not by a prompt: under
+`plan`, `review` or `debug` no model search, coding agent or worktree is
+created at all, and under `plan`/`review` the verifier does not run either
+(running tests executes repository code). An intent can only narrow the
+config: `--intent act` on a `mode: observe` config still only observes. The
+run's `run.started` event records the intent and the resulting
+`read`/`verify`/`search`/`agent` grants. The daemon (`POST /v1/tasks`), SDKs
+and the `lattice_run` MCP tool take the same `intent` field.
 
 ### `lattice runs [-n N] [--json]`
 

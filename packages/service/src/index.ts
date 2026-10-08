@@ -10,6 +10,7 @@ import {
   describeVerify,
   verifyExecutable,
   createRunTaskOptions,
+  isTaskIntent,
   loadLatticeConfig,
   parseLatticeConfig,
   type LatticeConfig,
@@ -18,7 +19,7 @@ import {
 } from "@lattice/runtime";
 export { describeVerify } from "@lattice/runtime";
 import type { DecisionReviewer } from "@lattice/search";
-import { UNKNOWN_CHOICE_ID } from "@lattice/protocol";
+import { TASK_INTENTS, UNKNOWN_CHOICE_ID } from "@lattice/protocol";
 import type {
   DecisionRequest,
   DecisionResult,
@@ -32,6 +33,7 @@ import type {
   RunSummary,
   TapPacket,
   TaskExecutionMode,
+  TaskIntent,
 } from "@lattice/protocol";
 
 export const LATTICE_VERSION = "0.0.1";
@@ -75,6 +77,8 @@ export interface ExecuteTaskOptions {
   cwd?: string;
   configPath?: string;
   mode?: TaskExecutionMode;
+  /** Narrows what the run may do; it can never widen the config. */
+  intent?: TaskIntent;
   reviewer?: DecisionReviewer;
   /** Observe events as they are appended to the run log. */
   onEvent?: (event: RunEvent) => void;
@@ -83,6 +87,7 @@ export interface ExecuteTaskOptions {
 export interface ExecuteTaskResult {
   result: RunResult;
   mode: TaskExecutionMode;
+  intent: TaskIntent;
   configPath?: string;
   runtimeMode: "auto" | "observe" | "evidence-only";
 }
@@ -101,11 +106,20 @@ export async function executeTask(
   if (mode !== "observe" && mode !== "configured") {
     invalid("mode must be 'observe' or 'configured'");
   }
+  const intent = options.intent ?? "auto";
+  if (!isTaskIntent(intent)) {
+    invalid(`intent must be one of ${TASK_INTENTS.join(", ")}`);
+  }
 
   const loaded = await loadConfigOrThrow(cwd, options.configPath);
   if (!loaded) {
-    const result = await runTask(task, { cwd, onEvent: options.onEvent });
-    return { result, mode, runtimeMode: "evidence-only" };
+    const result = await runTask(task, {
+      cwd,
+      onEvent: options.onEvent,
+      intent,
+      permissions: { read: "allow", verify: "deny", search: "deny", agent: "deny" },
+    });
+    return { result, mode, intent, runtimeMode: "evidence-only" };
   }
 
   const config: LatticeConfig =
@@ -113,7 +127,7 @@ export async function executeTask(
 
   let runOptions;
   try {
-    runOptions = createRunTaskOptions(config, { reviewer: options.reviewer });
+    runOptions = createRunTaskOptions(config, { reviewer: options.reviewer, intent });
   } catch (error) {
     throw new LatticeServiceError("config_error", errorMessage(error));
   }
@@ -122,8 +136,10 @@ export async function executeTask(
   return {
     result,
     mode,
+    intent,
     configPath: loaded.path,
-    runtimeMode: config.mode ?? "auto",
+    // Report what actually ran: an intent that denies search runs like observe.
+    runtimeMode: runOptions.search ? "auto" : "observe",
   };
 }
 

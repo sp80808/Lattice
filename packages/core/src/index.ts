@@ -21,7 +21,10 @@ import {
   type RunResult,
   type DecisionProvider,
   type GeneratorProvider,
+  type PermissionOutcome,
   type TapPacket,
+  type TaskIntent,
+  type ToolCapability,
   type Verifier,
 } from "@lattice/protocol";
 
@@ -31,6 +34,10 @@ export interface RunTaskOptions {
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
+  /** The user's task intent; recorded on `run.started` for replay. */
+  intent?: TaskIntent;
+  /** Effective per-capability grants; recorded on `run.started` for replay. */
+  permissions?: Record<ToolCapability, PermissionOutcome>;
   /** Structured verifier (e.g. `tsr witness`); its record is stored in the run log. */
   verifier?: Verifier;
   search?: {
@@ -108,7 +115,12 @@ export async function runTask(
     join(runsDir, `${runId}.jsonl`),
     options.onEvent,
   );
-  await log.append("run.started", { task: trimmed, cwd });
+  await log.append("run.started", {
+    task: trimmed,
+    cwd,
+    ...(options.intent ? { intent: options.intent } : {}),
+    ...(options.permissions ? { permissions: options.permissions } : {}),
+  });
 
   try {
     await log.append("tool.started", {
