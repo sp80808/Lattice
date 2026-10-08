@@ -19,5 +19,5 @@
       "performance-semantic-preservation"
     ]
   },
-  "notes": "Fixture definitions only. Execution harness (frozen worktrees, ledger wiring) follows; do not treat manifests as runnable Lattice jobs yet."
+  "notes": "Run with scripts/dogfood-run.mjs (calibrate, --patch, --agent). Not yet runnable through `lattice run` itself."
 }

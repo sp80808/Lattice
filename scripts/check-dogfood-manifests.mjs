@@ -48,6 +48,10 @@ for (const rel of index.cases) {
   if (!doc.leakage_guard.exclude_commits_from_context.includes(doc.reference.gold_fix_sha)) {
     throw new Error(`${rel} gold_fix_sha must be excluded from context`);
   }
+  const setup = doc.acceptance.setup ?? [];
+  if (!Array.isArray(setup) || setup.some((command) => typeof command !== "string")) {
+    throw new Error(`${rel} acceptance.setup must be a list of commands`);
+  }
   if (!doc.acceptance.must_fail_on_broken_base) {
     throw new Error(`${rel} must_fail_on_broken_base required`);
   }

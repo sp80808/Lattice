@@ -8,6 +8,10 @@
   "task_statement": "Main CI and the example/demo verification path are reporting success incorrectly when underlying example commands fail. Make intentionally broken examples return non-zero, ensure the example checker cannot print overall success after a failed example, and make relevant Node/Python/example suites pass. Cancelled or skipped verification must not be silently accepted unless explicitly allow-listed.",
   "allowed_tools": ["shell", "read", "edit", "git_worktree"],
   "acceptance": {
+    "setup": [
+      "npm ci --no-audit --no-fund",
+      "npm run build"
+    ],
     "commands": [
       "bash scripts/check-examples.sh",
       "npm test"
