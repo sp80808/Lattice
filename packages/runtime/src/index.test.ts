@@ -112,3 +112,20 @@ test("models.decision provider random is a seeded baseline", async () => {
     /seed must be an integer/,
   );
 });
+
+test("agent.allowEnv and agent.trustedHost are validated", () => {
+  const base = { mode: "auto", agent: { preset: "qwen-code" } };
+  const ok = parseLatticeConfig({
+    ...base,
+    agent: { preset: "qwen-code", allowEnv: ["OPENAI_API_KEY"], trustedHost: false },
+  });
+  assert.deepEqual(ok.agent?.allowEnv, ["OPENAI_API_KEY"]);
+  assert.throws(
+    () => parseLatticeConfig({ ...base, agent: { preset: "opencode", allowEnv: "OPENAI_API_KEY" } }),
+    /allowEnv/,
+  );
+  assert.throws(
+    () => parseLatticeConfig({ ...base, agent: { preset: "opencode", trustedHost: "yes" } }),
+    /trustedHost/,
+  );
+});

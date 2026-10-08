@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { runCommand } from "@lattice/execution";
 import {
+  QWEN_CODE_ENV,
   ProcessAgentAdapter,
+  createAgentExperimentExecutor,
   createOpenCodeAdapter,
   createQwenCodeAdapter,
   promoteVerifiedRun,
@@ -288,4 +290,65 @@ test("a structured verifier replaces the verify command and gates success", asyn
     cleanup: "always",
   });
   assert.equal(accepted.success, true);
+});
+
+test("agent workers do not inherit unrelated parent secrets", async () => {
+  const repo = await createRepo();
+  process.env.LATTICE_AGENT_TEST_SECRET = "do-not-leak";
+  process.env.LATTICE_AGENT_TEST_KEY = "granted";
+  const script =
+    "process.stdout.write(JSON.stringify({s:process.env.LATTICE_AGENT_TEST_SECRET??null,k:process.env.LATTICE_AGENT_TEST_KEY??null}))";
+  try {
+    const restricted = await new ProcessAgentAdapter({
+      name: "restricted",
+      command: process.execPath,
+      args: ["-e", script],
+      allowEnv: ["LATTICE_AGENT_TEST_KEY"],
+    }).run({ prompt: "x" }, repo);
+    assert.deepEqual(JSON.parse(restricted.stdout), { s: null, k: "granted" });
+    assert.equal(restricted.environment?.policy, "minimal");
+    assert.ok(restricted.environment?.names.includes("LATTICE_AGENT_TEST_KEY"));
+
+    const trusted = await new ProcessAgentAdapter({
+      name: "trusted",
+      command: process.execPath,
+      args: ["-e", script],
+      trustedHost: true,
+    }).run({ prompt: "x" }, repo);
+    assert.deepEqual(JSON.parse(trusted.stdout), { s: "do-not-leak", k: "granted" });
+    assert.equal(trusted.environment?.policy, "inherit");
+  } finally {
+    delete process.env.LATTICE_AGENT_TEST_SECRET;
+    delete process.env.LATTICE_AGENT_TEST_KEY;
+  }
+});
+
+test("presets declare the environment their CLI needs", () => {
+  assert.ok(QWEN_CODE_ENV.includes("OPENAI_API_KEY"));
+  assert.ok(QWEN_CODE_ENV.includes("HOME"));
+});
+
+test("experiment evidence records the worker env policy and names", async () => {
+  const repo = await createRepo();
+  const revision = await runCommand({ command: "git", args: ["rev-parse", "HEAD"], cwd: repo });
+  const executor = createAgentExperimentExecutor({
+    adapter: new ProcessAgentAdapter({
+      name: "fixture-agent",
+      command: process.execPath,
+      args: ["-e", "0"],
+    }),
+    cleanup: "always",
+  });
+  const outcome = await executor.execute(
+    { id: "c1", label: "noop", action: "noop", expectedEvidence: "none" } as never,
+    {
+      task: "noop",
+      repo: { root: repo, revision: revision.stdout.trim() },
+      context: [],
+    } as never,
+  );
+  const model = outcome.evidence.find((record) => record.kind === "model");
+  assert.ok(model, "missing model evidence");
+  assert.match(JSON.stringify(model), /env=minimal:[^"]*PATH/);
+  assert.doesNotMatch(JSON.stringify(model), /undefined/);
 });

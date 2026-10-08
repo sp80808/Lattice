@@ -34,6 +34,8 @@ export interface AgentExecution {
   stderr: string;
   durationMs: number;
   timedOut: boolean;
+  /** Environment the worker ran with: policy and variable names, never values. */
+  environment?: { policy: "minimal" | "inherit"; names: string[] };
 }
 
 export interface AgentAdapter {
@@ -47,7 +49,18 @@ export interface ProcessAgentConfig {
   args?: string[];
   promptMode?: "template" | "stdin";
   timeoutMs?: number;
+  /** Explicit values set for the worker; always passed. */
   env?: Record<string, string | undefined>;
+  /**
+   * Parent variable names the worker may read, e.g. its provider API key.
+   * Everything else in the Lattice process environment is withheld.
+   */
+  allowEnv?: string[];
+  /**
+   * Opt in to passing the full parent environment. For local debugging only:
+   * the worker can then read every secret Lattice can.
+   */
+  trustedHost?: boolean;
 }
 
 function render(value: string, task: AgentTask, workspace: string): string {
@@ -80,6 +93,9 @@ export class ProcessAgentAdapter implements AgentAdapter {
       cwd: workspace,
       stdin,
       env: this.config.env,
+      envPolicy: this.config.trustedHost ? "inherit" : "minimal",
+      allowEnv: this.config.allowEnv,
+      killTree: true,
       timeoutMs: task.timeoutMs ?? this.config.timeoutMs ?? 10 * 60_000,
       maxOutputBytes: 1_000_000,
     });
@@ -91,6 +107,7 @@ export class ProcessAgentAdapter implements AgentAdapter {
       stderr: result.stderr,
       durationMs: result.durationMs,
       timedOut: result.timedOut,
+      environment: { policy: result.envPolicy, names: result.envNames },
     };
   }
 }
@@ -103,8 +120,37 @@ export interface QwenCodePresetOptions {
   outputFormat?: "json" | "stream-json" | "text";
   extraArgs?: string[];
   env?: Record<string, string | undefined>;
+  /** Replaces {@link QWEN_CODE_ENV}; the names the worker may read. */
+  allowEnv?: string[];
+  trustedHost?: boolean;
   timeoutMs?: number;
 }
+
+/**
+ * Login state lives under HOME/XDG dirs for both CLIs, so they are declared
+ * here rather than added to every worker's base environment.
+ */
+const CLI_HOME_ENV = ["HOME", "USER", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"];
+
+/** Variables Qwen Code reads for its model endpoint and login state. */
+export const QWEN_CODE_ENV: readonly string[] = [
+  ...CLI_HOME_ENV,
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_MODEL",
+  "DASHSCOPE_API_KEY",
+];
+
+/** Variables OpenCode reads for common providers and its own config. */
+export const OPENCODE_ENV: readonly string[] = [
+  ...CLI_HOME_ENV,
+  "OPENCODE_CONFIG",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+];
 
 export function createQwenCodeAdapter(
   options: QwenCodePresetOptions = {},
@@ -128,6 +174,8 @@ export function createQwenCodeAdapter(
     args,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    allowEnv: options.allowEnv ?? [...QWEN_CODE_ENV],
+    trustedHost: options.trustedHost,
   });
 }
 
@@ -139,6 +187,9 @@ export interface OpenCodePresetOptions {
   format?: "default" | "json";
   extraArgs?: string[];
   env?: Record<string, string | undefined>;
+  /** Replaces {@link OPENCODE_ENV}; the names the worker may read. */
+  allowEnv?: string[];
+  trustedHost?: boolean;
   timeoutMs?: number;
 }
 
@@ -160,6 +211,8 @@ export function createOpenCodeAdapter(
     args,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    allowEnv: options.allowEnv ?? [...OPENCODE_ENV],
+    trustedHost: options.trustedHost,
   });
 }
 
@@ -327,6 +380,7 @@ export async function runIsolatedAgent(
       verifierResult = await options.verifier.verify(workspace.path);
     } else if (options.verifyCommand) {
       verification = await runCommand({
+        killTree: true,
         ...options.verifyCommand,
         cwd: workspace.path,
       });
@@ -621,6 +675,15 @@ export interface AgentExperimentOptions {
   cleanup?: CleanupPolicy;
 }
 
+function envSummary(environment: AgentExecution["environment"]): string | undefined {
+  if (!environment) return undefined;
+  // Under inherit the name list is the whole host environment; the policy is
+  // the fact worth recording.
+  return environment.policy === "inherit"
+    ? "env=inherit"
+    : `env=minimal:${environment.names.join(",") || "none"}`;
+}
+
 export function createAgentExperimentExecutor(
   options: AgentExperimentOptions,
 ): ExperimentExecutor {
@@ -663,7 +726,10 @@ export function createAgentExperimentExecutor(
             `exit=${result.execution.exitCode}`,
             `changed=${result.changes.changedFiles.join(",") || "none"}`,
             `workspace_retained=${result.workspaceRetained}`,
-          ].join(" "),
+            envSummary(result.execution.environment),
+          ]
+            .filter(Boolean)
+            .join(" "),
           false,
         ),
       ];

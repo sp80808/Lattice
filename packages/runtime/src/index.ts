@@ -46,6 +46,10 @@ export interface QwenAgentConfig {
   outputFormat?: "json" | "stream-json" | "text";
   timeoutMs?: number;
   extraArgs?: string[];
+  /** Parent variable names the worker may read; replaces the preset's list. */
+  allowEnv?: string[];
+  /** Pass the full Lattice environment to the worker. Debugging only. */
+  trustedHost?: boolean;
 }
 
 export interface OpenCodeAgentConfig {
@@ -57,6 +61,10 @@ export interface OpenCodeAgentConfig {
   format?: "default" | "json";
   timeoutMs?: number;
   extraArgs?: string[];
+  /** Parent variable names the worker may read; replaces the preset's list. */
+  allowEnv?: string[];
+  /** Pass the full Lattice environment to the worker. Debugging only. */
+  trustedHost?: boolean;
 }
 
 export interface CommandVerifyConfig {
@@ -213,6 +221,16 @@ export function parseLatticeConfig(value: unknown): LatticeConfig {
     if (!isObject(value.agent)) throw new Error("agent must be an object");
     if (value.agent.preset !== "qwen-code" && value.agent.preset !== "opencode") {
       throw new Error("agent.preset must be 'qwen-code' or 'opencode'");
+    }
+    if (
+      value.agent.allowEnv !== undefined &&
+      !(Array.isArray(value.agent.allowEnv) &&
+        value.agent.allowEnv.every((name) => typeof name === "string" && name.length > 0))
+    ) {
+      throw new Error("agent.allowEnv must be an array of variable names");
+    }
+    if (value.agent.trustedHost !== undefined && typeof value.agent.trustedHost !== "boolean") {
+      throw new Error("agent.trustedHost must be a boolean");
     }
     config.agent = value.agent as unknown as QwenAgentConfig | OpenCodeAgentConfig;
   }
@@ -397,6 +415,8 @@ export function createRunTaskOptions(
           outputFormat: config.agent!.outputFormat,
           timeoutMs: config.agent!.timeoutMs,
           extraArgs: config.agent!.extraArgs,
+          allowEnv: config.agent!.allowEnv,
+          trustedHost: config.agent!.trustedHost,
         })
       : createOpenCodeAdapter({
           command: config.agent!.command,
@@ -406,6 +426,8 @@ export function createRunTaskOptions(
           format: config.agent!.format,
           timeoutMs: config.agent!.timeoutMs,
           extraArgs: config.agent!.extraArgs,
+          allowEnv: config.agent!.allowEnv,
+          trustedHost: config.agent!.trustedHost,
         });
 
   return {
