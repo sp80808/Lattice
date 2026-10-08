@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -25,6 +25,7 @@ import {
   replayVerification,
   summarize,
   verificationEvidence,
+  runWitness,
   witnessSuggestions,
   type RepairRunReport,
   type TesseraVerificationRecord,
@@ -362,4 +363,20 @@ test("a candidate verified by the abstention fallback is a policy selection", as
   for (const lineage of lineages) {
     assert.equal((lineage as { selectionSource: string }).selectionSource, "deterministic_policy");
   }
+});
+
+test("witness process timeout becomes unverified tool_error", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-witness-timeout-"));
+  const fakeTsr = join(dir, "fake-tsr");
+  const source = join(dir, "ok.tes");
+  await writeFile(source, "f add(a:i64,b:i64)>i64=a+b\n");
+  await writeFile(fakeTsr, "#!/bin/bash\nsleep 30\n");
+  await chmod(fakeTsr, 0o755);
+
+  const started = performance.now();
+  const run = await runWitness(source, { tsr: fakeTsr, timeoutMs: 200 });
+  assert.equal(run.verdict.outcome, "tool_error");
+  assert.equal(run.verdict.verified, false);
+  assert.match(run.verdict.reason ?? "", /timed out/);
+  assert.ok(performance.now() - started < 5_000, "timeout path must not wait out the fake sleep");
 });

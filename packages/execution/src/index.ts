@@ -51,6 +51,26 @@ function appendLimited(
   };
 }
 
+function killProcessTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  // Kill the whole process group when we spawned detached, so grandchildren
+  // (e.g. `sleep` under a bash wrapper) cannot outlive the timeout.
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall through if the group is already gone or not detachable.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // already exited
+  }
+}
+
 export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const cwd = resolve(spec.cwd ?? process.cwd());
   const args = spec.args ?? [];
@@ -62,6 +82,8 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     const child = spawn(spec.command, args, {
       cwd,
       shell: false,
+      // New session/process group so timeout can SIGTERM/SIGKILL the tree.
+      detached: process.platform !== "win32",
       stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       env: { ...process.env, ...spec.env },
     });
@@ -74,6 +96,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     let stderr = "";
     let outputTruncated = false;
     let timedOut = false;
+    let killEscalation: NodeJS.Timeout | undefined;
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const appended = appendLimited(stdout, chunk, maxOutputBytes);
@@ -91,11 +114,15 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killProcessTree(child, "SIGTERM");
+      killEscalation = setTimeout(() => {
+        killProcessTree(child, "SIGKILL");
+      }, 1_000);
     }, timeoutMs);
 
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
+      if (killEscalation) clearTimeout(killEscalation);
       resolvePromise({
         command: spec.command,
         args,

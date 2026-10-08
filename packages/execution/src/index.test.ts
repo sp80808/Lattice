@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -43,4 +43,16 @@ test("collectRepositorySnapshot falls back to filesystem facts", async () => {
 test("digest is deterministic", () => {
   assert.equal(digest("same"), digest("same"));
   assert.notEqual(digest("same"), digest("different"));
+});
+
+test("runCommand times out a hanging script without waiting it out", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-exec-timeout-"));
+  const script = join(cwd, "hang.sh");
+  await writeFile(script, "#!/bin/bash\nsleep 30\n");
+  await chmod(script, 0o755);
+
+  const started = performance.now();
+  const result = await runCommand({ command: script, timeoutMs: 200 });
+  assert.equal(result.timedOut, true);
+  assert.ok(performance.now() - started < 5_000, "must not wait out the fake sleep");
 });
