@@ -777,19 +777,7 @@ export async function runSearchLoop(
         let outcome: ExperimentOutcome;
         try {
           outcome = await options.executor.execute(candidate, tap);
-          if (outcome.candidateId !== candidate.id) {
-            throw new Error(
-              `Experiment outcome candidate mismatch: expected ${candidate.id}, got ${outcome.candidateId}`,
-            );
-          }
         } catch (error) {
-          if (
-            error instanceof Error &&
-            error.message.includes("Experiment outcome candidate mismatch")
-          ) {
-            throw error;
-          }
-
           const message = error instanceof Error ? error.message : String(error);
           const errorClass = message.toLowerCase().includes("timeout")
             ? "timeout"
@@ -821,6 +809,12 @@ export async function runSearchLoop(
             error: { class: errorClass, message },
           };
           return;
+        }
+        // A wrong candidateId is a protocol invariant violation, not a tool failure.
+        if (outcome.candidateId !== candidate.id) {
+          throw new Error(
+            `Experiment outcome candidate mismatch: expected ${candidate.id}, got ${outcome.candidateId}`,
+          );
         }
 
         outcomes[index] = outcome;
