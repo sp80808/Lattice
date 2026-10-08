@@ -109,7 +109,10 @@ Spawn by evidence boundary, for example:
 - benchmark;
 - review/security.
 
-Agents operate in isolated git worktrees or sandboxes when they may modify code.
+Agents operate in isolated git worktrees when they may modify code. A
+worktree isolates source state, not OS capabilities; see
+[agents.md](agents.md#execution-security-what-is-and-is-not-isolated) for what
+is enforced today.
 
 Each child returns only:
 

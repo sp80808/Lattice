@@ -46,7 +46,37 @@ const opencode = createOpenCodeAdapter({
 
 Qwen Code's current headless surface supports `qwen --prompt/-p`, structured `--output-format`, and explicit approval modes. OpenCode's current non-interactive surface is `opencode run`, with JSON output and optional `--auto`.
 
-Lattice does **not** enable the broadest approval mode by default. A detached Git worktree protects repository state, but it is not a complete process/network sandbox.
+Lattice does **not** enable the broadest approval mode by default.
+
+## Execution security (what is and is not isolated)
+
+A detached Git worktree isolates **source state only**. It is not a security
+sandbox: a worker still runs as your OS user and can read files elsewhere in
+your account, reach the network, and touch the shared `.git` directory. Treat
+repository text (README, comments, issues) as untrusted input that can steer
+a worker. Filesystem, network and Git-metadata confinement are tracked in #52
+and are not implemented yet.
+
+What Lattice enforces today for every process agent:
+
+- **Minimal environment.** A worker receives only `PATH`, locale, `TERM`,
+  `TZ`, temp-dir variables (plus the Windows essentials), any names the
+  adapter declares in `allowEnv`, and explicit `env` values. Unrelated
+  secrets in the Lattice process are withheld. The Qwen Code and OpenCode
+  presets declare their provider keys and `HOME`/XDG dirs (where their login
+  state lives) in `QWEN_CODE_ENV` and `OPENCODE_ENV`; pass `allowEnv` to
+  narrow or replace that list.
+- **Recorded, never logged values.** The policy and variable names reach the
+  agent's model evidence (`env=minimal:PATH,...`); values never do.
+- **Process-tree cleanup.** Workers and verify commands run in their own
+  process group. A timeout terminates the whole group (SIGTERM, then SIGKILL
+  after a grace period), and once the worker exits any descendant it left
+  running is killed. A process that calls `setsid()` itself escapes this
+  until a real sandbox backend exists. On Windows, timeouts use
+  `taskkill /T`.
+- **Explicit opt-out.** `trustedHost: true` (config `agent.trustedHost`)
+  passes the full parent environment. Use it for local debugging only;
+  Lattice never falls back to it on its own.
 
 ## Worktree policy
 

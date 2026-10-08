@@ -155,7 +155,24 @@ They are thin wrappers over the generic process adapter.
 
 Verification is expressed as an executable plus an argument array. It is not interpreted through a shell.
 
-The config parser does not accept model-generated commands. Automatic mutation still happens in isolated worktrees, and successful candidates remain untrusted until the verifier passes.
+The config parser does not accept model-generated commands. Automatic mutation still happens in isolated worktrees, and successful candidates remain untrusted until the verifier passes. A worktree is not a security sandbox; see [agents.md](agents.md#execution-security-what-is-and-is-not-isolated).
+
+Coding-agent workers get a minimal environment, not the full Lattice
+environment. Each preset passes its provider keys and login dirs; to change
+that list, or to opt out for local debugging:
+
+```json
+{
+  "agent": {
+    "preset": "opencode",
+    "allowEnv": ["HOME", "OPENROUTER_API_KEY"],
+    "trustedHost": false
+  }
+}
+```
+
+`allowEnv` replaces the preset's list. `trustedHost: true` passes every
+variable Lattice can see to the worker.
 
 
 ## Autonomy and human-in-the-loop
