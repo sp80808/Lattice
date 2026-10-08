@@ -117,6 +117,22 @@ test("evidence carries tool identity, result_id and diagnostics", async () => {
   assert.match(build!.summary, /E-resolve-unbound-name 1:20 unbound variable `b`/);
 });
 
+test("witness evidence identity is the native result_id, independent of timing and path", async () => {
+  const document = await recorded("semantic_error");
+  const [build] = verificationEvidence(record(document, 1));
+  assert.match(build!.id, /^ev1:/);
+  assert.equal(build!.identity?.result, document.result_id);
+  assert.equal(build!.verdict, "fail");
+
+  const moved = structuredClone(document);
+  moved.invocation.path = "/elsewhere/add.tes";
+  moved.timing = { compile_us: 7, total_us: 9 };
+  const again = record(moved, 1);
+  again.file = "/elsewhere/add.tes";
+  again.witness.durationMs = 500;
+  assert.equal(verificationEvidence(again)[0]!.id, build!.id);
+});
+
 test("replay re-derives the verdict from the stored document", async () => {
   const stored = record(await recorded("pass"), 0);
   assert.deepEqual(
