@@ -131,6 +131,13 @@ One `model` block supplies both proposal and decision roles for minimal configur
 }
 ```
 
+For **automatic per-request model selection**, configure a `models.generatorPool`
+with an explicitly selected decision provider. Eligibility considers configured
+availability, known usage headroom, model context capacity and pricing; the
+decision provider chooses only from eligible models. See
+[decision-assisted model routing](model-routing.md) for the schema, offline
+behavior, fallback rules and important budgeting limits.
+
 API keys should be referenced through environment variables rather than stored in the repo:
 
 ```json
