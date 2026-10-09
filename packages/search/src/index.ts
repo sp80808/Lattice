@@ -6,6 +6,7 @@ import {
   type DecisionResult,
   type EvidenceRef,
   type GeneratorProvider,
+  type GeneratorRoutingMetadata,
   type ProviderIdentity,
   type ProviderUsage,
   type TapPacket,
@@ -104,6 +105,7 @@ export type SearchTraceEvent =
       type: "candidates.generated";
       round: number;
       candidates: CandidateAction[];
+      routing?: GeneratorRoutingMetadata;
       identity?: ProviderIdentity;
       usage?: ProviderUsage;
     }
@@ -112,6 +114,7 @@ export type SearchTraceEvent =
       type: "candidates.rejected";
       round: number;
       error: string;
+      routing?: GeneratorRoutingMetadata;
       identity?: ProviderIdentity;
       usage?: ProviderUsage;
     }
@@ -566,6 +569,7 @@ export async function runSearchLoop(
         error: error instanceof Error ? error.message : String(error),
         identity: generated.identity,
         usage: generated.usage,
+        routing: generated.routing,
       });
       throw error;
     }
@@ -579,6 +583,7 @@ export async function runSearchLoop(
       candidates,
       identity: generated.identity,
       usage: generated.usage,
+      routing: generated.routing,
     });
 
     const frame = compileDecisionFrame(tap, candidates, "next-action");
