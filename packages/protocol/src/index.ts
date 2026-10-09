@@ -149,10 +149,22 @@ export interface GeneratorRequest {
   temperature?: number;
 }
 
+export interface GeneratorRoutingMetadata {
+  selected: string;
+  attempted: string[];
+  eligible: string[];
+  selectionMode: "decision-model" | "sole-eligible";
+  estimatedInputTokens: number;
+  selectorIdentity?: ProviderIdentity;
+  selectorUsage?: ProviderUsage[];
+}
+
 export interface GeneratorResult {
   text: string;
   identity: ProviderIdentity;
   usage: ProviderUsage;
+  /** Optional model-pool selection evidence, persisted into run traces. */
+  routing?: GeneratorRoutingMetadata;
 }
 
 export interface DecisionProvider {
