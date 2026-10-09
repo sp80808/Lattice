@@ -484,3 +484,242 @@ test("an unusable generator reply is traced with its usage before the run fails"
   const rejected = trace.find((event) => event.type === "candidates.rejected");
   assert.equal(rejected?.type === "candidates.rejected" && rejected.usage?.inputTokens, 30);
 });
+
+test("top-k [A,B], A executor throws, B verified-success => run solves via B", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: ["inspect", "repro"],
+        scores: { inspect: 0.6, repro: 0.4 },
+        confidence: 0.6,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  const trace: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    topK: 2,
+    parallelism: 2,
+    onTrace: (event) => void trace.push(event),
+    executor: {
+      async execute(candidate) {
+        if (candidate.id === "inspect") {
+          throw new Error("tool crashed during inspect");
+        }
+        return {
+          candidateId: candidate.id,
+          status: "success",
+          terminal: true,
+          summary: "verified fix",
+          evidence: [],
+        };
+      },
+    },
+  });
+
+  assert.equal(result.status, "solved");
+  const failed = trace.find((e) => e.type === "experiment.failed");
+  assert.ok(failed && failed.type === "experiment.failed");
+  assert.equal(failed.candidateId, "inspect");
+  assert.equal(failed.errorClass, "tool_error");
+});
+
+test("A throws, B ordinary failure => round retains both states and continues", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: ["inspect", "repro"],
+        scores: { inspect: 0.6, repro: 0.4 },
+        confidence: 0.6,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    topK: 2,
+    parallelism: 2,
+    executor: {
+      async execute(candidate) {
+        if (candidate.id === "inspect") {
+          throw new Error("tool timeout");
+        }
+        return {
+          candidateId: candidate.id,
+          status: "failure",
+          terminal: false,
+          summary: "hypothesis disproved",
+          evidence: [],
+        };
+      },
+    },
+  });
+
+  // Since neither solved, budget is exhausted (run out of rounds since both just return/fail)
+  assert.equal(result.status, "budget_exhausted");
+  const ctx = result.tap.context.join("\\n");
+  assert.match(ctx, /r1:inconclusive:Tool error: tool timeout/);
+  assert.match(ctx, /r1:failure:hypothesis disproved/);
+});
+
+test("candidate ID mismatch => still aborts as invariant violation", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: ["inspect"],
+        scores: { inspect: 1 },
+        confidence: 1,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  await assert.rejects(
+    runSearchLoop({
+      tap: tap(),
+      generator,
+      decision,
+      executor: {
+        async execute() {
+          return {
+            candidateId: "wrong-id",
+            status: "success",
+            terminal: true,
+            summary: "",
+            evidence: [],
+          };
+        },
+      },
+    }),
+    /Experiment outcome candidate mismatch/,
+  );
+});
+
+test("two siblings throw independently => deterministic two-failure trace", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: ["inspect", "repro"],
+        scores: { inspect: 0.6, repro: 0.4 },
+        confidence: 0.6,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  const testTap = tap();
+  testTap.budget.maxRounds = 1;
+
+  const trace: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: testTap,
+    generator,
+    decision,
+    topK: 2,
+    parallelism: 2,
+    onTrace: (event) => void trace.push(event),
+    executor: {
+      async execute(candidate) {
+        throw new Error(`crash ${candidate.id}`);
+      },
+    },
+  });
+
+  assert.equal(result.status, "budget_exhausted");
+  const failures = trace.filter((e) => e.type === "experiment.failed");
+  assert.equal(failures.length, 2);
+  assert.equal((failures[0] as any).candidateId, "inspect");
+  assert.equal((failures[1] as any).candidateId, "repro");
+});
+
+test("siblings complete out of order => output/evidence order remains deterministic", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: ["inspect", "repro"],
+        scores: { inspect: 0.6, repro: 0.4 },
+        confidence: 0.6,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    topK: 2,
+    parallelism: 2,
+    executor: {
+      async execute(candidate) {
+        if (candidate.id === "inspect") {
+          await new Promise((r) => setTimeout(r, 20));
+          throw new Error("inspect timeout");
+        }
+        return {
+          candidateId: candidate.id,
+          status: "failure",
+          terminal: false,
+          summary: "repro failure",
+          evidence: [],
+        };
+      },
+    },
+  });
+
+  // Outcomes array is accessed by index, so context pushes are in order of candidate selection (inspect, then repro)
+  const contextRows = result.tap.context.filter(r => r.startsWith("r1:"));
+  assert.equal(contextRows.length, 2);
+  assert.match(contextRows[0]!, /inconclusive:Tool error: inspect timeout/);
+  assert.match(contextRows[1]!, /failure:repro failure/);
+});
+
+test("known usage incurred before exception remains charged", async () => {
+  const decision: DecisionProvider = {
+    async decide() {
+      return {
+        selected: ["inspect"],
+        scores: { inspect: 1 },
+        confidence: 1,
+        identity: { provider: "fixture" },
+        usage: { latencyMs: 0 },
+      };
+    },
+  };
+
+  const trace: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision,
+    onTrace: (event) => void trace.push(event),
+    executor: {
+      async execute(candidate) {
+        const err = new Error("failed after partial execution");
+        (err as any).evidence = [
+          { id: "partial-ev:1", kind: "test", verified: false, source: "executor", summary: "we tried", createdAt: new Date().toISOString() },
+        ];
+        throw err;
+      },
+    },
+  });
+
+  assert.equal(result.status, "budget_exhausted");
+  const failedEvent = trace.find((e) => e.type === "experiment.failed");
+  assert.ok(failedEvent && failedEvent.type === "experiment.failed");
+  assert.equal(failedEvent.evidence?.length, 1);
+  assert.equal(failedEvent.evidence?.[0]?.id, "partial-ev:1");
+  assert.ok(result.tap.evidence.some(e => e.id === "partial-ev:1"));
+});
