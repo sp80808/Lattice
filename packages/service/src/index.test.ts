@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -361,4 +362,34 @@ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => 
   );
   assert.equal(await findExecutable("qwen.CMD", dir, { platform: "win32", pathExt: ".EXE" }), join(dir, "qwen.CMD"));
   assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
+});
+
+test("a run whose process was killed reads as interrupted, a live one as running", async () => {
+  const cwd = await tempProject();
+  const core = new URL("../../core/dist/index.js", import.meta.url).href;
+  // A separate process starts a run that never finishes, then is SIGKILLed.
+  const script = `
+    const { runTask } = await import(${JSON.stringify(core)});
+    runTask("crashes mid-run", {
+      cwd: ${JSON.stringify(cwd)},
+      verifyCommand: { command: process.execPath, args: ["-e", "setTimeout(()=>{},5000)"], timeoutMs: 600000 },
+      onEvent: (event) => { if (event.type === "tool.started") process.stdout.write("started\\n"); },
+    });
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  await new Promise<void>((ready) => child.stdout!.once("data", () => ready()));
+
+  const [live] = await listRuns({ cwd });
+  assert.equal(live?.status, "incomplete");
+  assert.equal(live?.liveness, "running");
+
+  child.kill("SIGKILL");
+  await new Promise((done) => child.once("exit", done));
+
+  const [dead] = await listRuns({ cwd });
+  assert.equal(dead?.status, "incomplete");
+  assert.equal(dead?.liveness, "interrupted");
+  assert.equal((await getRun(dead!.runId, cwd)).liveness, "interrupted");
 });

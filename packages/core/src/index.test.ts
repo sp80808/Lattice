@@ -3,7 +3,9 @@ import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runTask } from "./index.js";
+import { existsSync, readFileSync } from "node:fs";
+import type { RunLease } from "@lattice/protocol";
+import { leaseLiveness, runLeasePath, runTask } from "./index.js";
 
 test("runTask records repository evidence before completion", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "lattice-"));
@@ -94,4 +96,53 @@ test("runTask reports each appended event to onEvent, ignoring listener errors",
     "tap.created",
     "run.completed",
   ]);
+});
+
+test("a run holds a lease from run.started until it ends", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-"));
+  let leaseAtStart: RunLease | undefined;
+  let leasePath = "";
+  const result = await runTask("leased", {
+    cwd,
+    onEvent: (event) => {
+      if (event.type !== "run.started") return;
+      leasePath = runLeasePath(join(cwd, ".lattice", "runs"), event.runId);
+      leaseAtStart = JSON.parse(readFileSync(leasePath, "utf8")) as RunLease;
+    },
+  });
+  assert.equal(leaseAtStart?.pid, process.pid);
+  assert.equal(leaseAtStart?.runId, result.runId);
+  assert.equal(leaseLiveness(leaseAtStart), "running");
+  assert.equal(existsSync(leasePath), false, "lease outlived a completed run");
+
+  await assert.rejects(
+    runTask("fails", {
+      cwd,
+      verifyCommand: { command: join(cwd, "does-not-exist") },
+    }),
+  );
+  const leftovers = (await readdir(join(cwd, ".lattice", "runs"))).filter((name) =>
+    name.endsWith(".lease.json"),
+  );
+  assert.deepEqual(leftovers, [], "lease outlived a failed run");
+});
+
+test("leaseLiveness trusts only fresh leases held by a live process", () => {
+  const now = Date.parse("2026-10-08T00:00:30Z");
+  const lease: RunLease = {
+    schema: "lattice.run-lease/v1",
+    runId: "r",
+    pid: process.pid,
+    host: "here",
+    acquiredAt: "2026-10-08T00:00:00Z",
+    heartbeatAt: "2026-10-08T00:00:20Z",
+    ttlMs: 30_000,
+  };
+  assert.equal(leaseLiveness(lease, now, "here"), "running");
+  assert.equal(leaseLiveness({ ...lease, heartbeatAt: "2026-10-07T23:59:00Z" }, now, "here"), "interrupted");
+  // A pid that cannot exist on this host ends the lease at once.
+  assert.equal(leaseLiveness({ ...lease, pid: 2 ** 22 + 7 }, now, "here"), "interrupted");
+  // On another host only expiry can end it.
+  assert.equal(leaseLiveness({ ...lease, pid: 2 ** 22 + 7 }, now, "elsewhere"), "running");
+  assert.equal(leaseLiveness(undefined, now, "here"), "interrupted");
 });
