@@ -22,7 +22,7 @@ Usage:
   lattice <command> [options]
 
 Tasks:
-  run <task...>        run a task          [--config path] [--observe] [--json]
+  run <task...>        run a task          [--config path] [--observe] [--intent plan|act|debug|review] [--json]
   runs                 list recorded runs  [-n limit] [--json]
   show [id|latest]     show one run        [--events] [-f|--follow] [--json]
 

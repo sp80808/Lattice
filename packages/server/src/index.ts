@@ -7,7 +7,7 @@ import {
 } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isAbsolute, resolve } from "node:path";
-import type { ApiErrorBody, TaskAccepted, TaskExecutionMode } from "@lattice/protocol";
+import type { ApiErrorBody, TaskAccepted, TaskExecutionMode, TaskIntent } from "@lattice/protocol";
 import {
   decide,
   executeTask,
@@ -271,6 +271,7 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
         const taskOptions = {
           cwd,
           mode: (body.mode as TaskExecutionMode | undefined) ?? defaultMode,
+          intent: body.intent as TaskIntent | undefined,
           configPath: body.configPath as string | undefined,
           reviewer: review === "remote" ? reviews.reviewerFor(() => runId) : undefined,
           onEvent: (event: { runId: string }) => {
@@ -301,6 +302,7 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
         send(res, 201, {
           ...outcome.result,
           mode: outcome.mode,
+          intent: outcome.intent,
           runtimeMode: outcome.runtimeMode,
           configPath: outcome.configPath,
         });

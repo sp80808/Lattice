@@ -362,3 +362,39 @@ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => 
   assert.equal(await findExecutable("qwen.CMD", dir, { platform: "win32", pathExt: ".EXE" }), join(dir, "qwen.CMD"));
   assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
 });
+
+test("intent plan reads only; debug verifies; neither starts search", async () => {
+  const marker = join(await mkdtemp(join(tmpdir(), "lattice-intent-")), "verified");
+  const cwd = await tempProject({
+    mode: "auto",
+    model: { baseUrl: "http://127.0.0.1:9/v1", model: "unused" },
+    agent: { preset: "qwen-code" },
+    verify: {
+      command: process.execPath,
+      args: ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)},'x')`],
+    },
+  });
+
+  const plan = await executeTask("plan the fix", { cwd, intent: "plan" });
+  assert.equal(plan.intent, "plan");
+  assert.equal(plan.runtimeMode, "observe");
+  await assert.rejects(readFile(marker));
+  const started = (await getRunEvents(plan.result.runId, cwd))[0]!;
+  assert.equal(started.type, "run.started");
+  assert.deepEqual((started.payload as { permissions: unknown }).permissions, {
+    read: "allow",
+    verify: "deny",
+    search: "deny",
+    agent: "deny",
+  });
+
+  const debug = await executeTask("why does it fail", { cwd, intent: "debug" });
+  assert.equal(debug.runtimeMode, "observe");
+  assert.equal(await readFile(marker, "utf8"), "x");
+
+  await assert.rejects(
+    executeTask("bad", { cwd, intent: "yolo" as never }),
+    (error: unknown) =>
+      error instanceof LatticeServiceError && error.code === "invalid_request",
+  );
+});

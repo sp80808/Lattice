@@ -19,6 +19,7 @@ import type {
   RunSummary,
   TaskAccepted,
   TaskExecutionMode,
+  TaskIntent,
 } from "@lattice/protocol";
 
 export type {
@@ -36,6 +37,7 @@ export type {
   TapPacket,
   TaskAccepted,
   TaskExecutionMode,
+  TaskIntent,
 } from "@lattice/protocol";
 export type { StatsReport } from "@lattice/analytics";
 
@@ -59,6 +61,8 @@ export interface ProjectOptions {
 export interface RunTaskOptions extends ProjectOptions {
   /** `observe` (daemon default) never launches model search or coding agents. */
   mode?: TaskExecutionMode;
+  /** `plan`/`review` only read, `debug` also verifies, `act` may edit; never widens the config. */
+  intent?: TaskIntent;
   configPath?: string;
   /** `remote`: supervised/manual reviews wait for `answerReview` instead of blocking the run. */
   review?: "none" | "remote";
@@ -66,6 +70,7 @@ export interface RunTaskOptions extends ProjectOptions {
 
 export interface TaskRunResponse extends RunResult {
   mode: TaskExecutionMode;
+  intent: TaskIntent;
   runtimeMode: "auto" | "observe" | "evidence-only";
   configPath?: string;
 }
