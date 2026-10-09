@@ -27,6 +27,10 @@ import {
   type OpenAICompatibleConfig,
 } from "@lattice/providers";
 
+import { DecisionRoutedGenerator } from "./model-routing.js";
+export { DecisionRoutedGenerator, estimatedInputTokens } from "./model-routing.js";
+export type { RoutingCandidate } from "./model-routing.js";
+
 export type RuntimeMode = "auto" | "observe";
 
 export interface ModelEndpointConfig {
@@ -36,6 +40,25 @@ export interface ModelEndpointConfig {
   apiKeyEnv?: string;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** Provider-side maximum completion tokens, when supported. */
+  maxTokens?: number;
+}
+
+/** One explicitly configured generator; availability figures are run-start snapshots. */
+export interface GeneratorPoolEntry extends ModelEndpointConfig {
+  id: string;
+  maxTokens: number;
+  maxContextTokens?: number;
+  available?: boolean;
+  remainingRequests?: number;
+  remainingTokens?: number;
+  remainingCostUsd?: number;
+  inputUsdPerMillion?: number;
+  outputUsdPerMillion?: number;
+  /** Must be independently verifier-labelled data; ignored until 20 samples. */
+  verifiedSuccessRate?: number;
+  verifiedSamples?: number;
+  priority?: number;
 }
 
 export interface QwenAgentConfig {
@@ -117,6 +140,8 @@ export interface LatticeConfig {
   models?: {
     decision?: ModelEndpointConfig | RandomDecisionConfig;
     generator?: ModelEndpointConfig;
+    /** A decision provider selects among these eligible models per proposal call. */
+    generatorPool?: GeneratorPoolEntry[];
   };
   agent?: QwenAgentConfig | OpenCodeAgentConfig;
   verify?: VerifyConfig;
@@ -153,6 +178,10 @@ function validateModel(value: unknown, field: string): ModelEndpointConfig {
     value.provider !== "openai-compatible"
   ) {
     throw new Error(`${field}.provider is not supported yet`);
+  }
+  if (value.maxTokens !== undefined &&
+      (!Number.isSafeInteger(value.maxTokens) || (value.maxTokens as number) <= 0)) {
+    throw new Error(field + ".maxTokens must be a positive integer");
   }
   return value as unknown as ModelEndpointConfig;
 }
@@ -206,6 +235,52 @@ export function parseLatticeConfig(value: unknown): LatticeConfig {
         value.models.generator,
         "models.generator",
       );
+    }
+    if (value.models.generatorPool !== undefined) {
+      const pool = value.models.generatorPool;
+      if (!Array.isArray(pool) || !pool.length) {
+        throw new Error("models.generatorPool must be a non-empty array");
+      }
+      if (value.models.generator !== undefined) {
+        throw new Error("models.generator and models.generatorPool are mutually exclusive");
+      }
+      const ids = new Set<string>();
+      config.models.generatorPool = pool.map((candidate, index) => {
+        const prefix = "models.generatorPool[" + index + "]";
+        const model = validateModel(candidate, prefix);
+        if (!isObject(candidate) || typeof candidate.id !== "string" ||
+            !candidate.id.trim() || ids.has(candidate.id)) {
+          throw new Error(prefix + ".id must be unique and non-empty");
+        }
+        ids.add(candidate.id);
+        if (!Number.isSafeInteger(model.maxTokens) || (model.maxTokens ?? 0) <= 0) {
+          throw new Error(prefix + ".maxTokens is required and must be positive");
+        }
+        for (const field of ["maxContextTokens", "remainingRequests", "remainingTokens", "verifiedSamples"]) {
+          const v = candidate[field];
+          if (v !== undefined && (!Number.isSafeInteger(v) || (v as number) < 0 ||
+              (field === "maxContextTokens" && v === 0))) {
+            throw new Error(prefix + "." + field + " must be a non-negative integer");
+          }
+        }
+        for (const field of ["remainingCostUsd", "inputUsdPerMillion", "outputUsdPerMillion", "priority"]) {
+          const v = candidate[field];
+          if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v) ||
+              (field !== "priority" && v < 0))) {
+            throw new Error(prefix + "." + field + " must be a finite non-negative number");
+          }
+        }
+        if (candidate.available !== undefined && typeof candidate.available !== "boolean") {
+          throw new Error(prefix + ".available must be boolean");
+        }
+        if (candidate.verifiedSuccessRate !== undefined &&
+            (typeof candidate.verifiedSuccessRate !== "number" ||
+             !Number.isFinite(candidate.verifiedSuccessRate) ||
+             candidate.verifiedSuccessRate < 0 || candidate.verifiedSuccessRate > 1)) {
+          throw new Error(prefix + ".verifiedSuccessRate must be between 0 and 1");
+        }
+        return candidate as unknown as GeneratorPoolEntry;
+      });
     }
   }
 
@@ -327,6 +402,7 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
     apiKey,
     timeoutMs: model.timeoutMs,
     jsonMode: model.jsonMode,
+    maxTokens: model.maxTokens,
     providerName: "runtime-config",
   };
 }
@@ -369,10 +445,11 @@ export function createRunTaskOptions(
 
   const decisionModel = config.models?.decision ?? config.model;
   const generatorModel = config.models?.generator ?? config.model;
+  const generatorPool = config.models?.generatorPool;
 
   const missing = [
     !decisionModel ? "model/models.decision" : undefined,
-    !generatorModel ? "model/models.generator" : undefined,
+    !generatorModel && !generatorPool?.length ? "model/models.generator/models.generatorPool" : undefined,
     !config.agent ? "agent" : undefined,
     !verifyCommand && !verifier ? "verify" : undefined,
   ].filter(Boolean);
@@ -384,9 +461,15 @@ export function createRunTaskOptions(
   }
 
   const decision = createDecisionProvider(config)!;
-  const generator = new OpenAICompatibleGeneratorProvider(
-    endpointConfig(generatorModel!),
-  );
+  const generator = generatorPool?.length
+    ? new DecisionRoutedGenerator(
+        generatorPool.map((candidate) => ({
+          ...candidate,
+          provider: new OpenAICompatibleGeneratorProvider(endpointConfig(candidate)),
+        })),
+        decision,
+      )
+    : new OpenAICompatibleGeneratorProvider(endpointConfig(generatorModel!));
 
   const agent =
     config.agent!.preset === "qwen-code"
