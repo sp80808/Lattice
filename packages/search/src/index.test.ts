@@ -9,6 +9,7 @@ import {
 } from "@lattice/protocol";
 import {
   compileDecisionFrame,
+  routeContextualQuestion,
   runSearchLoop,
   type ExperimentExecutor,
   type SearchTraceEvent,
@@ -94,6 +95,86 @@ test("question compiler produces evidence-grounded neutral frame", () => {
     frame.audit.filter((finding) => finding.severity === "error").length,
     0,
   );
+});
+
+test("contextual router asks for evidence before unsupported implementation choices", () => {
+  const noEvidence = tap();
+  noEvidence.evidence = [];
+  const route = routeContextualQuestion(noEvidence, [
+    { id: "a", label: "Change lexer", action: "edit the lexer", expectedEvidence: "build" },
+    { id: "b", label: "Change parser", action: "patch parser", expectedEvidence: "tests" },
+  ]);
+  assert.equal(route.class, "next-action");
+  assert.equal(route.reason, "missing-evidence");
+  assert.match(route.question, /establishes reliable facts/i);
+  assert.match(route.question, /insufficient evidence/i);
+});
+
+test("contextual router frames diagnostic experiments from live candidates", () => {
+  const route = routeContextualQuestion(tap(), [
+    { id: "a", label: "Inspect", action: "inspect parser state", expectedEvidence: "source line" },
+    { id: "b", label: "Reproduce", action: "run minimal reproduction", expectedEvidence: "failing input" },
+  ]);
+  assert.equal(route.class, "experiment");
+  assert.equal(route.reason, "investigation");
+  assert.equal(route.mode, "choice");
+  assert.match(route.question, /investigation/i);
+  const frame = compileDecisionFrame(tap(), [
+    { id: "a", label: "Inspect", action: "inspect parser state", expectedEvidence: "source line" },
+    { id: "b", label: "Reproduce", action: "run minimal reproduction", expectedEvidence: "failing input" },
+  ], route.class, route);
+  assert.equal(frame.routingReason, "investigation");
+  assert.equal(frame.class, "experiment");
+  assert.equal(frame.mode, "choice");
+  assert.ok(frame.choices.some((choice) => choice.id === UNKNOWN_CHOICE_ID));
+});
+
+test("contextual router frames verified patch selection and only ranks when topK requires it", () => {
+  const candidates = [
+    { id: "a", label: "Fix guard", action: "edit the guard", expectedEvidence: "tests" },
+    { id: "b", label: "Fix state", action: "patch the state machine", expectedEvidence: "tests" },
+  ];
+  const single = routeContextualQuestion(tap(), candidates);
+  const ranked = routeContextualQuestion(tap(), candidates, 2);
+  assert.equal(single.class, "patch-selection");
+  assert.equal(single.mode, "choice");
+  assert.equal(ranked.mode, "rank");
+  assert.match(single.question, /independent verification/i);
+  const oneFrame = compileDecisionFrame(tap(), candidates, single.class, single);
+  const rankFrame = compileDecisionFrame(tap(), candidates, ranked.class, ranked);
+  assert.notEqual(oneFrame.id, rankFrame.id, "question identity includes internal provider operation");
+});
+
+test("contextual router does not promote ambiguous generated text into authority", () => {
+  const route = routeContextualQuestion(tap(), [
+    { id: "a", label: "Check then fix", action: "run tests and modify parser", expectedEvidence: "passing test" },
+    { id: "b", label: "Investigate", action: "consider changing the parser", expectedEvidence: "diagnostic" },
+  ]);
+  assert.equal(route.class, "next-action");
+  assert.equal(route.reason, "mixed-actions");
+  assert.match(route.question, /use only the supplied evidence/i);
+});
+
+test("search passes the contextual question and internal mode to the decision provider", async () => {
+  const received: Array<{ question: string; mode?: string }> = [];
+  await runSearchLoop({
+    tap: tap(),
+    generator,
+    decision: {
+      async decide(request) {
+        received.push({ question: request.question, mode: request.mode });
+        return { selected: ["repro"], scores: { inspect: 0.3, repro: 0.7 }, identity: { provider: "fixture" }, usage: { latencyMs: 0 } };
+      },
+    },
+    executor: {
+      async execute(candidate) {
+        return { candidateId: candidate.id, status: "success", terminal: true, summary: "verified", evidence: [] };
+      },
+    },
+  });
+  assert.equal(received.length, 1);
+  assert.equal(received[0]!.mode, "choice");
+  assert.match(received[0]!.question, /investigation/i);
 });
 
 test("search executes the selected candidate and records rich decision trace", async () => {

@@ -89,6 +89,28 @@ The audit checks for missing verified evidence, overly large option sets, substa
 
 This matters because a cheap decision model can only be as reliable as the question it receives. The ledger records the exact frame ID, class, question, provider/model, scores, confidence, entropy, latency and token usage so future calibration can distinguish model quality from question quality.
 
+
+## Contextual decision / question routing (first slice)
+
+The user supplies a natural-language task, **not** a `choice`, `score` or `noul` CLI command. Question primitives are private implementation details of the decision-provider contract. A typed SDK/MCP adapter may still expose low-level operations to external developers, but the default user workflow is a single task goal.
+
+Current first slice: `routeContextualQuestion(TAP, candidates, topK)` deterministically classifies the *question to ask* without a separate LLM call:
+
+| Live context | Question intent | Provider primitive |
+|---|---|---|
+| No verified evidence | Which step would establish the missing facts? | internal choice/rank |
+| Only diagnostic probes | Which investigation is most informative? | internal choice/rank |
+| Verified evidence and only proposed changes | Which patch should undergo independent verification first? | internal choice/rank |
+| Mixed or ambiguous candidate types | Which next action best advances verified progress? | internal choice/rank |
+
+Classification uses coarse keywords in generated candidate action descriptions **only for advisory question framing**. They must never authorize filesystem, shell, secret or network actions; the executor's permission and verifier barriers remain authoritative. Unknown/none remains an available answer. `topK` still controls whether the provider returns one candidate or ranks several; it is *not* a user-facing choice of operation.
+
+The router records the chosen question class, internal mode and routing reason inside the versioned `DecisionFrame` trace. Distinct modes have distinct frame hashes. The objective, constraints and original evidence stay available.
+
+**Still to implement under [#86](https://github.com/sp80808/Lattice/issues/86):** infer when *no model question* is warranted (deterministic facts), choose internal score/binary questions where useful, question-scoped evidence sufficiency, automatic original-context expansion, batching, empirically calibrated abstention and escalation. This first slice does **not** claim compression is accuracy preserving or that provider confidence is a verified probability.
+
+**Evaluation:** compare the old generic question with contextual framing on frozen candidate sets, measuring correct independently verified choices, additional provider calls, downstream successful patches, abstentions, misrouting and overall cost. Keep the generic framing as baseline until measured.
+
 ## Autonomy modes
 
 ### autopilot
