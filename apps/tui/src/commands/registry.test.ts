@@ -12,6 +12,10 @@ function createMockContext() {
 
   const ctx: CommandContext = {
     cwd: process.cwd(),
+    workflow: "plan",
+    setWorkflow: () => {},
+    setProject: () => {},
+    runWorkflow: async () => {},
     addFeedItem: (item) => items.push(item),
     clearFeed: () => {
       state.cleared = true;

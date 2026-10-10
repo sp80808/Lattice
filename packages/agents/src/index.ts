@@ -248,7 +248,7 @@ export interface WorkspaceChanges {
 export async function captureWorkspaceChanges(
   workspace: string,
 ): Promise<WorkspaceChanges> {
-  const status = await gitOrThrow(workspace, ["status", "--porcelain=v1"]);
+  const status = await gitOrThrow(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   const diff = await gitOrThrow(workspace, [
     "diff",
     "--no-ext-diff",
@@ -260,18 +260,28 @@ export async function captureWorkspaceChanges(
   const changedFiles: string[] = [];
   const untrackedFiles: string[] = [];
 
-  for (const line of status.stdout.split("\n").filter(Boolean)) {
+  const entries = status.stdout.split("\0").filter(Boolean);
+  for (let index = 0; index < entries.length; index++) {
+    const line = entries[index]!;
     const code = line.slice(0, 2);
-    const file = line.slice(3).trim();
+    const file = line.slice(3);
     if (!file) continue;
     changedFiles.push(file);
     if (code === "??") untrackedFiles.push(file);
+    if (/[RC]/.test(code)) index++; // -z rename/copy records include the old path next.
+  }
+
+  let patch = diff.stdout;
+  for (const file of untrackedFiles) {
+    const added = await runCommand({ command: "git", args: ["diff", "--no-ext-diff", "--binary", "--no-index", "--", "/dev/null", file], cwd: workspace });
+    if (added.exitCode !== 0 && added.exitCode !== 1) throw new Error(`Cannot capture added file ${file}: ${added.stderr}`);
+    patch += added.stdout;
   }
 
   return {
     changedFiles,
     untrackedFiles,
-    diff: diff.stdout,
+    diff: patch,
   };
 }
 
@@ -742,11 +752,14 @@ export function createAgentExperimentExecutor(
 
       if (result.verifierResult) records.push(...result.verifierResult.evidence);
 
-      const verifiedSuccess = result.verifierResult
+      const verificationPassed = result.verifierResult
         ? result.verifierResult.passed
         : result.verification !== undefined &&
           result.verification.exitCode === 0 &&
           !result.verification.timedOut;
+
+      const verifiedSuccess = verificationPassed && result.execution.exitCode === 0 && !result.execution.timedOut &&
+        result.changes.changedFiles.length > 0;
 
       return {
         candidateId: candidate.id,
@@ -768,9 +781,15 @@ export function createAgentExperimentExecutor(
           `worktree=${result.workspace.path}`,
         ].join(" "),
         evidence: records,
+        changes: {
+          diff: result.changes.diff,
+          changedFiles: result.changes.changedFiles,
+          workspace: result.workspace.path,
+          retained: result.workspaceRetained,
+        },
         uncertainties: verifiedSuccess
           ? undefined
-          : ["agent result is not yet backed by a passing verification command"],
+          : ["Implementation requires actual changes, a successful agent and passing verification"],
       };
     },
   };

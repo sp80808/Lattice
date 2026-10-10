@@ -14,6 +14,7 @@ import {
   verifiedBatchResults,
   workspaceExists,
   objectiveVerification,
+  createAgentExperimentExecutor,
 } from "./index.js";
 
 async function createRepo(): Promise<string> {
@@ -565,4 +566,29 @@ test("Tessera regression fixture: tsr witness verifier integration", async () =>
     assert.equal(obj.evidenceIds.length, 1);
     assert.equal(obj.evidenceIds[0], "ev:123");
   }
+});
+
+test("passing checks cannot solve a coding candidate with no edits or a failed worker", async () => {
+  const repo = await createRepo();
+  for (const code of ["console.log('no edit')", "require('fs').appendFileSync('base.txt','change'); process.exit(1)"]) {
+    const executor = createAgentExperimentExecutor({
+      adapter: new ProcessAgentAdapter({ name: "fixture", command: process.execPath, args: ["-e", code] }),
+      verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] }, cleanup: "always",
+    });
+    const result = await executor.execute({ id: "fix", label: "fix", action: "fix", expectedEvidence: "pass" }, {
+      version: "0.1", runId: "fixture", task: "edit", repo: { root: repo }, objectives: [], constraints: [], context: [], hypotheses: [], candidateActions: [], evidence: [], uncertainties: [], verification: [], budget: {}, childRunIds: [],
+    });
+    assert.notEqual(result.status, "success");
+    assert.equal(result.terminal, false);
+  }
+});
+
+test("new files with spaces in a new directory have a recorded patch", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({ repoRoot: repo,
+    adapter: new ProcessAgentAdapter({ name: "fixture", command: process.execPath, args: ["-e", "require('fs').mkdirSync('new dir'); require('fs').writeFileSync('new dir/new file.txt','cloth mesh\\n')"] }),
+    task: { id: "create", prompt: "create file" }, cleanup: "always",
+  });
+  assert.ok(result.changes.changedFiles.includes("new dir/new file.txt"));
+  assert.match(result.changes.diff, /\+cloth mesh/);
 });

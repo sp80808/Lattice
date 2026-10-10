@@ -8,6 +8,8 @@ import {
   decide,
   detectVerifyCommand,
   executeTask,
+  executeWorkflow,
+  getRunChanges,
   findExecutable,
   followRunEvents,
   getRun,
@@ -23,6 +25,7 @@ import {
   startTask,
   writeConfig,
 } from "./index.js";
+import { createAutoModeFixture } from "./testing.js";
 
 async function tempProject(config?: unknown): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), "lattice-service-"));
@@ -387,4 +390,48 @@ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => 
   );
   assert.equal(await findExecutable("qwen.CMD", dir, { platform: "win32", pathExt: ".EXE" }), join(dir, "qwen.CMD"));
   assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
+});
+
+test("interactive coding blocks missing config and observe mode instead of collecting false success", async () => {
+  const cwd = await tempProject();
+  for (const workflow of ["plan", "build", "auto"] as const) {
+    await assert.rejects(executeWorkflow("edit a file", { cwd, workflow }), LatticeServiceError);
+  }
+  assert.deepEqual(await listRuns({ cwd }), []);
+  const observe = await tempProject({ mode: "observe", verify: verifyOk });
+  await assert.rejects(executeWorkflow("edit a file", { cwd: observe, workflow: "build" }), /observe mode/);
+});
+
+test("PLAN selects grounded sources, streams events, and never invokes agents or verifier", async t => {
+  const cwd = await tempProject({ models: { generator: { baseUrl: "http://fixture.invalid/v1", model: "planner" } }, agent: { preset: "qwen-code", command: "never-run" }, verify: { command: "never-run" } });
+  await writeFile(join(cwd, "source.ts"), "export const value = 1;\n");
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ choices: [{ message: { content: "Change source.ts:1; test value." } }] })));
+  const events: string[] = [];
+  const result = await executeWorkflow("plan source", { cwd, workflow: "plan", onEvent: event => events.push(event.type) });
+  assert.match(result.summary, /Draft plan/);
+  assert.equal(result.search, undefined);
+  assert.deepEqual(result.tap.verification, []);
+  assert.equal(await readFile(join(cwd, "source.ts"), "utf8"), "export const value = 1;\n");
+  assert.ok(events.includes("run.started") && events.includes("tool.completed"));
+});
+
+test("BUILD reviews decisions; AUTO runs the configured isolated agent and records a verified patch", async () => {
+  for (const workflow of ["build", "auto"] as const) {
+    const fixture = await createAutoModeFixture();
+    try {
+      const path = join(fixture.cwd, ".lattice", "config.json");
+      const config = JSON.parse(await readFile(path, "utf8"));
+      config.autonomy.minConfidence = 1;
+      await writeFile(path, JSON.stringify(config));
+      let reviews = 0;
+      const events: string[] = [];
+      const result = await executeWorkflow("fix add", { cwd: fixture.cwd, workflow, reviewer: async () => { reviews++; return { action: "replace", selected: ["fix-add"] }; }, onEvent: event => events.push(event.type) });
+      assert.equal(result.search?.status, "solved");
+      assert.equal(reviews > 0, workflow === "build");
+      assert.equal(await readFile(join(fixture.cwd, "src", "calc.js"), "utf8"), "export const add = (a, b) => a - b;\n");
+      const changes = await getRunChanges(result.runId, fixture.cwd);
+      assert.ok(changes.some(change => change.changedFiles.includes("src/calc.js") && change.diff.includes("a + b")));
+      assert.ok(events.includes("decision.completed") && events.includes("tool.completed"));
+    } finally { await fixture.closeModel(); }
+  }
 });

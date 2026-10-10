@@ -1,11 +1,11 @@
-import type { RunEvent, RunResult } from "@lattice/protocol";
 import type { ExecuteTaskOptions } from "@lattice/service";
+export type { WorkflowMode } from "@lattice/service";
 
 export type DecisionReviewer = NonNullable<ExecuteTaskOptions["reviewer"]>;
 export type ReviewRequest = Parameters<DecisionReviewer>[0];
 export type ReviewOutcome = Awaited<ReturnType<DecisionReviewer>>;
 
-export type TuiMode = "idle" | "running" | "reviewing" | "diff";
+export type ViewState = "idle" | "running" | "reviewing" | "diff";
 
 export interface FeedItem {
   id: string;
@@ -14,6 +14,7 @@ export interface FeedItem {
   text?: string;
   data?: unknown;
   timestamp: Date;
+  tone?: "success" | "warning" | "muted";
 }
 
 export interface ReviewState {
@@ -29,7 +30,8 @@ export interface DiffState {
 export interface TuiSessionState {
   cwd: string;
   configPath?: string;
-  mode: TuiMode;
+  view: ViewState;
+  workflow: import("@lattice/service").WorkflowMode;
   feed: FeedItem[];
   activeTask?: string;
   activePhase?: string;

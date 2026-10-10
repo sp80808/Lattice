@@ -38,6 +38,8 @@ export interface ExperimentOutcome {
   uncertainties?: string[];
   /** Raw tool records (e.g. witness documents) kept verbatim in the run log for replay. */
   records?: unknown[];
+  /** Actual isolated worker changes, persisted with the experiment event. */
+  changes?: { diff: string; changedFiles: string[]; workspace: string; retained: boolean };
 }
 
 export interface ExperimentExecutor {

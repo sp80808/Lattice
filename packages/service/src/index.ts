@@ -3,7 +3,7 @@ import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { buildStatsReport, type StatsReport } from "@lattice/analytics";
 import { runTask } from "@lattice/core";
-import { runCommand } from "@lattice/execution";
+import { collectRepositorySnapshot, runCommand } from "@lattice/execution";
 import { RandomDecisionProvider } from "@lattice/providers";
 import {
   createDecisionProvider,
@@ -79,6 +79,9 @@ export interface ExecuteTaskOptions {
   reviewer?: DecisionReviewer;
   /** Observe events as they are appended to the run log. */
   onEvent?: (event: RunEvent) => void;
+  signal?: AbortSignal;
+  /** Explicit interactive workflow; requires a configured coding runtime. */
+  workflow?: "build" | "auto";
 }
 
 export interface ExecuteTaskResult {
@@ -102,15 +105,26 @@ export async function executeTask(
   if (mode !== "observe" && mode !== "configured") {
     invalid("mode must be 'observe' or 'configured'");
   }
+  if (options.workflow !== undefined && options.workflow !== "build" && options.workflow !== "auto") invalid("coding workflow must be build or auto");
 
   const loaded = await loadConfigOrThrow(cwd, options.configPath);
   if (!loaded) {
-    const result = await runTask(task, { cwd, onEvent: options.onEvent });
+    if (options.workflow) throw new LatticeServiceError("config_error", "No configuration found. Select the target Git project with /project <path>, then run lattice init there and /doctor.");
+    const result = await runTask(task, { cwd, onEvent: options.onEvent, signal: options.signal });
     return { result, mode, runtimeMode: "evidence-only" };
   }
 
-  const config: LatticeConfig =
+  let config: LatticeConfig =
     mode === "observe" ? { ...loaded.config, mode: "observe" } : loaded.config;
+  if (options.workflow) {
+    if (mode === "observe" || config.mode === "observe") {
+      throw new LatticeServiceError("config_error", "Coding is disabled by observe mode. Configure mode=auto, an agent and a verifier; use /doctor.");
+    }
+    config = { ...config, autonomy: { ...config.autonomy, mode: options.workflow === "build" ? "supervised" : "autopilot" } };
+    const report = await runDoctor({ cwd, configPath: loaded.path, network: false });
+    const blockers = report.checks.filter(check => check.status === "fail" || (check.id === "git" && check.status !== "ok"));
+    if (blockers.length) throw new LatticeServiceError("config_error", blockers.map(check => `${check.message}${check.hint ? `; ${check.hint}` : ""}`).join("\n"));
+  }
 
   let runOptions;
   try {
@@ -119,7 +133,7 @@ export async function executeTask(
     throw new LatticeServiceError("config_error", errorMessage(error));
   }
 
-  const result = await runTask(task, { ...runOptions, cwd, onEvent: options.onEvent });
+  const result = await runTask(task, { ...runOptions, cwd, onEvent: options.onEvent, signal: options.signal });
   return {
     result,
     mode,
@@ -138,7 +152,7 @@ export interface StartedTask {
 /** Plan with explicit source selections; never uses configured agents or verify commands. */
 export async function planTask(
   task: string,
-  options: { cwd?: string; configPath?: string; files: string[]; latticeDir?: string },
+  options: { cwd?: string; configPath?: string; files: string[]; latticeDir?: string; onEvent?: (event: RunEvent) => void; signal?: AbortSignal },
 ): Promise<RunResult> {
   if (typeof task !== "string" || !task.trim()) invalid("task must be a non-empty string");
   if (!Array.isArray(options.files) || !options.files.length) invalid("planning requires source files");
@@ -151,7 +165,47 @@ export async function planTask(
   } catch (error) {
     throw new LatticeServiceError("config_error", errorMessage(error));
   }
-  return runTask(task, { cwd, latticeDir: options.latticeDir, plan: { generator, files: options.files } });
+  return runTask(task, { cwd, latticeDir: options.latticeDir, onEvent: options.onEvent, signal: options.signal, plan: { generator, files: options.files } });
+}
+
+export type WorkflowMode = "plan" | "build" | "auto";
+
+/** Interactive workflows reuse the same planner and coding loop as headless runs. */
+export async function executeWorkflow(task: string, options: Omit<ExecuteTaskOptions, "workflow"> & { workflow: WorkflowMode; files?: string[] }): Promise<RunResult> {
+  if (typeof task !== "string" || !task.trim()) invalid("task must be a non-empty string");
+  if (!["plan", "build", "auto"].includes(options.workflow)) invalid("workflow must be plan, build or auto");
+  if (options.workflow !== "plan") return (await executeTask(task, { ...options, workflow: options.workflow })).result;
+  const cwd = resolve(options.cwd ?? process.cwd());
+  if (!await loadConfig(cwd, options.configPath)) throw new LatticeServiceError("config_error", "Planning requires a configured generator. Select /project <path>, run lattice init there, then /doctor.");
+  let files = options.files;
+  if (!files?.length) {
+    const snapshot = await collectRepositorySnapshot(cwd);
+    const words = task.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? [];
+    const candidates = snapshot.trackedFiles.filter(file =>
+      !file.split(/[\\/]/).some(part => part.startsWith(".") || /^(credentials|id_rsa|id_ed25519)/i.test(part)) &&
+      /\.(md|tsx?|jsx?|rs|py|json|toml)$/i.test(file));
+    const score = (file: string) => words.filter(word => file.toLowerCase().includes(word)).length;
+    candidates.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+    // shortcut: four bounded sources, use /plan --file path:start-end for large or ambiguous tasks.
+    files = candidates.slice(0, 4);
+  }
+  return planTask(task, { ...options, cwd, files });
+}
+
+/** Read recorded patches without depending on retained worktree files. */
+export async function getRunChanges(id = "latest", cwd = process.cwd()) {
+  const events = await getRunEvents(id, cwd);
+  const changes: Array<{ diff: string; changedFiles: string[]; workspace: string; retained: boolean }> = [];
+  for (const event of events) {
+    if (event.type !== "tool.completed" || !isObject(event.payload)) continue;
+    const outcome = event.payload.outcome;
+    if (!isObject(outcome) || !isObject(outcome.changes)) continue;
+    const patch = outcome.changes;
+    if (typeof patch.diff !== "string" || !Array.isArray(patch.changedFiles) ||
+        !patch.changedFiles.every(file => typeof file === "string") || typeof patch.workspace !== "string" || typeof patch.retained !== "boolean") continue;
+    changes.push({ diff: patch.diff, changedFiles: patch.changedFiles, workspace: patch.workspace, retained: patch.retained });
+  }
+  return changes;
 }
 
 /**

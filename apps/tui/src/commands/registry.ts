@@ -1,10 +1,16 @@
-import { runDoctor, listRuns, getRun, loadConfig } from "@lattice/service";
-import type { FeedItem, DiffState } from "../state/types.js";
+import { realpath, stat } from "node:fs/promises";
+import { resolve } from "node:path";
+import { runDoctor, listRuns, getRun, getRunChanges, loadConfig } from "@lattice/service";
+import type { FeedItem, DiffState, WorkflowMode } from "../state/types.js";
 import { ICONS } from "../theme/icons.js";
 
 export interface CommandContext {
   cwd: string;
   configPath?: string;
+  workflow: WorkflowMode;
+  setWorkflow: (workflow: WorkflowMode) => void;
+  setProject: (path: string) => void;
+  runWorkflow: (task: string, workflow: WorkflowMode, files?: string[]) => Promise<void>;
   addFeedItem: (item: Omit<FeedItem, "id" | "timestamp">) => void;
   clearFeed: () => void;
   setDiff: (diff: DiffState | undefined) => void;
@@ -33,8 +39,13 @@ export const COMMANDS: Record<string, CommandDefinition> = {
         "",
         "Shortcuts & Controls:",
         "  [Enter]     Submit prompt / slash command",
-        "  Ctrl+C      Cancel running task / exit",
-        "  /           Trigger command autocomplete dropdown",
+        "  Shift+Tab   Cycle PLAN / BUILD / AUTO (idle only)",
+        "  Ctrl+C      Request cancellation / exit when idle",
+        "              Active workers finish or reach their timeout first",
+        "  Tab         Complete selected slash command",
+        "  \\ Enter    Continue a multiline draft (paste stays in the editor)",
+        "  Up/Down     Command selection / prompt history",
+        "  PageUp/Down Scroll activity or diff",
       ].join("\n");
 
       ctx.addFeedItem({
@@ -42,6 +53,43 @@ export const COMMANDS: Record<string, CommandDefinition> = {
         title: `${ICONS.sparkle} Lattice Help & Commands`,
         text,
       });
+    },
+  },
+
+  mode: {
+    name: "mode", description: "Select PLAN, BUILD or AUTO", usage: "/mode plan|build|auto",
+    execute: async (args, ctx) => {
+      const mode = args[0];
+      if (args.length !== 1 || (mode !== "plan" && mode !== "build" && mode !== "auto")) {
+        ctx.addFeedItem({ type: "info", title: `Current mode: ${ctx.workflow.toUpperCase()}`, text: "Usage: /mode plan|build|auto" });
+        return;
+      }
+      ctx.setWorkflow(mode);
+    },
+  },
+  project: {
+    name: "project", description: "Inspect or select the target directory", usage: "/project [path]",
+    execute: async (args, ctx) => {
+      if (!args.length) { ctx.addFeedItem({ type: "info", title: "Target project", text: ctx.cwd }); return; }
+      const path = await realpath(resolve(ctx.cwd, args.join(" ")));
+      if (!(await stat(path)).isDirectory()) throw new Error("Project must be a directory");
+      ctx.setProject(path);
+      ctx.addFeedItem({ type: "info", title: "Target project selected", text: path });
+    },
+  },
+  plan: {
+    name: "plan", description: "Generate a grounded draft; optionally select sources", usage: "/plan <task> [--file path:start-end]",
+    execute: async (args, ctx) => {
+      const task: string[] = [], files: string[] = [];
+      for (let index = 0; index < args.length; index++) {
+        if (args[index] === "--file") {
+          const file = args[++index];
+          if (!file) throw new Error("--file requires a source selection");
+          files.push(file);
+        } else task.push(args[index]!);
+      }
+      if (!task.length) throw new Error("Usage: /plan <task> [--file path:start-end]");
+      await ctx.runWorkflow(task.join(" "), "plan", files.length ? files : undefined);
     },
   },
 
@@ -58,7 +106,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       });
 
       try {
-        const report = await runDoctor({ cwd: ctx.cwd, network: !offline });
+        const report = await runDoctor({ cwd: ctx.cwd, configPath: ctx.configPath, network: !offline });
         const lines = report.checks.map((check) => {
           const icon = check.status === "ok" ? ICONS.check : check.status === "warn" ? ICONS.warn : ICONS.cross;
           const statusText = `[${check.status.toUpperCase()}]`.padEnd(8);
@@ -67,7 +115,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
         });
 
         lines.push("");
-        lines.push(report.ok ? `${ICONS.check} Lattice is ready.` : `${ICONS.cross} Lattice found issues.`);
+        lines.push(report.ok && report.checks.some(check => check.id === "config.auto" && check.status === "ok")
+          ? "Coding configuration checked; worker authentication is tested at execution."
+          : "Coding readiness requires an auto config, agent, verifier and Git project. Run lattice init in the target directory.");
 
         ctx.addFeedItem({
           type: "doctor",
@@ -176,14 +226,14 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       const id = args[0] || "latest";
       try {
         const detail = await getRun(id, ctx.cwd);
-        const patch = (detail as unknown as { patch?: string })?.patch ||
-          (detail?.tap as unknown as { patch?: string })?.patch;
+        const changes = await getRunChanges(id, ctx.cwd);
+        const patch = changes.map(change => `# ${change.changedFiles.join(", ")}\n# workspace: ${change.workspace} (${change.retained ? "retained" : "cleaned"})\n${change.diff}`).join("\n");
 
         if (!patch) {
           ctx.addFeedItem({
             type: "info",
             title: `${ICONS.diamond} Diff Viewer`,
-            text: `Run ${id} did not record a diff patch in summary.`,
+            text: `Run ${id} has no recorded worker patch. Older runs may predate patch recording.`,
           });
           return;
         }
@@ -208,7 +258,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     usage: "/config",
     execute: async (_args, ctx) => {
       try {
-        const loaded = await loadConfig(ctx.cwd);
+        const loaded = await loadConfig(ctx.cwd, ctx.configPath);
         if (!loaded) {
           ctx.addFeedItem({
             type: "info",
@@ -233,7 +283,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
           `Path:     ${loaded.path}`,
           `Autonomy: ${loaded.config.autonomy?.mode ?? "supervised"}`,
           `Models:`,
-          `  generator: ${loaded.config.models?.generator?.model ?? "default"}`,
+          `  generator: ${loaded.config.models?.generator?.model ?? loaded.config.model?.model ?? (loaded.config.models?.generatorPool?.length ? "routed pool" : "none")}`,
+          `Agent:      ${loaded.config.agent?.preset ?? "none"}`,
           `  decision:  ${decisionModel}`,
           `Verifier:   ${verifierText}`,
         ].join("\n");
