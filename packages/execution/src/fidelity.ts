@@ -211,11 +211,13 @@ export function createFidelityPreservingCommand(
   command: string,
   args: Array<string | number | boolean | null | undefined>,
   cwd?: string,
+  timeoutMs?: number,
 ): CommandSpec {
   const normalizedArgs = args.map((arg) => (arg === null || arg === undefined ? "" : String(arg)));
   return {
     command,
     args: normalizedArgs,
     cwd,
+    timeoutMs,
   };
 }

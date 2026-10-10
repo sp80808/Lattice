@@ -121,7 +121,20 @@ export async function runAdaptiveSwarm(
     }
   }
 
-  // 4. Scheduling Loop
+  // 4. Dry Run Guard
+  if (options.dryRun) {
+    return {
+      dag,
+      evaluation,
+      results: new Map(),
+      success: true,
+      epicId,
+      summary: `Dry run completed. Plan evaluated with ${dag.nodes.size} tasks (critical path length ${evaluation.criticalPathLength}, recommended workers ${evaluation.recommendedWorkerCount}).`,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  // 5. Scheduling Loop
   const executor = options.executor ?? ((task) => defaultTaskExecutor(task, options.verifyCommand, options.runner));
   const results = new Map<string, SwarmResult>();
   const completedNodes = new Set<string>();

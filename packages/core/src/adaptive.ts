@@ -23,6 +23,7 @@ export interface AdaptiveTaskOptions {
   autonomy?: AutonomyLevel;
   capabilityIndex?: UnifiedCapabilityIndex;
   maxRounds?: number;
+  timeoutMs?: number;
 }
 
 export interface VerificationContract {
@@ -202,7 +203,7 @@ export async function runAdaptiveWorkflow(
       const parts = sub.trim().split(/\s+/);
       const bin = parts[0]!;
       const args = parts.slice(1);
-      const spec = createFidelityPreservingCommand(bin, args, cwd);
+      const spec = createFidelityPreservingCommand(bin, args, cwd, options.timeoutMs ?? 180_000);
 
       try {
         const res = await runCommand(spec);

@@ -36,6 +36,9 @@
       "path": "../../packages/bench"
     },
     {
+      "path": "../../packages/orchestrator"
+    },
+    {
       "path": "../tui"
     }
   ],
