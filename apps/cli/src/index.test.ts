@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,10 +18,32 @@ function lattice(...args: string[]) {
 
 test("help, version and usage errors", () => {
   assert.match(lattice("--help").stdout, /Usage:/);
+  assert.match(lattice("help").stdout, /Usage:/);
+  assert.match(lattice("-h").stdout, /Usage:/);
+  assert.match(lattice().stdout, /Usage:/);
   assert.match(lattice("--version").stdout, /^\d+\.\d+\.\d+/);
   const bad = lattice("runs", "--bogus");
   assert.equal(bad.code, 2);
   assert.match(bad.stderr, /--bogus/);
+});
+
+test("plan validates task, sources and config before writing to the target", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-cli-plan-"));
+  await writeFile(join(cwd, "source.ts"), "export const answer = 42;\n");
+  const before = await readdir(cwd);
+
+  const noTask = lattice("-C", cwd, "plan", "--file", "source.ts");
+  assert.equal(noTask.code, 2);
+  assert.match(noTask.stderr, /plan requires a task/);
+
+  const noFile = lattice("-C", cwd, "plan", "explain", "this");
+  assert.equal(noFile.code, 2);
+  assert.match(noFile.stderr, /at least one --file/);
+
+  const noConfig = lattice("-C", cwd, "plan", "explain", "this", "--file", "source.ts");
+  assert.equal(noConfig.code, 1);
+  assert.match(noConfig.stderr, /config/i);
+  assert.deepEqual(await readdir(cwd), before);
 });
 
 test("init, run, runs and show work end-to-end with -C before the command", async () => {
