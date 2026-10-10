@@ -10,7 +10,7 @@ import {
   type ProviderUsage,
 } from "@lattice/protocol";
 
-type FetchLike = typeof fetch;
+export type FetchLike = typeof fetch;
 
 export interface OpenAICompatibleConfig {
   baseUrl: string;
@@ -536,3 +536,4 @@ export class OpenAICompatibleGeneratorProvider implements GeneratorProvider {
 }
 
 export * from "./claude-code.js";
+export * from "./registry.js";
