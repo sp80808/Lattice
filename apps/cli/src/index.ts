@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { LATTICE_VERSION, LatticeServiceError } from "@lattice/service";
 import {
+  benchCommand,
   configCommand,
   doctorCommand,
   initCommand,
@@ -35,6 +36,12 @@ Setup:
   doctor               check node, git, config, models, agent and verifier [--offline] [--json]
   config               print the resolved config [--config path] [--json]
 
+Benchmarks:
+  bench [suite-dir]    compare decision strategies on fixture tasks (default: benchmarks/basic)
+                         [-s first,random,cheapest-first,oracle,configured] [-n trials] [--seed N]
+                         [--rounds N] [--task id ...] [--config path] [-o report.json] [--json]
+                         [--check]   verify fixtures fail as shipped and pass with their solution
+
 Integrations:
   serve                HTTP daemon on 127.0.0.1 [--port 4774] [--token t] [--origin url ...]
   mcp                  MCP server over stdio (for Claude Code, Codex, Cursor, ...)
@@ -55,6 +62,7 @@ Docs: docs/cli.md`;
 
 const COMMANDS: Record<string, (args: string[]) => Promise<number>> = {
   run: runCommand,
+  bench: benchCommand,
   init: initCommand,
   doctor: doctorCommand,
   runs: runsCommand,

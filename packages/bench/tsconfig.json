@@ -5,6 +5,8 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "composite": true,
+    "declaration": true,
+    "declarationMap": true,
     "sourceMap": true,
     "rootDir": "src",
     "outDir": "dist",
@@ -12,28 +14,22 @@
   },
   "references": [
     {
-      "path": "../../packages/service"
+      "path": "../core"
     },
     {
-      "path": "../../packages/server"
+      "path": "../execution"
     },
     {
-      "path": "../../packages/mcp"
+      "path": "../protocol"
     },
     {
-      "path": "../../packages/protocol"
+      "path": "../providers"
     },
     {
-      "path": "../../packages/analytics"
+      "path": "../runtime"
     },
     {
-      "path": "../../packages/mining"
-    },
-    {
-      "path": "../../packages/policy"
-    },
-    {
-      "path": "../../packages/bench"
+      "path": "../search"
     }
   ],
   "include": [

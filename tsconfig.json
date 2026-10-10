@@ -47,6 +47,9 @@
       "path": "./packages/sdk"
     },
     {
+      "path": "./packages/bench"
+    },
+    {
       "path": "./apps/cli"
     },
     {

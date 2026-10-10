@@ -1,0 +1,67 @@
+{
+  "id": "tes-add-operand",
+  "description": "add() sums a with itself instead of b",
+  "task": "make `add 2 3` evaluate to 5",
+  "requires": [
+    "tsr"
+  ],
+  "verify": {
+    "command": "{TSR}",
+    "args": [
+      "run",
+      "--overflow=wrapping",
+      "prog.tes",
+      "add",
+      "2",
+      "3"
+    ],
+    "expectStdout": "5",
+    "timeoutMs": 30000
+  },
+  "candidates": [
+    {
+      "id": "inspect",
+      "label": "Inspect the program",
+      "action": "tsr tir prog.tes",
+      "expectedEvidence": "the program's TIR",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "truncate-body",
+      "label": "Drop the second operand",
+      "action": "delete the trailing operand",
+      "expectedEvidence": "program still type checks",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "prog.tes",
+        "find": "a+a",
+        "replace": "a+"
+      }
+    },
+    {
+      "id": "use-subtraction",
+      "label": "Switch to subtraction",
+      "action": "replace + with -",
+      "expectedEvidence": "add 2 3 == 5",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "prog.tes",
+        "find": "a-b",
+        "replace": "a+b"
+      }
+    },
+    {
+      "id": "use-second-param",
+      "label": "Use the second parameter",
+      "action": "replace the repeated a with b",
+      "expectedEvidence": "add 2 3 == 5",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "prog.tes",
+        "find": "a+a",
+        "replace": "a+b"
+      },
+      "solves": true
+    }
+  ]
+}

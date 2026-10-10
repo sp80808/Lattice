@@ -242,7 +242,11 @@ test("remote review: a client answers a manual-mode decision and the run is solv
       const detail = await client.waitForRun(accepted.runId);
       assert.equal(detail.status, "completed");
       assert.match(detail.summary ?? "", /search solved after 1 round/);
-      assert.ok(detail.tap?.evidence.some((e) => e.kind === "command" && e.verified && /exit=0/.test(e.summary)));
+      const exits = (detail.tap?.evidence ?? [])
+        .filter((e) => e.kind === "command")
+        .map((e) => /exit=(\d+)/.exec(e.summary)?.[1]);
+      // The verifier must really have run: failing on the broken repo, passing after the patch.
+      assert.deepEqual(exits, ["1", "0"], "grounding run fails, post-patch run passes");
       assert.deepEqual(await client.listReviews(), []);
     });
   } finally {

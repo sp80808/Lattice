@@ -1,0 +1,59 @@
+{
+  "id": "clamp-bounds",
+  "description": "clamp() swaps min and max",
+  "task": "fix the failing clamp test",
+  "verify": {
+    "command": "{NODE}",
+    "args": [
+      "--test",
+      "test/"
+    ],
+    "timeoutMs": 60000
+  },
+  "candidates": [
+    {
+      "id": "read-tests",
+      "label": "Read the clamp tests",
+      "action": "open test/clamp.test.js",
+      "expectedEvidence": "expected clamp behaviour",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "fix-clamp",
+      "label": "Swap the bounds in clamp",
+      "action": "exchange Math.min and Math.max",
+      "expectedEvidence": "clamp test passes",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "src/clamp.js",
+        "find": "Math.min(Math.max(x, hi), lo)",
+        "replace": "Math.max(Math.min(x, hi), lo)"
+      },
+      "solves": true
+    },
+    {
+      "id": "loosen-test",
+      "label": "Relax the clamp assertion",
+      "action": "edit the test expectation",
+      "expectedEvidence": "test stops failing",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "test/clamp.test.js",
+        "find": "assert.equal(clamp(15, 0, 10), 10);",
+        "replace": "assert.equal(clamp(15, 0, 10), 0);"
+      }
+    },
+    {
+      "id": "rewrite-clamp",
+      "label": "Rewrite clamp from scratch",
+      "action": "replace src/clamp.js",
+      "expectedEvidence": "tests after a rewrite",
+      "estimatedCost": "high",
+      "patch": {
+        "file": "src/clamp.js",
+        "find": "export function clamp",
+        "replace": "export function clamped"
+      }
+    }
+  ]
+}

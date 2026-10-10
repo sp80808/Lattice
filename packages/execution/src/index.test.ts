@@ -44,3 +44,28 @@ test("digest is deterministic", () => {
   assert.equal(digest("same"), digest("same"));
   assert.notEqual(digest("same"), digest("different"));
 });
+
+test("a nested `node --test` is not neutralised by the parent test runner's environment", async () => {
+  // This suite itself runs under `node --test`, which sets NODE_TEST_CONTEXT. If that leaked
+  // into the child, a *failing* test file would exit 0 without running: a vacuous pass.
+  const dir = await mkdtemp(join(tmpdir(), "lattice-nested-"));
+  await writeFile(join(dir, "failing.test.js"), 'import test from "node:test";\ntest("fails", () => { throw new Error("boom"); });\n');
+  await writeFile(join(dir, "package.json"), '{"type":"module"}');
+
+  const result = await runCommand({ command: process.execPath, args: ["--test", "failing.test.js"], cwd: dir });
+  assert.notEqual(result.exitCode, 0, "a failing nested test must fail");
+  assert.match(result.stdout, /fail 1/);
+
+  // Explicit opt-in still works for callers that really want the context.
+  const inherited = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write(String(process.env.NODE_TEST_CONTEXT))"],
+    env: { NODE_TEST_CONTEXT: "explicit" },
+  });
+  assert.equal(inherited.stdout, "explicit");
+  const cleared = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write(String(process.env.NODE_TEST_CONTEXT))"],
+  });
+  assert.equal(cleared.stdout, "undefined");
+});

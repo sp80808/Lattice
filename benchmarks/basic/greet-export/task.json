@@ -1,0 +1,59 @@
+{
+  "id": "greet-export",
+  "description": "greet is defined but never exported",
+  "task": "fix the failing import in the greeting test",
+  "verify": {
+    "command": "{NODE}",
+    "args": [
+      "--test",
+      "test/"
+    ],
+    "timeoutMs": 60000
+  },
+  "candidates": [
+    {
+      "id": "rewrite-module",
+      "label": "Rewrite the greeting module",
+      "action": "replace src/greet.js",
+      "expectedEvidence": "tests after a rewrite",
+      "estimatedCost": "high",
+      "patch": {
+        "file": "src/greet.js",
+        "find": "function greet",
+        "replace": "function greetAll"
+      }
+    },
+    {
+      "id": "export-greet",
+      "label": "Export greet from its module",
+      "action": "add the missing export",
+      "expectedEvidence": "greeting test passes",
+      "estimatedCost": "high",
+      "patch": {
+        "file": "src/greet.js",
+        "find": "function greet(name)",
+        "replace": "export function greet(name)"
+      },
+      "solves": true
+    },
+    {
+      "id": "inspect-test",
+      "label": "Inspect the greeting test",
+      "action": "read test/greet.test.js",
+      "expectedEvidence": "what the test imports",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "patch-index",
+      "label": "Patch an index barrel file",
+      "action": "edit src/index.js",
+      "expectedEvidence": "tests after touching index",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "src/index.js",
+        "find": "barrel",
+        "replace": "barrel2"
+      }
+    }
+  ]
+}

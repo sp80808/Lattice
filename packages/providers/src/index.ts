@@ -300,7 +300,11 @@ export class OpenAICompatibleGeneratorProvider implements GeneratorProvider {
       messages,
     });
 
-    const text = response.choices?.[0]?.message?.content;
+    const message = response.choices?.[0]?.message;
+    const text =
+      message?.content ??
+      (message as { reasoning?: string })?.reasoning ??
+      (message as { reasoning_content?: string })?.reasoning_content;
     if (!text) throw new Error("Generator provider returned empty content");
 
     return {

@@ -1,6 +1,16 @@
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { resolve } from "node:path";
 import { buildStatsReport, formatStatsReport } from "@lattice/analytics";
+import {
+  configuredProvider,
+  formatReport,
+  loadSuite,
+  OFFLINE_STRATEGIES,
+  resolveTools,
+  runBenchmark,
+  selfCheckSuite,
+  type StrategyName,
+} from "@lattice/bench";
 import { serveMcpStdio } from "@lattice/mcp";
 import {
   formatMiningReport,
@@ -334,6 +344,75 @@ export async function serveCommand(args: string[]): Promise<number> {
 export async function mcpCommand(args: string[]): Promise<number> {
   const { values } = parse(args, {});
   await serveMcpStdio({ cwd: cwdOf(values) });
+  return 0;
+}
+
+export async function benchCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parse(args, {
+    strategies: { type: "string", short: "s" },
+    trials: { type: "string", short: "n" },
+    seed: { type: "string" },
+    rounds: { type: "string" },
+    task: { type: "string", multiple: true },
+    config: { type: "string" },
+    out: { type: "string", short: "o" },
+    check: { type: "boolean" },
+  });
+  const cwd = cwdOf(values);
+  const suiteDir = positionals[0] ?? "benchmarks/basic";
+  const number = (name: string, raw: string | undefined, fallback: number, min = 0) => {
+    const value = raw === undefined ? fallback : Number(raw);
+    if (!Number.isInteger(value) || value < min) throw new UsageError(`--${name} must be an integer >= ${min}`);
+    return value;
+  };
+
+  const suite = await loadSuite(resolve(cwd, suiteDir));
+  const tools = await resolveTools(cwd);
+
+  if (values.check) {
+    const rows = await selfCheckSuite(suite, tools);
+    if (values.json) printJson(rows);
+    else {
+      for (const row of rows) {
+        const ok = row.baselineFails && row.solutionPasses;
+        console.log(
+          `${row.skipped ? "-" : ok ? "✓" : "✗"} ${row.task.padEnd(24)} ` +
+            (row.skipped ?? `fails as shipped: ${row.baselineFails}  passes with solution: ${row.solutionPasses}`),
+        );
+      }
+    }
+    return rows.every((row) => row.skipped || (row.baselineFails && row.solutionPasses)) ? 0 : 1;
+  }
+
+  const requested = (values.strategies ? values.strategies.split(",") : [...OFFLINE_STRATEGIES]).map((name) => name.trim());
+  const known = new Set<string>([...OFFLINE_STRATEGIES, "configured"]);
+  const unknown = requested.filter((name) => !known.has(name));
+  if (unknown.length) {
+    throw new UsageError(`unknown strategy: ${unknown.join(", ")} (known: ${[...known].join(", ")})`);
+  }
+  const strategies = requested as StrategyName[];
+
+  let configured;
+  if (strategies.includes("configured")) {
+    configured = await configuredProvider(cwd, values.config);
+  }
+
+  const report = await runBenchmark(suite, {
+    strategies,
+    trials: number("trials", values.trials, 40, 1),
+    seed: number("seed", values.seed, 1),
+    maxRounds: number("rounds", values.rounds, 2, 1),
+    only: values.task,
+    tools,
+    configured: configured?.provider,
+    configuredDescription: configured?.description,
+  });
+
+  if (values.out) {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(resolve(cwd, values.out), JSON.stringify(report, null, 2) + "\n", "utf8");
+  }
+  console.log(values.json ? JSON.stringify(report, null, 2) : formatReport(report));
   return 0;
 }
 

@@ -1,0 +1,66 @@
+{
+  "id": "tes-offset-literal",
+  "description": "inc() adds 2 instead of 1",
+  "task": "make `inc 10` evaluate to 11",
+  "requires": [
+    "tsr"
+  ],
+  "verify": {
+    "command": "{TSR}",
+    "args": [
+      "run",
+      "--overflow=wrapping",
+      "prog.tes",
+      "inc",
+      "10"
+    ],
+    "expectStdout": "11",
+    "timeoutMs": 30000
+  },
+  "candidates": [
+    {
+      "id": "rename-param",
+      "label": "Rename the parameter",
+      "action": "rename x to y in the signature",
+      "expectedEvidence": "program still resolves",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "prog.tes",
+        "find": "inc(x:i64)",
+        "replace": "inc(y:i64)"
+      }
+    },
+    {
+      "id": "fix-literal",
+      "label": "Change the literal to 1",
+      "action": "replace 2 with 1",
+      "expectedEvidence": "inc 10 == 11",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "prog.tes",
+        "find": "x+2",
+        "replace": "x+1"
+      },
+      "solves": true
+    },
+    {
+      "id": "add-arity",
+      "label": "Add a second parameter",
+      "action": "extend the signature",
+      "expectedEvidence": "inc 10 == 11",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "prog.tes",
+        "find": "inc(x:i64)",
+        "replace": "inc(x:i64,z:i64)"
+      }
+    },
+    {
+      "id": "inspect",
+      "label": "Inspect the program",
+      "action": "tsr check prog.tes",
+      "expectedEvidence": "diagnostics",
+      "estimatedCost": "low"
+    }
+  ]
+}

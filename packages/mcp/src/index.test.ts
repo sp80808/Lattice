@@ -161,6 +161,11 @@ test("an MCP client can act as Lattice's reviewer", async () => {
     }
     assert.equal(status, "completed");
     assert.match(run.summary ?? "", /search solved/);
+    const { tap } = JSON.parse((await call("lattice_show_run", { id: started.runId })).text) as {
+      tap: { evidence: Array<{ kind: string; summary: string }> };
+    };
+    const exits = tap.evidence.filter((e) => e.kind === "command").map((e) => /exit=(\d+)/.exec(e.summary)?.[1]);
+    assert.deepEqual(exits, ["1", "0"], "verifier failed on the broken repo and passed after the patch");
   } finally {
     await closeModel();
   }
