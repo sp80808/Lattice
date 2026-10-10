@@ -4,28 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@lattice/agents': workspace:*
-  '@lattice/analytics': workspace:*
-  '@lattice/bench': workspace:*
-  '@lattice/cli': workspace:*
-  '@lattice/core': workspace:*
-  '@lattice/daemon': workspace:*
-  '@lattice/execution': workspace:*
-  '@lattice/ledger': workspace:*
-  '@lattice/mcp': workspace:*
-  '@lattice/mining': workspace:*
-  '@lattice/orchestrator': workspace:*
-  '@lattice/policy': workspace:*
-  '@lattice/protocol': workspace:*
-  '@lattice/providers': workspace:*
-  '@lattice/runtime': workspace:*
-  '@lattice/sdk': workspace:*
-  '@lattice/search': workspace:*
-  '@lattice/server': workspace:*
-  '@lattice/service': workspace:*
-  '@lattice/tui': workspace:*
-
 importers:
 
   .:
@@ -40,28 +18,31 @@ importers:
   apps/cli:
     dependencies:
       '@lattice/analytics':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/analytics
       '@lattice/bench':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/bench
       '@lattice/mcp':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/mcp
       '@lattice/mining':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/mining
+      '@lattice/orchestrator':
+        specifier: 0.0.1
+        version: link:../../packages/orchestrator
       '@lattice/policy':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/policy
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/protocol
       '@lattice/server':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/server
       '@lattice/service':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/service
       '@lattice/tui':
         specifier: workspace:*
@@ -70,14 +51,20 @@ importers:
   apps/daemon:
     dependencies:
       '@lattice/server':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../../packages/server
 
   apps/tui:
     dependencies:
+      '@lattice/colab':
+        specifier: workspace:*
+        version: link:../../packages/colab
       '@lattice/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@lattice/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@lattice/service':
         specifier: workspace:*
         version: link:../../packages/service
@@ -101,55 +88,64 @@ importers:
   packages/agents:
     dependencies:
       '@lattice/execution':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../execution
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/search':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../search
 
   packages/analytics:
     dependencies:
       '@lattice/ledger':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../ledger
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
 
   packages/bench:
     dependencies:
       '@lattice/core':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../core
       '@lattice/execution':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../execution
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/providers':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../providers
       '@lattice/runtime':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../runtime
       '@lattice/search':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../search
+
+  packages/colab:
+    dependencies:
+      '@lattice/protocol':
+        specifier: 0.0.1
+        version: link:../protocol
 
   packages/core:
     dependencies:
       '@lattice/execution':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../execution
+      '@lattice/orchestrator':
+        specifier: 0.0.1
+        version: link:../orchestrator
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/search':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../search
 
   packages/execution: {}
@@ -157,43 +153,43 @@ importers:
   packages/ledger:
     dependencies:
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
 
   packages/mcp:
     dependencies:
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/service':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../service
 
   packages/mining:
     dependencies:
       '@lattice/ledger':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../ledger
 
   packages/orchestrator:
     dependencies:
       '@lattice/agents':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../agents
       '@lattice/execution':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../execution
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/search':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../search
 
   packages/policy:
     dependencies:
       '@lattice/ledger':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../ledger
 
   packages/protocol: {}
@@ -201,68 +197,92 @@ importers:
   packages/providers:
     dependencies:
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
 
   packages/runtime:
     dependencies:
       '@lattice/agents':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../agents
       '@lattice/core':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../core
+      '@lattice/protocol':
+        specifier: 0.0.1
+        version: link:../protocol
       '@lattice/providers':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../providers
+      '@lattice/tessera':
+        specifier: 0.0.1
+        version: link:../tessera
 
   packages/sdk:
     dependencies:
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
 
   packages/search:
     dependencies:
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
 
   packages/server:
     dependencies:
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/service':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../service
     devDependencies:
       '@lattice/sdk':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../sdk
 
   packages/service:
     dependencies:
       '@lattice/analytics':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../analytics
       '@lattice/core':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../core
       '@lattice/execution':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../execution
       '@lattice/protocol':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../protocol
       '@lattice/providers':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../providers
       '@lattice/runtime':
-        specifier: workspace:*
+        specifier: 0.0.1
         version: link:../runtime
       '@lattice/search':
-        specifier: workspace:*
+        specifier: 0.0.1
+        version: link:../search
+
+  packages/tessera:
+    dependencies:
+      '@lattice/core':
+        specifier: 0.0.1
+        version: link:../core
+      '@lattice/execution':
+        specifier: 0.0.1
+        version: link:../execution
+      '@lattice/protocol':
+        specifier: 0.0.1
+        version: link:../protocol
+      '@lattice/providers':
+        specifier: 0.0.1
+        version: link:../providers
+      '@lattice/search':
+        specifier: 0.0.1
         version: link:../search
 
 packages:

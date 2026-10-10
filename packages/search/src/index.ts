@@ -784,6 +784,9 @@ export async function runSearchLoop(
       !explicitlyUnknown &&
       selectedIds.length === 0 &&
       autonomy.mode === "autopilot" &&
+      // A configured abstention fallback supersedes this shortcut: it selects
+      // the same candidate but records the override on the audit trail.
+      options.onAbstain !== "verify-top" &&
       decision.scores
     ) {
       const substantive = Object.entries(decision.scores)
