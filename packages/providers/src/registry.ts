@@ -551,7 +551,7 @@ export function resolveTarget(
   if (anyRole.length) {
     throw new IncompatibleTransportError(anyRole[0], role);
   }
-  throw new ModelNotAvailableError(modelId, registry.list().map((t) => t.endpoint));
+  throw new ModelNotAvailableError(modelId, [...new Set(registry.list().map((t) => t.endpoint))]);
 }
 
 /** Auth readiness for a target that names an environment variable. */

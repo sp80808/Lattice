@@ -20,6 +20,9 @@
       "path": "./packages/providers"
     },
     {
+      "path": "./packages/colab"
+    },
+    {
       "path": "./packages/tessera"
     },
     {

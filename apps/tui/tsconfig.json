@@ -17,6 +17,12 @@
     },
     {
       "path": "../../packages/service"
+    },
+    {
+      "path": "../../packages/providers"
+    },
+    {
+      "path": "../../packages/colab"
     }
   ],
   "include": [

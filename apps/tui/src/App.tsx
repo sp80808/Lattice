@@ -48,6 +48,23 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
     stdout.on("resize", resize);
     return () => { stdout.off("resize", resize); mounted.current = false; clearTimeout(eventTimer.current); controller.current?.abort(); pendingReview.current?.resolve({ action: "stop" }); };
   }, [stdout]);
+  /** Re-read the config after a command changes it, without restarting the TUI. */
+  const reloadConfig = async () => {
+    setConfigPath(undefined);
+    setReadiness("re-checking configuration...");
+    try {
+      const loaded = await loadConfig(cwd);
+      if (!loaded) {
+        await autoInitialize(cwd);
+        return;
+      }
+      setConfigPath(loaded.path);
+      await applyReadiness(loaded);
+    } catch (error) {
+      setReadiness(`CONFIG ERROR · ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   useEffect(() => {
     let current = true;
     setConfigPath(undefined);
@@ -55,15 +72,20 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
       if (!current) return;
       if (loaded) {
         setConfigPath(loaded.path);
-        const generator = loaded.config.models?.generator?.model ?? loaded.config.model?.model ?? (loaded.config.models?.generatorPool?.length ? "routed model pool" : "missing generator");
-        const agent = loaded.config.agent?.preset ?? "missing agent";
-        setReadiness(`${generator} · ${agent} · ${loaded.config.verify ? "verifier configured" : "missing verifier"} · /doctor`);
+        await applyReadiness(loaded);
         return;
       }
       await autoInitialize(cwd);
     }).then(() => {}, error => { if (current) setReadiness(`CONFIG ERROR · ${error.message}`); });
     return () => { current = false; };
   }, [cwd]);
+
+  /** Describe the configured generator, agent and verifier in one status line. */
+  const applyReadiness = async (loaded: NonNullable<Awaited<ReturnType<typeof loadConfig>>>) => {
+    const generator = loaded.config.models?.generator?.model ?? loaded.config.model?.model ?? (loaded.config.models?.generatorPool?.length ? "routed model pool" : "missing generator");
+    const agent = loaded.config.agent?.preset ?? "missing agent";
+    setReadiness(`${generator} · ${agent} · ${loaded.config.verify ? "verifier configured" : "missing verifier"} · /doctor`);
+  };
 
   /** Auto-init: write .lattice/config.json on launch so /plan, /build and /auto work immediately. */
   const autoInitialize = async (target: string) => {
@@ -168,6 +190,7 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
     clearFeed: () => setFeed([]),
     setDiff: state => { setDiff(state); setView(state ? "diff" : "idle"); },
     exit: () => exit(),
+    reloadConfig,
   };
   const handleSubmit = async (input: string) => {
     if (busy.current) return;

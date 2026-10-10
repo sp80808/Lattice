@@ -189,7 +189,7 @@ process.stdin.on("data", (c) => (input += c)).on("end", () => {
     { input: result.usage.inputTokens, output: result.usage.outputTokens, cost: result.usage.costUsd },
     { input: 110, output: 20, cost: 0.25 },
   );
-  await assert.rejects(provider.generate({ prompt: "FAIL" }), /Provider request failed: 429/);
+  await assert.rejects(provider.generate({ prompt: "FAIL" }), /rate limiting 'sonnet' \(HTTP 429\)/);
 });
 
 test("SystemOne decision provider maps choice and probabilities accurately", async () => {
@@ -293,7 +293,7 @@ test("permanent failures fail fast, and the retry budget is respected", async ()
     fetchImpl: flaky(1, "400", counter),
     retry: { attempts: 5, baseDelayMs: 1, maxDelayMs: 5 },
   });
-  await assert.rejects(() => permanent.decide(decisionRequest), /Provider request failed: 400/);
+  await assert.rejects(() => permanent.decide(decisionRequest), /rejected the request for 'qwen-test' \(HTTP 400\)/);
   assert.equal(counter.calls, 1, "a 400 is not transient and must not be retried");
 
   const exhausted = { calls: 0 };
@@ -303,7 +303,7 @@ test("permanent failures fail fast, and the retry budget is respected", async ()
     fetchImpl: flaky(10, "503", exhausted),
     retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 5 },
   });
-  await assert.rejects(() => provider.decide(decisionRequest), /Provider request failed: 503/);
+  await assert.rejects(() => provider.decide(decisionRequest), /failed for 'qwen-test' \(HTTP 503\)/);
   assert.equal(exhausted.calls, 2, "stops after the configured attempt count");
 
   const disabled = { calls: 0 };

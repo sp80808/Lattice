@@ -4,7 +4,7 @@ import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:pat
 import { buildStatsReport, type StatsReport } from "@lattice/analytics";
 import { runTask } from "@lattice/core";
 import { collectRepositorySnapshot, runCommand } from "@lattice/execution";
-import { RandomDecisionProvider } from "@lattice/providers";
+import { discoverOllamaModels, RandomDecisionProvider } from "@lattice/providers";
 import {
   createDecisionProvider,
   createGeneratorProvider,
@@ -122,7 +122,15 @@ export async function executeTask(
     }
     config = { ...config, autonomy: { ...config.autonomy, mode: options.workflow === "build" ? "supervised" : "autopilot" } };
     const report = await runDoctor({ cwd, configPath: loaded.path, network: false });
-    const blockers = report.checks.filter(check => check.status === "fail" || (check.id === "git" && check.status !== "ok"));
+    let blockers = report.checks.filter(check => check.status === "fail" || (check.id === "git" && check.status !== "ok"));
+    // Doctor only warns about a model the endpoint does not list; coding cannot
+    // start without one, so treat that as a blocker with actionable guidance.
+    const models = await checkModelReadiness(loaded.config);
+    if (!models.ok) {
+      blockers = [...blockers, ...models.roles.filter(role => role.status !== "ok")].map(() => ({
+        id: "model.readiness", status: "fail" as const, message: models.blockers.join("\n"), hint: "run /models or /doctor",
+      }));
+    }
     if (blockers.length) throw new LatticeServiceError("config_error", blockers.map(check => `${check.message}${check.hint ? `; ${check.hint}` : ""}`).join("\n"));
   }
 
@@ -158,6 +166,9 @@ export async function planTask(
   if (!Array.isArray(options.files) || !options.files.length) invalid("planning requires source files");
   const cwd = resolve(options.cwd ?? process.cwd());
   const loaded = await loadConfigOrThrow(cwd, options.configPath);
+  if (!loaded) throw new LatticeServiceError("config_error", "Planning requires a configured generator. Select /project <path>, run lattice init there, then /doctor.");
+  // Fail before the search loop with an actionable line instead of a raw 404.
+  await assertModelsReady(loaded.config, { workflow: "plan" });
   let generator;
   try {
     generator = loaded && createGeneratorProvider(loaded.config);
@@ -805,6 +816,181 @@ async function probeModel(
       hint: "start the model server (e.g. `ollama serve`) or fix baseUrl",
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Model readiness (preflight)
+
+export type ModelReadinessStatus = "ok" | "missing" | "unreachable" | "unknown" | "incompatible";
+
+export interface ModelRoleReadiness {
+  /** `decision` or `generator`; `default` when a single config serves both. */
+  role: string;
+  modelId: string;
+  baseUrl: string;
+  status: ModelReadinessStatus;
+  /** Concise, human-actionable one-liner. Never raw provider JSON. */
+  message: string;
+  /** Exact ids the endpoint listed, in the order it reported them. */
+  available: string[];
+  /** Ollama-declared capabilities for the requested id, when discovered. */
+  capabilities?: string[];
+}
+
+export interface ModelReadinessReport {
+  ok: boolean;
+  roles: ModelRoleReadiness[];
+  /** Actionable blocker lines; empty when every required model is usable. */
+  blockers: string[];
+}
+
+export interface ModelReadinessOptions {
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+/** Ollama exposes `/api/tags`; strip a trailing `/v1` so the native route resolves. */
+function ollamaBase(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+}
+
+const looksLikeOllama = (baseUrl: string): boolean => /127\.0\.0\.1:11434|localhost:11434/.test(baseUrl);
+
+/**
+ * Verify the exact model ids a config asks for are actually served, before any
+ * task runs. The 404 this prevents used to surface as raw provider JSON after
+ * minutes of search; now it is one actionable line before execution.
+ */
+export async function checkModelReadiness(
+  config: LatticeConfig,
+  options: ModelReadinessOptions = {},
+): Promise<ModelReadinessReport> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 4_000;
+  const decisionConfig = config.models?.decision ?? config.model;
+  const generatorModel = config.models?.generator ?? config.model;
+  // A `random` decision baseline is deterministic and needs no endpoint at all.
+  const decisionModel: ModelEndpointConfig | undefined =
+    decisionConfig && decisionConfig.provider !== "random" ? decisionConfig : undefined;
+  const shared = Boolean(decisionModel && generatorModel && decisionModel === generatorModel);
+
+  const specs: Array<{ role: string; model: ModelEndpointConfig | undefined }> = [
+    { role: shared ? "default" : "decision", model: decisionModel },
+    { role: "generator", model: generatorModel },
+  ];
+  const seen = new Set<string>();
+  const roles: ModelRoleReadiness[] = [];
+  /** Endpoint model id -> declared capabilities, for suggesting alternatives. */
+  const discoveredCapabilities = new Map<string, string[]>();
+  for (const { role, model } of specs) {
+    if (!model) continue;
+    const key = `${model.baseUrl}\0${model.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let available: string[] = [];
+    let capabilities: string[] | undefined;
+    let unreachable = false;
+    try {
+      if (looksLikeOllama(model.baseUrl)) {
+        const discovered = await discoverOllamaModels(ollamaBase(model.baseUrl), fetchImpl, timeoutMs);
+        available = discovered.map((entry) => entry.name).filter(Boolean);
+        capabilities = discovered.find((entry) => entry.name === model.model)?.capabilities;
+        for (const entry of discovered) discoveredCapabilities.set(entry.name, entry.capabilities);
+      }
+      if (!available.length) available = await listAvailableModels(model.baseUrl, { fetchImpl, timeoutMs });
+    } catch {
+      unreachable = true;
+    }
+
+    if (unreachable) {
+      roles.push({
+        role, modelId: model.model, baseUrl: model.baseUrl, status: "unreachable", available,
+        message: `cannot reach ${model.baseUrl} — start the model server (e.g. \`ollama serve\`)`,
+      });
+      continue;
+    }
+    // An empty list means "this endpoint will not tell us", not "no models exist".
+    if (!available.length) {
+      roles.push({
+        role, modelId: model.model, baseUrl: model.baseUrl, status: "unknown", available,
+        message: `${model.baseUrl} does not publish a model list; ${model.model} will be attempted unverified`,
+      });
+      continue;
+    }
+    if (!available.some((id) => id === model.model || id.startsWith(`${model.model}:`))) {
+      const alternatives = available.filter((id) => !/embed|rerank|whisper|tts/i.test(id)).slice(0, 6);
+      roles.push({
+        role, modelId: model.model, baseUrl: model.baseUrl, status: "missing", available,
+        capabilities,
+        message:
+          `model '${model.model}' is not installed at ${model.baseUrl} — ` +
+          `available: ${alternatives.join(", ") || "none"}` +
+          `\n  fix: lattice init --model <id>  ·  or, for Ollama: ollama pull ${model.model}`,
+      });
+      continue;
+    }
+    // The model exists. Now prove it can actually carry this role: an
+    // OpenAI-compatible chat route cannot carry a typed-choice decision, and a
+    // decision-only model cannot generate code. Skipping this check is what
+    // produced 100% invalid-response benchmark runs.
+    if (capabilities?.length) {
+      const required = ROLE_CAPABILITIES[role === "generator" ? "generator" : "decision"];
+      const supported = required.some((capability) => capabilities.includes(capability));
+      if (!supported) {
+        const alternatives = available
+          .filter((id) => id !== model.model && !/embed|rerank|whisper|tts/i.test(id))
+          .filter((id) => {
+            const other = discoveredCapabilities.get(id);
+            return !other?.length || required.some((capability) => other.includes(capability));
+          })
+          .slice(0, 6);
+        roles.push({
+          role, modelId: model.model, baseUrl: model.baseUrl, status: "incompatible", available,
+          capabilities,
+          message:
+            `model '${model.model}' cannot serve the ${role} role — it declares ` +
+            `[${capabilities.join(", ")}] and Lattice needs one of [${required.join(", ")}]` +
+            (alternatives.length ? `\n  fix: use one of ${alternatives.join(", ")}` : "") +
+            `\n  fix: lattice init --model <id>`,
+        });
+        continue;
+      }
+    }
+    roles.push({
+      role, modelId: model.model, baseUrl: model.baseUrl, status: "ok", available, capabilities,
+      message: `${model.model} @ ${model.baseUrl}`,
+    });
+  }
+
+  const blockers = roles
+    .filter((role) => role.status === "missing" || role.status === "unreachable" || role.status === "incompatible")
+    .map((role) => role.message);
+  return { ok: blockers.length === 0, roles, blockers };
+}
+
+/**
+ * Minimum capability vocabulary a model must declare to serve a role.
+ * Mirrors the transport matrix in `@lattice/providers`.
+ */
+const ROLE_CAPABILITIES: Record<"decision" | "generator", string[]> = {
+  decision: ["decision", "choice", "rerank"],
+  generator: ["completion", "tools", "insert", "thinking", "code", "chat"],
+};
+
+/** Fail closed before a run when a required model cannot possibly succeed. */
+export async function assertModelsReady(
+  config: LatticeConfig,
+  options: ModelReadinessOptions & { workflow?: WorkflowMode } = {},
+): Promise<ModelReadinessReport> {
+  const report = await checkModelReadiness(config, options);
+  if (!report.ok) {
+    throw new LatticeServiceError(
+      "config_error",
+      `Models are not ready for ${options.workflow ?? "this run"}:\n${report.blockers.map((line) => `  - ${line}`).join("\n")}\nRun /doctor or /models to inspect.`,
+    );
+  }
+  return report;
 }
 
 /** Environment and configuration health checks. Never throws for bad config. */

@@ -63,7 +63,8 @@ test("planning resolves only the generator and does not run configured agents or
     return new Response(JSON.stringify({ choices: [{ message: { content: "Review save compatibility before adding islands." } }] }));
   });
   const result = await planTask("Plan islands", { cwd, files: ["islands.ts"], latticeDir });
-  assert.equal(calls, 1);
+  // One readiness probe (`/models`) plus exactly one planner generation.
+  assert.equal(calls, 2);
   assert.deepEqual(result.tap.verification, []);
   assert.equal(result.tap.evidence.filter(item => item.kind === "model")[0]?.verified, false);
   assert.ok(result.eventLogPath.startsWith(latticeDir));

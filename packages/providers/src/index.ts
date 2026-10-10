@@ -47,6 +47,53 @@ export class ProviderHttpError extends Error {
 }
 
 /**
+ * One short, actionable line from a provider error body. Provider JSON is not
+ * UI copy: `{"error":{"message":"model 'x' not found", ...}}` becomes
+ * `model 'x' not found` — enough to act on, never a 500-character dump.
+ */
+export function describeProviderFailure(status: number, body: string, model: string): string {
+  const detail = providerErrorDetail(body);
+  const suffix = detail ? `: ${detail}` : "";
+  if (status === 404) {
+    return `model '${model}' is not available (HTTP 404)${suffix} — run /models to list installed models`;
+  }
+  if (status === 401 || status === 403) {
+    return `provider rejected the credentials for '${model}' (HTTP ${status})${suffix} — check the API key environment variable`;
+  }
+  if (status === 400) {
+    return `provider rejected the request for '${model}' (HTTP 400)${suffix}`;
+  }
+  if (status === 429) {
+    return `provider is rate limiting '${model}' (HTTP 429)${suffix}`;
+  }
+  if (status >= 500) {
+    return `provider failed for '${model}' (HTTP ${status})${suffix}`;
+  }
+  return `provider request for '${model}' failed (HTTP ${status})${suffix}`;
+}
+
+/** Extract at most one short line of human-meaningful text from a response body. */
+function providerErrorDetail(body: string): string | undefined {
+  const text = body.trim();
+  if (!text) return undefined;
+  try {
+    const parsed = JSON.parse(text) as {
+      error?: { message?: unknown; code?: unknown };
+      message?: unknown;
+      detail?: unknown;
+    };
+    const candidate = parsed?.error?.message ?? parsed?.message ?? parsed?.detail;
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.replace(/\s+/g, " ").trim().slice(0, 160);
+    }
+  } catch {
+    // Not JSON — fall through to the plain-text path.
+  }
+  const firstLine = (text.split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ").trim();
+  return firstLine.slice(0, 160) || undefined;
+}
+
+/**
  * Transient failures worth another attempt: rate limits, server-side faults and
  * network-level fetch failures. Timeouts and 4xx client errors are the caller's
  * (or the request's) fault and retrying them only doubles latency.
@@ -190,10 +237,9 @@ async function postChat(
       });
 
       if (!response.ok) {
-        const text = await response.text();
         throw new ProviderHttpError(
           response.status,
-          `Provider request failed: ${response.status} ${response.statusText}: ${text.slice(0, 500)}`,
+          describeProviderFailure(response.status, await response.text(), config.model),
         );
       }
 

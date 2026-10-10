@@ -74,7 +74,7 @@ test("the recorded qwen3-coder default is rejected before execution when absent"
       assert.ok(error instanceof ModelNotAvailableError);
       assert.match(error.message, /qwen3-coder/);
       assert.match(error.message, /never invents or downloads model IDs/);
-      assert.equal(error.searched.length, 2);
+      assert.equal(error.searched.length, 1, "one endpoint was searched");
       return true;
     },
   );
@@ -122,8 +122,8 @@ test("unreachable, disabled, unauthorised and exhausted targets are excluded wit
   const registry = new ModelRegistry();
   registry.register({ ...base, modelId: "m-unreachable", availability: "unreachable" });
   registry.register({ ...base, modelId: "m-disabled", availability: "disabled" });
-  registry.register({ ...base, modelId: "m-noauth", auth: "missing-credential" });
-  registry.register({ ...base, modelId: "m-expired", auth: "expired" });
+  registry.register({ ...base, modelId: "m-noauth", availability: "available", auth: "missing-credential" });
+  registry.register({ ...base, modelId: "m-expired", availability: "available", auth: "expired" });
   registry.register({ ...base, modelId: "m-exhausted", availability: "exhausted" });
   try {
     registry.select("generator");
@@ -207,10 +207,26 @@ test("discovery never invents a model when the endpoint is unreachable", async (
   assert.deepEqual(reports, []);
 });
 
-test("registering discovered targets against a live endpoint yields one verified decision target", async () => {
-  const registry = await registerTargetsFromLiveOllama("http://127.0.0.1:11434/v1", fetch, {
-    roles: ["decision", "generator"],
-  });
+test("registering discovered targets from a fixture listing yields one verified decision target", async () => {
+  // Mocked discovery: the assertions below are about the registry, not about
+  // whichever models happen to be installed on the machine running the tests.
+  const registry = await registerTargetsFromLiveOllama(
+    "http://127.0.0.1:11434/v1",
+    async () =>
+      new Response(
+        JSON.stringify({
+          models: LIVE.map((entry) => ({
+            name: entry.name,
+            model: entry.model,
+            capabilities: entry.capabilities,
+            details: { family: entry.family, parameter_size: entry.parameterSize },
+          })),
+        }),
+      ),
+    {
+      roles: ["decision", "generator"],
+    },
+  );
   const decision = registry.select("decision");
   assert.equal(decision.modelId, "tev1:0.8b");
   assert.equal(decision.transport, "systemone-choice");

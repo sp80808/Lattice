@@ -8,6 +8,7 @@ function createMockContext() {
   const state = {
     cleared: false,
     exited: false,
+    reloaded: false,
   };
 
   const ctx: CommandContext = {
@@ -23,6 +24,9 @@ function createMockContext() {
     setDiff: () => {},
     exit: () => {
       state.exited = true;
+    },
+    reloadConfig: async () => {
+      state.reloaded = true;
     },
   };
 

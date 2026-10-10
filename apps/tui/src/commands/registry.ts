@@ -1,6 +1,24 @@
 import { realpath, stat } from "node:fs/promises";
-import { resolve } from "node:path";
-import { runDoctor, listRuns, getRun, getRunChanges, loadConfig } from "@lattice/service";
+import { join, resolve } from "node:path";
+import {
+  runDoctor,
+  listRuns,
+  getRun,
+  getRunChanges,
+  loadConfig,
+  checkModelReadiness,
+  writeConfig,
+  listAvailableModels,
+  selectPreferredModel,
+} from "@lattice/service";
+import { registerTargetsFromLiveOllama, targetSupportsRole } from "@lattice/providers";
+import {
+  ArtifactStore,
+  ColabClient,
+  schedule,
+  type ColabSession,
+  type WorkloadKind,
+} from "@lattice/colab";
 import type { FeedItem, DiffState, WorkflowMode } from "../state/types.js";
 import { ICONS } from "../theme/icons.js";
 
@@ -15,6 +33,8 @@ export interface CommandContext {
   clearFeed: () => void;
   setDiff: (diff: DiffState | undefined) => void;
   exit: () => void;
+  /** Re-read the config and re-validate readiness without restarting the TUI. */
+  reloadConfig: () => Promise<void>;
 }
 
 export interface CommandDefinition {
@@ -300,6 +320,214 @@ export const COMMANDS: Record<string, CommandDefinition> = {
           type: "error",
           title: `${ICONS.cross} Config Error`,
           text: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  },
+
+  models: {
+    name: "models",
+    description: "Inspect available models and switch the generator",
+    usage: "/models [model-id]",
+    execute: async (args, ctx) => {
+      const requested = args.join(" ").trim();
+      const loaded = await loadConfig(ctx.cwd, ctx.configPath);
+      if (!loaded) {
+        ctx.addFeedItem({
+          type: "info",
+          title: `${ICONS.hexagon} No configuration`,
+          text: "No Lattice config found in this project. Run lattice init first, then /models.",
+        });
+        return;
+      }
+
+      const active = loaded.config.models?.generator ?? loaded.config.model;
+      const baseUrl = active?.baseUrl;
+      if (!baseUrl) {
+        ctx.addFeedItem({
+          type: "error",
+          title: `${ICONS.cross} No model endpoint configured`,
+          text: "The config has no model or models.generator entry. Add one before selecting a model.",
+        });
+        return;
+      }
+
+      // Real provider discovery — never a hardcoded list.
+      const available = await listAvailableModels(baseUrl, {});
+      const readiness = await checkModelReadiness(loaded.config, {});
+
+      if (requested) {
+        if (!available.length) {
+          ctx.addFeedItem({
+            type: "error",
+            title: `${ICONS.cross} Cannot verify that model`,
+            text: `${baseUrl} did not publish a model list, so '${requested}' cannot be validated.\nInstall it first, then re-run /models.`,
+          });
+          return;
+        }
+        if (!available.some((id) => id === requested || id.startsWith(`${requested}:`))) {
+          ctx.addFeedItem({
+            type: "error",
+            title: `${ICONS.cross} Model not available`,
+            text:
+              `'${requested}' is not served by ${baseUrl}.\n` +
+              `available: ${available.join(", ")}\n` +
+              `/models alone lists them; nothing was changed.`,
+          });
+          return;
+        }
+
+        const next = {
+          ...loaded.config,
+          model: { ...active, model: requested },
+          models: loaded.config.models ? { ...loaded.config.models } : undefined,
+        };
+        const path = await writeConfig(next, { cwd: ctx.cwd, path: loaded.path, force: true });
+        await ctx.reloadConfig();
+        ctx.addFeedItem({
+          type: "info",
+          title: `${ICONS.check} Generator model set`,
+          text: `${path} now uses '${requested}'.\nRe-validated without restarting.`,
+        });
+        return;
+      }
+
+      const current = readiness.roles.find((role) => role.role !== "decision") ?? readiness.roles[0];
+      const lines = available.length
+        ? available.map((id) => {
+            const isCurrent = id === (current?.modelId ?? "");
+            const caps = readiness.roles.find((r) => r.modelId === id)?.capabilities ?? [];
+            const note = caps.length ? `  (${caps.slice(0, 3).join(", ")})` : "";
+            return `  ${isCurrent ? `${ICONS.pointer} ` : "  "}${id}${isCurrent ? "  ← current" : ""}${note}`;
+          })
+        : [`  ${baseUrl} did not publish a model list`];
+
+      lines.push("", `Role readiness:`, ...readiness.roles.map((role) => `  ${role.status === "ok" ? ICONS.check : ICONS.warn} ${role.role.padEnd(10)} ${role.message.split("\n")[0]}`));
+
+      // Execution-target registry: the exact transport each model is reachable on.
+      const registry = await registerTargetsFromLiveOllama(baseUrl, fetch, {
+        roles: ["decision", "generator", "coding-worker", "verifier", "benchmark-executor"],
+      });
+      const targets = registry.list();
+      const unique = new Map<string, (typeof targets)[number]>();
+      for (const target of targets) unique.set(`${target.modelId}::${target.transport}`, target);
+      if (unique.size) {
+        lines.push("", "Execution targets:");
+        for (const target of unique.values()) {
+          const usable = targetSupportsRole(target, target.role) ? ICONS.check : ICONS.warn;
+          lines.push(
+            `  ${usable} ${target.modelId.padEnd(22)} ${target.role.padEnd(19)} via ${target.transport}`,
+          );
+        }
+      }
+      for (const role of ["decision", "generator"] as const) {
+        try {
+          const chosen = registry.select(role);
+          lines.push(`  ${ICONS.check} ${role} dispatches to ${chosen.modelId} over ${chosen.transport}`);
+        } catch (error) {
+          lines.push(`  ${ICONS.cross} ${role} has no eligible target: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      lines.push("", "/models <id> selects a listed model and re-validates immediately.");
+      lines.push("/colab inspects remote batch sessions and recovered artifacts.");
+
+      ctx.addFeedItem({
+        type: "info",
+        title: `${ICONS.hexagon} Models at ${baseUrl} (${available.length})`,
+        text: lines.join("\n"),
+        data: { available, readiness, targets: [...unique.values()] },
+      });
+    },
+  },
+
+  colab: {
+    name: "colab",
+    description: "Inspect live Colab sessions, usage and recovered artifacts",
+    usage: "/colab",
+    execute: async (_args, ctx) => {
+      ctx.addFeedItem({
+        type: "info",
+        title: `${ICONS.clock} Inspecting Colab…`,
+        text: "Discovering live sessions through the official colab CLI.",
+      });
+      try {
+        const client = new ColabClient();
+        const lines: string[] = [];
+        let sessions: ColabSession[] = [];
+        let usage;
+        try {
+          sessions = client.sessions();
+        } catch (error) {
+          lines.push(`${ICONS.cross} colab CLI unavailable: ${error instanceof Error ? error.message : String(error)}`);
+          lines.push("  Colab is an optional remote batch backend; local execution is unaffected.");
+        }
+        try {
+          usage = client.usage();
+        } catch {
+          /* usage is advisory; a missing balance must not fail the command */
+        }
+
+        if (sessions.length) {
+          lines.push(`Live sessions (${sessions.length}):`);
+          for (const session of sessions) {
+            const status = client.status(session.name);
+            const state = status.stale ? "stale" : session.accelerator.toUpperCase();
+            lines.push(`  ${ICONS.bullet} ${session.name.padEnd(20)} ${session.acceleratorLabel.padEnd(6)} ${state}`);
+          }
+        } else {
+          lines.push(`${ICONS.bullet} No live Colab sessions.`);
+        }
+
+        if (usage) {
+          lines.push(
+            "",
+            `Compute units: balance ${usage.balanceUnits}, rate ${usage.usageRatePerHour}/hr, active assignments ${usage.activeAssignments}.`,
+          );
+        }
+
+        // Scheduling policy preview against the live session set.
+        const probes: Array<[WorkloadKind, string]> = [
+          ["test", "compilers, tests and verification"],
+          ["decision-inference", "cheap decision inference"],
+          ["training", "GPU-only training"],
+        ];
+        lines.push("", "Scheduler preview:");
+        for (const [kind, label] of probes) {
+          const decision = schedule({ kind, accelerationBenefit: kind === "training" ? 1 : 0 }, {
+            sessions,
+            usage,
+            computeUnitBudget: Number(process.env.LATTICE_CU_BUDGET ?? "") || undefined,
+            approvedForPaidResources: process.env.LATTICE_COLAB_APPROVED === "1",
+          });
+          lines.push(
+            `  ${decision.requiresApproval ? ICONS.warn : ICONS.check} ${kind.padEnd(20)} → ${decision.backend.padEnd(14)} ${label}` +
+              `${decision.reuseSession ? ` (reuse ${decision.reuseSession})` : ""}`,
+          );
+        }
+
+        const store = new ArtifactStore({ root: join(ctx.cwd, ".colab-artifacts") });
+        const records = store.allRecords();
+        if (records.length) {
+          lines.push("", `Recovered experiments (${records.length}):`);
+          for (const record of records) {
+            lines.push(`  ${ICONS.bullet} ${record.session}/${record.kind}: ${record.outcome} — ${record.reason}`);
+          }
+        } else {
+          lines.push("", "No recovered artifacts recorded in this project yet.");
+        }
+        lines.push("", "New paid Colab compute always requires explicit approval; nothing is provisioned implicitly.");
+
+        ctx.addFeedItem({
+          type: "info",
+          title: `${ICONS.hexagon} Colab remote batch`,
+          text: lines.join("\n"),
+          data: { sessions, usage },
+        });
+      } catch (error) {
+        ctx.addFeedItem({
+          type: "error",
+          title: `${ICONS.cross} Colab inspection failed`,
+          text: error instanceof Error ? error.message : String(error),
         });
       }
     },
