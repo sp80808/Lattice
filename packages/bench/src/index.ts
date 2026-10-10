@@ -14,13 +14,14 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { runTask } from "@lattice/core";
-import { runCommand, type CommandSpec } from "@lattice/execution";
+import { runCommand, type CommandSpec, type CommandResult } from "@lattice/execution";
 import {
   UNKNOWN_CHOICE_ID,
   type DecisionProvider,
   type DecisionRequest,
   type DecisionResult,
   type GeneratorProvider,
+  type ProviderUsage,
 } from "@lattice/protocol";
 import { RandomDecisionProvider } from "@lattice/providers";
 import { createDecisionProvider, loadLatticeConfig } from "@lattice/runtime";
@@ -60,6 +61,15 @@ export interface BenchVerify {
   expectStdout?: string;
 }
 
+export type TaskDifficulty = "easy" | "medium" | "hard";
+
+/** Optional task metadata, following Terminal-Bench's category/difficulty annotations. */
+export interface TaskMetadata {
+  /** Free-form domain tag, e.g. "software", "languages". Purely descriptive. */
+  category?: string;
+  difficulty?: TaskDifficulty;
+}
+
 export interface BenchTaskSpec {
   id: string;
   description?: string;
@@ -68,6 +78,7 @@ export interface BenchTaskSpec {
   requires?: string[];
   verify: BenchVerify;
   candidates: BenchCandidate[];
+  metadata?: TaskMetadata;
 }
 
 export interface BenchTask extends BenchTaskSpec {
@@ -126,6 +137,21 @@ function validateSpec(spec: unknown, path: string): BenchTaskSpec {
     }
   }
   if (solvers !== 1) fail(`exactly one candidate must set solves (found ${solvers})`);
+
+  if (value.metadata !== undefined) {
+    const metadata = value.metadata;
+    if (metadata.category !== undefined && (typeof metadata.category !== "string" || !metadata.category.trim())) {
+      fail("metadata.category must be a non-empty string");
+    }
+    if (
+      metadata.difficulty !== undefined &&
+      metadata.difficulty !== "easy" &&
+      metadata.difficulty !== "medium" &&
+      metadata.difficulty !== "hard"
+    ) {
+      fail("metadata.difficulty must be 'easy', 'medium', or 'hard'");
+    }
+  }
   return value as BenchTaskSpec;
 }
 
@@ -303,6 +329,19 @@ function scripted(
 // ---------------------------------------------------------------------------
 // One trial
 
+/**
+ * Failure classification, following Terminal-Bench's command/trajectory error
+ * taxonomy. Terminal-Bench found "executable not installed / not in PATH" was
+ * the single most common command failure (24.1%), so it is tracked separately
+ * from an ordinary verifier failure.
+ */
+export type FailureKind =
+  | "invalid-edit"
+  | "command-not-found"
+  | "timeout"
+  | "verifier-failed"
+  | "no-experiment";
+
 export interface TrialMetrics {
   solved: boolean;
   status: string;
@@ -314,6 +353,12 @@ export interface TrialMetrics {
   patchesApplied: number;
   /** Edit attempts whose target file or text did not exist: a proxy for hallucinated repo claims. */
   invalidEdits: number;
+  /** Tokens billed by decision/generator providers across the trial (0 for scripted strategies). */
+  tokens: number;
+  /** Provider-reported cost in USD (0 when the provider does not report cost). */
+  costUsd: number;
+  /** Classification of the last failure; unset when solved. */
+  failureKind?: FailureKind;
   wallMs: number;
   executed: string[];
 }
@@ -348,18 +393,28 @@ async function runTrial(options: TrialOptions): Promise<TrialMetrics> {
     let patchesApplied = 0;
     let invalidEdits = 0;
     let solved = false;
+    let tokens = 0;
+    let costUsd = 0;
+    let lastFailure: FailureKind | undefined;
+
+    const trackUsage = (usage: ProviderUsage | undefined) => {
+      tokens += usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+      costUsd += usage?.costUsd ?? 0;
+    };
 
     const generator: GeneratorProvider = {
-      async generate() {
+      async generate(request) {
         const untried = task.candidates.filter((candidate) => !tried.has(candidate.id));
         const offered = (untried.length ? untried : task.candidates).map(
           ({ id, label, action, expectedEvidence, estimatedCost }) => ({ id, label, action, expectedEvidence, estimatedCost }),
         );
-        return {
+        const result = {
           text: JSON.stringify({ candidates: offered }),
           identity: { provider: "bench-scripted" },
           usage: { latencyMs: 0 },
         };
+        trackUsage(result.usage);
+        return result;
       },
     };
 
@@ -370,7 +425,9 @@ async function runTrial(options: TrialOptions): Promise<TrialMetrics> {
     const decision: DecisionProvider = {
       async decide(request) {
         decisionCalls++;
-        return base.decide(request);
+        const result = await base.decide(request);
+        trackUsage(result.usage);
+        return result;
       },
     };
 
@@ -387,6 +444,7 @@ async function runTrial(options: TrialOptions): Promise<TrialMetrics> {
           const original = await readFile(path, "utf8").catch(() => undefined);
           if (original === undefined || !original.includes(spec.patch.find)) {
             invalidEdits++;
+            lastFailure = "invalid-edit";
             return {
               candidateId: candidate.id,
               status: "failure",
@@ -405,6 +463,7 @@ async function runTrial(options: TrialOptions): Promise<TrialMetrics> {
         const { ok, result } = await passes(task, work, tools);
         if (!ok) await restore?.();
         solved ||= ok;
+        if (!ok) lastFailure = classifyVerifierFailure(result);
         return {
           candidateId: candidate.id,
           status: ok ? "success" : "failure",
@@ -448,12 +507,25 @@ async function runTrial(options: TrialOptions): Promise<TrialMetrics> {
       decisionCalls,
       patchesApplied,
       invalidEdits,
+      tokens,
+      costUsd,
+      failureKind: solved ? undefined : (lastFailure ?? "no-experiment"),
       wallMs: Math.round(performance.now() - started),
       executed,
     };
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+}
+
+/** Classify a failing verifier run: missing executable, timeout, or ordinary failure. */
+function classifyVerifierFailure(result: CommandResult): FailureKind {
+  if (result.timedOut) return "timeout";
+  // POSIX convention: 127 = command not found; shells/shells-less spawns also surface ENOENT.
+  if (result.exitCode === 127 || /ENOENT|command not found|not found/i.test(result.stderr)) {
+    return "command-not-found";
+  }
+  return "verifier-failed";
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +542,10 @@ export interface BenchOptions {
   /** Decision provider for the `configured` strategy (a real model). */
   configured?: DecisionProvider;
   configuredDescription?: string;
+  /** Trials that may run concurrently. Default 1 (fully sequential). */
+  concurrency?: number;
+  /** pass@k values to compute per task, e.g. [1, 5]. Default: [1] plus 5 when trials >= 5. */
+  passAtK?: number[];
 }
 
 export interface StrategySummary {
@@ -479,11 +555,32 @@ export interface StrategySummary {
   solveRate: number;
   /** 95% Wilson score interval for solveRate. Wide when runs is small. */
   solveRateCI95: [number, number];
+  /** pass@k per task, averaged over tasks with at least k trials. Empty when every strategy ran once. */
+  passAtK: Array<{ k: number; value: number }>;
   meanExperiments: number;
   meanVerifierRuns: number;
   meanDecisionCalls: number;
+  meanTokens: number;
+  totalCostUsd: number;
+  /** Recorded provider cost per solved run; null when nothing was solved or cost is unreported. */
+  costPerSolved: number | null;
   meanWallMs: number;
   invalidEdits: number;
+  /** Failure-kind histogram over unsolved runs. */
+  failures: Array<{ kind: FailureKind; count: number }>;
+}
+
+export interface TaskStrategySummary {
+  task: string;
+  strategy: StrategyName;
+  runs: number;
+  solved: number;
+  solveRate: number;
+  passAtK: Array<{ k: number; value: number }>;
+  meanVerifierRuns: number;
+  meanTokens: number;
+  costUsd: number;
+  failures: Array<{ kind: FailureKind; count: number }>;
 }
 
 export interface BenchReport {
@@ -491,10 +588,31 @@ export interface BenchReport {
   generatedAt: string;
   suite: { name: string; digest: string; tasks: string[] };
   skipped: Array<{ task: string; reason: string }>;
-  environment: { node: string; platform: string; tsr?: string; tsrRevision?: string; latticeRevision?: string };
-  config: { strategies: StrategyName[]; trials: number; seed: number; maxRounds: number; configured?: string };
+  environment: {
+    node: string;
+    platform: string;
+    tsr?: string;
+    tsrRevision?: string;
+    latticeRevision?: string;
+    concurrency: number;
+  };
+  config: {
+    strategies: StrategyName[];
+    trials: number;
+    seed: number;
+    maxRounds: number;
+    concurrency: number;
+    passAtK: number[];
+    configured?: string;
+  };
   note: string;
   summary: StrategySummary[];
+  /** Per-task × per-strategy breakdown; deterministic strategies contribute a single run per task. */
+  byTask: TaskStrategySummary[];
+  /** Solve-rate rollup by task metadata difficulty ("unrated" when absent). */
+  byDifficulty: Array<{ difficulty: TaskDifficulty | "unrated"; runs: number; solved: number; solveRate: number }>;
+  /** Comparison against a baseline report, when one was supplied. */
+  comparison?: BenchmarkComparison;
   results: BenchResult[];
 }
 
@@ -521,13 +639,65 @@ export function wilson95(successes: number, n: number): [number, number] {
 
 const mean = (values: number[]) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0);
 
+/**
+ * Unbiased pass@k estimator (Chen et al., 2021): the probability that at least
+ * one of k sampled trials succeeds, estimated from n trials with c successes.
+ * Returns NaN when there are fewer than k trials — the caller must not average
+ * those in.
+ */
+export function passAtK(n: number, c: number, k: number): number {
+  if (k <= 0 || n <= 0) return Number.NaN;
+  if (n < k) return Number.NaN;
+  if (c === 0) return 0;
+  if (n - c < k) return 1;
+  let miss = 1;
+  for (let i = 0; i < k; i++) miss *= (n - c - i) / (n - i);
+  return 1 - miss;
+}
+
+function passAtKSummary(rows: BenchResult[], ks: number[]): Array<{ k: number; value: number }> {
+  const n = rows.length;
+  const c = rows.filter((row) => row.solved).length;
+  return ks
+    .map((k) => ({ k, value: passAtK(n, c, k) }))
+    .filter((entry) => Number.isFinite(entry.value));
+}
+
+function failureHistogram(rows: BenchResult[]): Array<{ kind: FailureKind; count: number }> {
+  const counts = new Map<FailureKind, number>();
+  for (const row of rows) {
+    if (row.solved) continue;
+    const kind = row.failureKind ?? "no-experiment";
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count);
+}
+
+/** Run `items` through `fn` with at most `limit` in flight, resolving results in input order. */
+async function runPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export async function runBenchmark(suite: BenchSuite, options: BenchOptions = {}): Promise<BenchReport> {
   const strategies = options.strategies ?? [...OFFLINE_STRATEGIES];
   const trials = options.trials ?? 40;
   const seed = options.seed ?? 1;
   // Half the candidate budget: a strategy that wastes rounds should be able to fail, not just be slower.
   const maxRounds = options.maxRounds ?? 2;
+  const concurrency = options.concurrency ?? 1;
+  const passK = options.passAtK ?? [1, ...(trials >= 5 ? [5] : [])];
   if (!Number.isInteger(trials) || trials < 1) throw new Error("trials must be a positive integer");
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("concurrency must be a positive integer");
   if (strategies.includes("configured") && !options.configured) {
     throw new Error("strategy `configured` needs a decision provider (pass --config with a model)");
   }
@@ -548,42 +718,94 @@ export async function runBenchmark(suite: BenchSuite, options: BenchOptions = {}
     if (unknown.length) throw new Error(`unknown task(s): ${unknown.join(", ")}`);
   }
 
-  const results: BenchResult[] = [];
+  interface Job {
+    task: BenchTask;
+    strategy: StrategyName;
+    trial: number;
+    seed: number;
+  }
+  const jobs: Job[] = [];
   for (const task of tasks) {
     for (const strategy of strategies) {
       // Deterministic strategies give identical results on every repeat, so they run once.
       // `random` varies with the seed and `configured` (a real model) is nondeterministic.
       const repeats = strategy === "random" || strategy === "configured" ? trials : 1;
       for (let trial = 0; trial < repeats; trial++) {
-        const trialSeed = seed + trial;
-        const metrics = await runTrial({
-          task,
-          strategy,
-          seed: trialSeed,
-          tools,
-          maxRounds,
-          configured: options.configured,
-        });
-        results.push({ task: task.id, strategy, trial, seed: trialSeed, ...metrics });
+        jobs.push({ task, strategy, trial, seed: seed + trial });
       }
     }
   }
 
+  // Trials are independent (own temp dirs, per-trial seeds), so they parallelize
+  // safely; results are placed back into job order, keeping reports deterministic.
+  const metrics = await runPool(jobs, concurrency, (job) =>
+    runTrial({
+      task: job.task,
+      strategy: job.strategy,
+      seed: job.seed,
+      tools,
+      maxRounds,
+      configured: options.configured,
+    }),
+  );
+  const results: BenchResult[] = jobs.map((job, index) => ({
+    task: job.task.id,
+    strategy: job.strategy,
+    trial: job.trial,
+    seed: job.seed,
+    ...metrics[index]!,
+  }));
+
   const summary: StrategySummary[] = strategies.map((strategy) => {
     const rows = results.filter((row) => row.strategy === strategy);
+    const solved = rows.filter((row) => row.solved).length;
+    const cost = rows.reduce((total, row) => total + row.costUsd, 0);
     return {
       strategy,
       runs: rows.length,
-      solved: rows.filter((row) => row.solved).length,
-      solveRate: rows.length ? rows.filter((row) => row.solved).length / rows.length : 0,
-      solveRateCI95: wilson95(rows.filter((row) => row.solved).length, rows.length),
+      solved,
+      solveRate: rows.length ? solved / rows.length : 0,
+      solveRateCI95: wilson95(solved, rows.length),
+      meanTokens: mean(rows.map((row) => row.tokens)),
+      totalCostUsd: cost,
+      costPerSolved: solved > 0 && cost > 0 ? cost / solved : null,
       meanExperiments: mean(rows.map((row) => row.experiments)),
       meanVerifierRuns: mean(rows.map((row) => row.verifierRuns)),
       meanDecisionCalls: mean(rows.map((row) => row.decisionCalls)),
       meanWallMs: mean(rows.map((row) => row.wallMs)),
       invalidEdits: rows.reduce((total, row) => total + row.invalidEdits, 0),
+      passAtK: passAtKSummary(rows, passK),
+      failures: failureHistogram(rows),
     };
   });
+
+  const byTask: TaskStrategySummary[] = tasks.flatMap((task) =>
+    strategies.map((strategy) => {
+      const rows = results.filter((row) => row.task === task.id && row.strategy === strategy);
+      return {
+        task: task.id,
+        strategy,
+        runs: rows.length,
+        solved: rows.filter((row) => row.solved).length,
+        solveRate: rows.length ? rows.filter((row) => row.solved).length / rows.length : 0,
+        passAtK: passAtKSummary(rows, passK),
+        meanVerifierRuns: mean(rows.map((row) => row.verifierRuns)),
+        meanTokens: mean(rows.map((row) => row.tokens)),
+        costUsd: rows.reduce((total, row) => total + row.costUsd, 0),
+        failures: failureHistogram(rows),
+      };
+    }),
+  );
+
+  const byDifficulty = new Map<TaskDifficulty | "unrated", { runs: number; solved: number }>();
+  for (const task of tasks) {
+    const difficulty = task.metadata?.difficulty ?? "unrated";
+    const bucket = byDifficulty.get(difficulty) ?? { runs: 0, solved: 0 };
+    const rows = results.filter((row) => row.task === task.id);
+    bucket.runs += rows.length;
+    bucket.solved += rows.filter((row) => row.solved).length;
+    byDifficulty.set(difficulty, bucket);
+  }
 
   const tsrRoot = tools.tsr ? resolve(dirname(tools.tsr), "..", "..") : undefined;
   return {
@@ -597,14 +819,109 @@ export async function runBenchmark(suite: BenchSuite, options: BenchOptions = {}
       tsr: tools.tsr,
       tsrRevision: tsrRoot ? await gitRevision(tsrRoot) : undefined,
       latticeRevision: await gitRevision(suite.dir),
+      concurrency,
     },
-    config: { strategies, trials, seed, maxRounds, configured: options.configuredDescription },
+    config: {
+      strategies,
+      trials,
+      seed,
+      maxRounds,
+      concurrency,
+      passAtK: passK,
+      configured: options.configuredDescription,
+    },
     note:
       "Generator and executor are deterministic stand-ins; only the decision strategy varies. " +
       "These numbers measure orchestration logic, not model quality (use the `configured` strategy for that).",
     summary,
+    byTask,
+    byDifficulty: [...byDifficulty].map(([difficulty, bucket]) => ({
+      difficulty,
+      runs: bucket.runs,
+      solved: bucket.solved,
+      solveRate: bucket.runs ? bucket.solved / bucket.runs : 0,
+    })),
     results,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Report comparison (regression gate for CI)
+
+export interface StrategyDelta {
+  strategy: StrategyName;
+  baselineSolveRate: number;
+  candidateSolveRate: number;
+  baselineRuns: number;
+  candidateRuns: number;
+  delta: number;
+  regressed: boolean;
+}
+
+export interface BenchmarkComparison {
+  /** Solve-rate drops larger than the tolerance. */
+  regressions: StrategyDelta[];
+  /** Solve-rate gains larger than the tolerance. */
+  improvements: StrategyDelta[];
+  /** Suite digest changed between baseline and candidate: the task set is not the same. */
+  suiteChanged: boolean;
+  tolerance: number;
+}
+
+/**
+ * Compare a candidate report against a baseline report per strategy. A strategy
+ * present in both is "regressed" when its solve rate drops by more than the
+ * tolerance (default 0: on a deterministic suite any drop is real). Strategies
+ * missing from the candidate are reported as fully regressed so a removed
+ * strategy cannot silently pass a gate.
+ */
+export function compareBenchReports(
+  baseline: BenchReport,
+  candidate: BenchReport,
+  tolerance = 0,
+): BenchmarkComparison {
+  const regressions: StrategyDelta[] = [];
+  const improvements: StrategyDelta[] = [];
+  const baselineRows = new Map(baseline.summary.map((row) => [row.strategy, row]));
+  const candidateRows = new Map(candidate.summary.map((row) => [row.strategy, row]));
+
+  for (const [strategy, base] of baselineRows) {
+    const next = candidateRows.get(strategy);
+    const candidateRate = next?.solveRate ?? 0;
+    const delta = candidateRate - base.solveRate;
+    const entry: StrategyDelta = {
+      strategy,
+      baselineSolveRate: base.solveRate,
+      candidateSolveRate: candidateRate,
+      baselineRuns: base.runs,
+      candidateRuns: next?.runs ?? 0,
+      delta,
+      regressed: delta < -tolerance,
+    };
+    (entry.regressed ? regressions : delta > tolerance ? improvements : []).push(entry);
+  }
+
+  return {
+    regressions,
+    improvements,
+    suiteChanged: baseline.suite.digest !== candidate.suite.digest,
+    tolerance,
+  };
+}
+
+export function formatComparison(comparison: BenchmarkComparison): string {
+  const lines: string[] = [];
+  if (comparison.suiteChanged) lines.push("warning: suite digest changed; baseline and candidate measured different tasks");
+  for (const item of [...comparison.regressions, ...comparison.improvements]) {
+    const pct = (value: number) => `${Math.round(value * 100)}%`;
+    const arrow = item.regressed ? "REGRESSED" : "improved";
+    lines.push(
+      `${arrow} ${item.strategy}: ${pct(item.baselineSolveRate)} -> ${pct(item.candidateSolveRate)} ` +
+        `(${item.delta >= 0 ? "+" : ""}${(item.delta * 100).toFixed(1)}pp, tolerance ${pct(comparison.tolerance)})`,
+    );
+  }
+  if (!lines.length) lines.push("no strategy changed beyond tolerance");
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

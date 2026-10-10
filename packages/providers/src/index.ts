@@ -276,6 +276,131 @@ export class OpenAICompatibleDecisionProvider implements DecisionProvider {
   }
 }
 
+export interface SystemOneConfig {
+  baseUrl: string;
+  model: string;
+  keepAlive?: string;
+  timeoutMs?: number;
+  fetchImpl?: FetchLike;
+  providerName?: string;
+}
+
+export class SystemOneDecisionProvider implements DecisionProvider {
+  constructor(private readonly config: SystemOneConfig) {}
+
+  async decide(request: DecisionRequest): Promise<DecisionResult> {
+    const started = performance.now();
+    const choices = ensureChoices(request);
+    const ids = choices.map((c) => c.id);
+
+    const criteria: Record<string, string> = {};
+    for (const c of choices) {
+      if (c.id === UNKNOWN_CHOICE_ID) {
+        criteria[c.id] =
+          "No supplied choice applies or evidence is insufficient to decide.";
+      } else {
+        criteria[c.id] = c.detail ?? c.label ?? c.id;
+      }
+    }
+
+    const state =
+      typeof request.state === "string"
+        ? request.state
+        : request.state !== undefined
+          ? JSON.stringify(request.state)
+          : "";
+
+    const body = {
+      model: this.config.model,
+      state,
+      questions: {
+        next_action: {
+          type: "choice",
+          instructions: request.question,
+          criteria,
+        },
+      },
+      keep_alive: this.config.keepAlive ?? "30m",
+    };
+
+    const url = `${this.config.baseUrl.replace(/\/+$/, "")}/v1/systemone`;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      this.config.timeoutMs ?? 30_000,
+    );
+
+    try {
+      const fetchImpl = this.config.fetchImpl ?? fetch;
+      const response = await fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(
+          `SystemOne decision request failed: ${response.status} ${response.statusText}: ${text.slice(0, 500)}`,
+        );
+      }
+
+      const json = (await response.json()) as {
+        answers?: {
+          next_action?: {
+            choice?: string;
+            probabilities?: Record<string, number>;
+            confidence?: number;
+          };
+        };
+        usage?: {
+          input_tokens?: number;
+          output_tokens?: number;
+        };
+      };
+
+      const ans = json.answers?.next_action;
+      const selectedId = ans?.choice;
+      if (!selectedId || !ids.includes(selectedId)) {
+        throw new Error(
+          `Decision provider selected unknown choice ID: ${selectedId ?? "none"}`,
+        );
+      }
+
+      const rawScores = ans?.probabilities ?? {};
+      const scores = normalizeScores(ids, rawScores);
+      const scoreMax = Math.max(...Object.values(scores));
+      const confidence =
+        scoreMax > 0
+          ? scoreMax
+          : ans?.confidence !== undefined
+            ? Math.min(ans.confidence, 1)
+            : undefined;
+
+      return {
+        selected: [selectedId],
+        scores,
+        confidence,
+        entropy: entropy(scores),
+        identity: {
+          provider: this.config.providerName ?? "systemone",
+          model: this.config.model,
+        },
+        usage: {
+          latencyMs: performance.now() - started,
+          inputTokens: json.usage?.input_tokens,
+          outputTokens: json.usage?.output_tokens,
+          totalTokens:
+            (json.usage?.input_tokens ?? 0) + (json.usage?.output_tokens ?? 0),
+        },
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
 export class OpenAICompatibleGeneratorProvider implements GeneratorProvider {
   constructor(private readonly config: OpenAICompatibleConfig) {}
 

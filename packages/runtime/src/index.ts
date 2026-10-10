@@ -11,16 +11,18 @@ import type {
   AutonomyMode,
   DecisionReviewer,
 } from "@lattice/search";
+import type { DecisionProvider } from "@lattice/protocol";
 import {
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
+  SystemOneDecisionProvider,
   type OpenAICompatibleConfig,
 } from "@lattice/providers";
 
 export type RuntimeMode = "auto" | "observe";
 
 export interface ModelEndpointConfig {
-  provider?: "openai-compatible";
+  provider?: "openai-compatible" | "systemone";
   baseUrl: string;
   model: string;
   apiKeyEnv?: string;
@@ -102,7 +104,8 @@ function validateModel(value: unknown, field: string): ModelEndpointConfig {
   }
   if (
     value.provider !== undefined &&
-    value.provider !== "openai-compatible"
+    value.provider !== "openai-compatible" &&
+    value.provider !== "systemone"
   ) {
     throw new Error(`${field}.provider is not supported yet`);
   }
@@ -258,11 +261,16 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
 /** Decision provider for `models.decision ?? model`, or undefined when unconfigured. */
 export function createDecisionProvider(
   config: LatticeConfig,
-): OpenAICompatibleDecisionProvider | undefined {
+): DecisionProvider | undefined {
   const model = config.models?.decision ?? config.model;
-  return model
-    ? new OpenAICompatibleDecisionProvider(endpointConfig(model))
-    : undefined;
+  if (!model) return undefined;
+  return model.provider === "systemone"
+    ? new SystemOneDecisionProvider({
+        baseUrl: model.baseUrl,
+        model: model.model,
+        timeoutMs: model.timeoutMs,
+      })
+    : new OpenAICompatibleDecisionProvider(endpointConfig(model));
 }
 
 export function createRunTaskOptions(
@@ -298,9 +306,14 @@ export function createRunTaskOptions(
     );
   }
 
-  const decision = new OpenAICompatibleDecisionProvider(
-    endpointConfig(decisionModel!),
-  );
+  const decision =
+    decisionModel?.provider === "systemone"
+      ? new SystemOneDecisionProvider({
+          baseUrl: decisionModel.baseUrl,
+          model: decisionModel.model,
+          timeoutMs: decisionModel.timeoutMs,
+        })
+      : new OpenAICompatibleDecisionProvider(endpointConfig(decisionModel!));
   const generator = new OpenAICompatibleGeneratorProvider(
     endpointConfig(generatorModel!),
   );
