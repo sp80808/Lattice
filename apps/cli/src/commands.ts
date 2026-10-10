@@ -46,6 +46,7 @@ import {
   type InitPreset,
 } from "@lattice/service";
 import { cliReviewer } from "./reviewer.js";
+import { renderVerification, verificationRecords } from "@lattice/tessera";
 
 /** Thrown for bad invocations; the dispatcher prints usage and exits 2. */
 export class UsageError extends Error {}
@@ -303,7 +304,10 @@ export async function runsCommand(args: string[]): Promise<number> {
 function eventLine(event: RunEvent): string {
   const payload = event.payload as Record<string, unknown> | undefined;
   const detail = typeof payload?.tool === "string" ? payload.tool : typeof payload?.type === "string" ? payload.type : "";
-  return `${String(event.seq).padStart(4)}  ${when(event.at)}  ${event.type.padEnd(20)} ${detail}`;
+  return [
+    `${String(event.seq).padStart(4)}  ${when(event.at)}  ${event.type.padEnd(20)} ${detail}`,
+    ...verificationRecords(payload).map(record => renderVerification(record).replace(/^/gm, "  ")),
+  ].join("\n");
 }
 
 function printRun(run: RunDetail): void {
@@ -369,7 +373,16 @@ export async function showCommand(args: string[]): Promise<number> {
 
   const run = await getRun(id, cwd);
   if (values.json) printJson(run);
-  else printRun(run);
+  else {
+    printRun(run);
+    const records = (await getRunEvents(run.runId, cwd))
+      .filter(event => event.type === "tool.completed")
+      .flatMap(event => verificationRecords(event.payload));
+    if (records.length) {
+      console.log(`Tessera evidence: ${records.length} check(s), showing the latest ${Math.min(5, records.length)}`);
+      for (const record of records.slice(-5)) console.log(renderVerification(record));
+    }
+  }
   return 0;
 }
 

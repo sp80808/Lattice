@@ -114,3 +114,35 @@ writes the same report as JSON, including every trial result and provenance
 Keep fixtures small and deterministic: the suite digest fingerprints task
 specs and fixture files, and the regression gate compares digests to warn when
 baseline and candidate measured different task sets.
+
+## Decision routing measurements
+
+The separate Python harness measures individual next-action choices rather than
+verified task completion:
+
+```bash
+python3 scripts/decision-bench.py --models qwen3:1.7b@chat tev1:0.8b@systemone
+python3 scripts/decision-bench.py --replay benchmarks/results/decision-bench-*.jsonl
+npm run test:decision
+```
+
+Each live run records a manifest before requests, corpus and harness hashes,
+the selected case IDs, seed, endpoint and ablations. Predictions are flushed
+and synced after each case. Files preserve decimal model names and protocol
+names, and existing outputs are never replaced by a new run. Three consecutive
+request failures stop that model; failed or incomplete live runs exit nonzero.
+
+`accuracy` includes failures across attempted cases. `requestErrorRate` measures
+HTTP, connection and timeout failures; `invalidResponseRate` measures malformed
+model output and choices outside the offered set. `responseAccuracy` excludes
+both failure types and is diagnostic only: it cannot establish a successful
+run or justify promotion. Unattempted cases and per-family failures are explicit.
+
+Replay makes no endpoint calls and preserves source predictions. It recomputes
+choice correctness against matching corpus metadata and records source hashes.
+Legacy predictions lack original corpus/prompt hashes and planned case counts;
+replay leaves those unknown rather than inferring complete execution from the
+current corpus. Use `--corpus` to select the appropriate frozen dataset.
+
+See the [2026-10-10 reanalysis](research/2026-10-10-decision-benchmark-reanalysis.md)
+for measured results and the synthetic corpus limitations.

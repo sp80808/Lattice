@@ -21,12 +21,14 @@ import {
   renderAttempts,
   renderDiagnostics,
   renderVerdict,
+  renderVerification,
   repairProposal,
   replayVerification,
   summarize,
   verificationEvidence,
   runWitness,
   witnessSuggestions,
+  verificationRecords,
   type RepairRunReport,
   type TesseraVerificationRecord,
   type WitnessDocument,
@@ -260,6 +262,67 @@ test("each rejected attempt carries its own verdict", async () => {
   assert.ok(text.indexOf("E-syntax-foreign") < text.indexOf("returned 6"), "in order, paired with its source");
   assert.equal(renderAttempts([]), undefined);
   assert.match(renderAttempts([...attempts, ...attempts], 2)!, /2 earlier attempts omitted/);
+});
+
+test("diagnostic carets use byte offsets after UTF-8 and preserve tab stops", () => {
+  const source = "é\tbad\n";
+  const rendered = renderDiagnostics(source, [{ phase: "resolve", severity: "error", code: "E-name",
+    message: "unknown name", line: 1, col: 4, span: { start: 3, end: 6 } }]);
+  assert.equal(rendered.split("\n")[2], "  |  \t^^^");
+  const atEnd = renderDiagnostics("é", [{ phase: "syntax", severity: "error", code: "E-missing",
+    message: "missing operand", line: 1, col: 3, span: { start: 2, end: 2 } }]);
+  assert.equal(atEnd.split("\n")[2], "  |  ^");
+});
+
+test("verification presentation distinguishes compilation from recorded behaviour", async () => {
+  const checked = record(await recorded("pass"), 0);
+  assert.match(renderVerdict("", checked), /no behavioural cases recorded/);
+  assert.match(renderVerification(checked), /Witness: pass[\s\S]*Behaviour: not checked/);
+  assert.match(renderVerification(checked), /phase=check[\s\S]*Compiler: 0\.0\.1@/);
+  checked.cases = [{ function: "add", args: ["2", "3"], expect: "5", actual: "5", exitCode: 0, passed: true }];
+  checked.cached = true;
+  assert.match(renderVerification(checked), /cached[\s\S]*1\/1 recorded cases passed/);
+  checked.cases[0]!.actual = "6";
+  checked.cases[0]!.passed = false;
+  assert.match(renderVerification(checked), /0\/1 recorded cases passed[\s\S]*add\(2, 3\) returned 6, expected 5/);
+});
+
+test("verification presentation retains bounded compiler help and tool outcomes", async () => {
+  const foreign = renderVerification(record(await recorded("foreign_syntax"), 1));
+  assert.match(foreign, /Witness: fail[\s\S]*E-syntax-foreign[\s\S]*help:/);
+  assert.match(foreign, /more, likely follow-on errors/);
+  const unsupported = renderVerification(record(await recorded("unsupported"), 3));
+  assert.match(unsupported, /phase=backend[\s\S]*Witness: unsupported[\s\S]*Behaviour: not verified/);
+  const broken = renderVerification(record(await recorded("tool_error"), 4));
+  assert.match(broken, /Witness: tool_error/);
+  assert.doesNotMatch(broken, /Compiler:/);
+});
+
+test("verification presentation rejects corrupt records and terminal escape controls", async () => {
+  const corrupt = record(await recorded("pass"), 0);
+  corrupt.witness.document!.diagnostics.push({ phase: "syntax", severity: "error", code: "E-x", message: "tampered", span: null });
+  const text = renderVerification(corrupt);
+  assert.match(text, /Untrusted saved evidence: result_id mismatch/);
+  assert.doesNotMatch(text, /Witness: pass|cases passed/);
+  assert.match(renderVerification({ ...corrupt, cases: null } as unknown as TesseraVerificationRecord), /untrusted saved evidence/i);
+  const missing = { ...corrupt, witness: { ...corrupt.witness, document: undefined,
+    verdict: { outcome: "tool_error" as const, verified: false, reason: "cannot start\x1b[2J" } } };
+  assert.ok(!renderVerification(missing).includes("\x1b"));
+});
+
+test("replay rejects matching output from a failed process", async () => {
+  const stored = record(await recorded("pass"), 0);
+  stored.cases = [{ function: "add", args: ["2", "3"], expect: "5", actual: "5", exitCode: 1, passed: true }];
+  assert.equal(replayVerification(stored).passed, false);
+  assert.equal(replayVerification(stored).consistent, false);
+  assert.match(renderVerification(stored), /Untrusted saved evidence/);
+});
+
+test("verification records are found in observed and experiment event envelopes", async () => {
+  const stored = record(await recorded("pass"), 0);
+  assert.deepEqual(verificationRecords({ tool: "tessera.witness", record: stored }), [stored]);
+  assert.deepEqual(verificationRecords({ outcome: { records: [stored] } }), [stored]);
+  assert.deepEqual(verificationRecords({ passed: true }), []);
 });
 
 test("the prompt carries the grammar, the current verdict and paired attempts", async () => {

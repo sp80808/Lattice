@@ -23,6 +23,9 @@
     },
     {
       "path": "../../packages/colab"
+    },
+    {
+      "path": "../../packages/tessera"
     }
   ],
   "include": [

@@ -16,6 +16,7 @@ STEPS=(
   "build|npm run build"
   "node tests|npm test"
   "python tests|npm run test:python"
+  "decision benchmark tests|npm run test:decision"
   "examples|npm run test:examples"
 )
 

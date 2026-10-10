@@ -56,7 +56,7 @@ packages/
 ### 3.2. Colab Runner (`@lattice/colab`)
 - Wraps official `colab` CLI (`/Users/user/.local/bin/colab`).
 - Supported operations:
-  - `colab sessions`: verify active runtime (e.g. `lattice-eval` on T4).
+  - `colab sessions`: discover and reconcile active runtimes dynamically (e.g. `lattice-train` on GPU, `lattice-polyglot` on CPU) instead of assuming fixed session IDs.
   - `colab exec -s <session> -f <script> / stdin`: execute remote Python scripts.
   - `colab upload` / `colab download`: transfer datasets and model adapter checkpoints.
   - `colab stop -s <session>`: terminate ephemeral sessions.

@@ -107,12 +107,12 @@ def build_prompt(case):
 def is_correct(case, selected, offered):
     if selected is None:
         return False, 'no_selection'
+    if selected not in offered:
+        return False, 'invalid_choice'
     if selected == ABSTAIN_ID:
         return case['acceptAbstain'], 'abstain' if case['acceptAbstain'] else 'abstain_when_action_required'
     if selected == case['expected']:
         return True, 'correct'
-    if selected not in offered:
-        return False, 'invalid_choice'
     return False, 'wrong_action'
 
 

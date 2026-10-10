@@ -40,6 +40,9 @@
     },
     {
       "path": "../tui"
+    },
+    {
+      "path": "../../packages/tessera"
     }
   ],
   "include": [

@@ -16,6 +16,7 @@
     "@lattice/policy": "0.0.1",
     "@lattice/bench": "0.0.1",
     "@lattice/orchestrator": "0.0.1",
-    "@lattice/tui": "workspace:*"
+    "@lattice/tui": "workspace:*",
+    "@lattice/tessera": "0.0.1"
   }
 }

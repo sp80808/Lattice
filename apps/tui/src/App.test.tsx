@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ import { ICONS, modeColor, nextWorkflow } from "./theme/icons.js";
 import { PromptBar } from "./components/PromptBar.js";
 import { DecisionReviewModal } from "./components/DecisionReviewModal.js";
 import { describeEvent } from "./state/events.js";
+import { EventStream } from "./components/EventStream.js";
+import { renderVerification, classifyWitness, type TesseraVerificationRecord } from "@lattice/tessera";
 import type { ReviewRequest, ReviewOutcome } from "./state/types.js";
 
 async function terminal(element: React.ReactElement, columns = 80, rows = 24) {
@@ -180,4 +182,43 @@ test("event descriptions expose only recorded model, usage and verification meta
   const check = describeEvent({ runId: "r", seq: 2, at: "2026-10-10T00:00:00Z", type: "tool.completed", payload: { result: { command: "node", exitCode: 1, stderr: "private output" } } });
   assert.match(check.text ?? "", /exit=1/);
   assert.doesNotMatch(check.text ?? "", /private output/);
+});
+
+function foreignVerification(): TesseraVerificationRecord {
+  const document = JSON.parse(readFileSync(new URL("../../../packages/tessera/fixtures/foreign_syntax.json", import.meta.url), "utf8"));
+  return { schema: "lattice.tessera-verification/v0", file: "foreign.tes",
+    witness: { command: "tsr", args: ["witness", "foreign.tes"], exitCode: 1,
+      verdict: classifyWitness(document, 1), document, durationMs: 1 }, cases: [] };
+}
+
+test("event descriptions expose Tessera help and ignore untrusted success flags", () => {
+  const record = foreignVerification();
+  const event = { runId: "r", seq: 1, at: "2026-10-10T00:00:00Z", type: "tool.completed" as const,
+    payload: { tool: "tessera.witness", passed: true, record } };
+  const text = describeEvent(event).text ?? "";
+  assert.match(text, /Witness: fail[\s\S]*Behaviour: not verified[\s\S]*E-syntax-foreign[\s\S]*help:/);
+  assert.doesNotMatch(text, /Verification: passed/);
+  record.witness.document!.outcome = "pass";
+  const tampered = describeEvent({ ...event, payload: { outcome: { summary: "all tests passed", records: [record] } } }).text ?? "";
+  assert.match(tampered, /Untrusted saved evidence/);
+  assert.doesNotMatch(tampered, /all tests passed|Witness: pass/);
+  const malformed = describeEvent({ ...event, payload: { tool: "tessera.witness", passed: true,
+    record: { schema: "lattice.tessera-verification/v0", witness: null } } }).text ?? "";
+  assert.match(malformed, /untrusted saved evidence/i);
+  assert.doesNotMatch(malformed, /Verification: passed/);
+});
+
+test("Tessera feedback wraps in a narrow terminal and remains reachable by paging", async () => {
+  const tty = await terminal(<EventStream workflow="build" view="idle" columns={40} height={10}
+    feed={[{ id: "w", type: "event", title: "Tessera evidence", timestamp: new Date(),
+      text: renderVerification(foreignVerification()) }]} />, 40, 12);
+  try {
+    assert.ok(tty.last().trimEnd().split("\n").length <= 10);
+    assert.ok(tty.last().split("\n").every(line => Array.from(line).length <= 40));
+    for (let i = 0; i < 5; i++) await tty.key("\x1b[5~");
+    assert.match(tty.last(), /Earlier activity/);
+    assert.match(tty.last(), /Witness: fail|Tessera evidence/);
+    for (let i = 0; i < 5; i++) await tty.key("\x1b[6~");
+    assert.doesNotMatch(tty.last(), /Earlier activity/);
+  } finally { tty.close(); }
 });

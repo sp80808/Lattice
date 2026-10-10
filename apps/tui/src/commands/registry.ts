@@ -4,6 +4,7 @@ import {
   runDoctor,
   listRuns,
   getRun,
+  getRunEvents,
   getRunChanges,
   loadConfig,
   checkModelReadiness,
@@ -12,6 +13,7 @@ import {
   selectPreferredModel,
 } from "@lattice/service";
 import { registerTargetsFromLiveOllama, targetSupportsRole } from "@lattice/providers";
+import { renderVerification, verificationRecords } from "@lattice/tessera";
 import {
   ArtifactStore,
   ColabClient,
@@ -213,6 +215,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
           return;
         }
 
+        const records = (await getRunEvents(detail.runId, ctx.cwd))
+          .filter(event => event.type === "tool.completed")
+          .flatMap(event => verificationRecords(event.payload));
         const text = [
           `Run ID:     ${detail.runId}`,
           `Task:       ${detail.task ?? "none"}`,
@@ -220,6 +225,10 @@ export const COMMANDS: Record<string, CommandDefinition> = {
           `Evidence:   ${detail.evidence} items collected`,
           `Events:     ${detail.events} total events recorded`,
           `Event Log:  ${detail.logPath}`,
+          ...(records.length ? [
+            `Tessera evidence: ${records.length} check(s), showing the latest ${Math.min(5, records.length)}`,
+            ...records.slice(-5).map(renderVerification),
+          ] : []),
         ].join("\n");
 
         ctx.addFeedItem({

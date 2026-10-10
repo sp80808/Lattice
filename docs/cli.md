@@ -80,6 +80,13 @@ that is still going (for example one submitted to the daemon), printing events
 as they are logged and the final summary when it ends (`--json` prints one
 event per line).
 
+For Tessera runs, `show` also renders the latest five recorded compiler checks,
+including phase, compiler identity, behavioural coverage and diagnostic help.
+`--events` and `--follow` render every check. Saved evidence is rechecked
+offline; corrupt records are labelled untrusted. A compiler pass without
+behavioural cases explicitly says behaviour was not checked. `--json` retains
+the original records.
+
 ## Setup
 
 ### `lattice init`

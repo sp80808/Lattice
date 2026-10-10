@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { classifyWitness } from "@lattice/tessera";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "index.js");
 
@@ -15,6 +16,35 @@ function lattice(...args: string[]) {
   });
   return { code: result.status, stdout: result.stdout, stderr: result.stderr };
 }
+
+test("show presents and rechecks saved Tessera evidence without running a compiler", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-cli-witness-"));
+  const runId = "cf1234";
+  const document = JSON.parse(await readFile(new URL("../../../packages/tessera/fixtures/foreign_syntax.json", import.meta.url), "utf8"));
+  const record = { schema: "lattice.tessera-verification/v0", file: "foreign.tes", cases: [],
+    witness: { command: "compiler-that-does-not-exist", args: ["witness"], exitCode: 1,
+      verdict: classifyWitness(document, 1), document, durationMs: 1 } };
+  await mkdir(join(cwd, ".lattice", "runs"), { recursive: true });
+  const path = join(cwd, ".lattice", "runs", `${runId}.jsonl`);
+  const events = [
+    { type: "run.started", payload: { task: "check syntax", cwd } },
+    { type: "tool.completed", payload: { tool: "tessera.witness", passed: true, record } },
+    { type: "run.completed", payload: { summary: "completed evidence capture" } },
+  ].map((event, index) => ({ ...event, runId, seq: index + 1, at: "2026-10-10T00:00:00Z" }));
+  await writeFile(path, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+  for (const flags of [[], ["--events"], ["--follow"]]) {
+    const result = lattice("show", runId, "-C", cwd, ...flags);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Witness: fail[\s\S]*E-syntax-foreign[\s\S]*help:/);
+  }
+  assert.equal(JSON.parse(lattice("show", runId, "--events", "--json", "-C", cwd).stdout)[1].payload.record.witness.command,
+    "compiler-that-does-not-exist");
+  document.outcome = "pass";
+  await writeFile(path, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+  const tampered = lattice("show", runId, "-C", cwd);
+  assert.match(tampered.stdout, /Untrusted saved evidence/);
+  assert.doesNotMatch(tampered.stdout, /Witness: pass/);
+});
 
 test("help, version and usage errors", () => {
   assert.match(lattice("--help").stdout, /Usage:/);

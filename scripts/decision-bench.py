@@ -18,17 +18,18 @@ Protocols:
   systemone  Ollama-style /systemone typed choice question (tev1's API)
 
 Usage:
-  python3 scripts/decision-bench.py --models qwen3:1.7b tev1:0.8b:systemone
-  python3 scripts/decision-bench.py --models qwen3:1.7b --split holdout --ablation
+  python3 scripts/decision-bench.py --models qwen3:1.7b tev1:0.8b@systemone
+  python3 scripts/decision-bench.py --replay benchmarks/results/decision-bench-*.jsonl
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import math
+import os
 import random
 import re
 import statistics
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -71,7 +72,26 @@ def request(url, body=None, timeout=120):
                 detail = err.read().decode(errors='replace')[:400]
             except Exception:
                 pass
-        return None, round((time.perf_counter() - start) * 1000, 1), f'{err} {detail}'.strip()
+        return None, round((time.perf_counter() - start) * 1000, 1), {
+            'message': f'{err} {detail}'.strip(),
+            'kind': 'invalid_response' if isinstance(err, ValueError) else 'request_error',
+        }
+
+
+def finite_number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def decision_result(selected, scores, confidence, ms, tokens=None, raw=''):
+    if isinstance(selected, list) and len(selected) == 1:
+        selected = selected[0]
+    if (not isinstance(selected, str) or not selected or not isinstance(scores, dict)
+            or any(not finite_number(v) or v < 0 for v in scores.values())
+            or (confidence is not None and (not finite_number(confidence) or not 0 <= confidence <= 1))):
+        return {'ok': False, 'error': 'invalid decision response', 'errorType': 'invalid_response',
+                'latencyMs': ms, 'raw': raw[:200]}
+    return {'ok': True, 'selected': selected, 'scores': scores, 'confidence': confidence,
+            'latencyMs': ms, 'tokens': tokens, 'raw': raw[:200]}
 
 
 def wilson95(successes, n):
@@ -124,26 +144,14 @@ def ask_chat(base_url, model, case, full_set, keep_alive, timeout):
         'response_format': {'type': 'json_object'},
     }, timeout=timeout)
     if err:
-        return {'ok': False, 'error': err, 'latencyMs': ms}
-    content = (((body or {}).get('choices') or [{}])[0].get('message') or {}).get('content') or ''
-    parsed = None
-    match = re.search(r'\{.*\}', content, re.S)
-    if match:
-        try:
-            parsed = json.loads(match.group(0))
-        except ValueError:
-            parsed = None
-    if not isinstance(parsed, dict):
-        return {'ok': False, 'error': 'unparseable decision JSON', 'raw': content[:200], 'latencyMs': ms}
-    selected = parsed.get('selected')
-    selected = selected if isinstance(selected, str) else (selected[0] if isinstance(selected, list) and selected else None)
-    scores = parsed.get('scores') if isinstance(parsed.get('scores'), dict) else {}
-    confidence = parsed.get('confidence') if isinstance(parsed.get('confidence'), (int, float)) else None
-    usage = (body or {}).get('usage') or {}
-    return {
-        'ok': True, 'selected': selected, 'scores': scores, 'confidence': confidence,
-        'latencyMs': ms, 'tokens': usage.get('total_tokens'), 'raw': content[:200],
-    }
+        return {'ok': False, 'error': err['message'], 'errorType': err['kind'], 'latencyMs': ms}
+    try:
+        content = body['choices'][0]['message']['content']
+        parsed = json.loads(content)
+        return decision_result(parsed.get('selected'), parsed.get('scores'), parsed.get('confidence'),
+                               ms, (body.get('usage') or {}).get('total_tokens'), content)
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError):
+        return {'ok': False, 'error': 'unparseable decision JSON', 'errorType': 'invalid_response', 'latencyMs': ms}
 
 
 def ask_systemone(base_url, model, case, full_set, keep_alive, timeout):
@@ -155,42 +163,42 @@ def ask_systemone(base_url, model, case, full_set, keep_alive, timeout):
         'keep_alive': keep_alive,
     }, timeout=timeout)
     if err:
-        return {'ok': False, 'error': err, 'latencyMs': ms}
-    answer = ((body or {}).get('answers') or {}).get('next_action') or {}
-    probs = answer.get('probabilities') if isinstance(answer.get('probabilities'), dict) else {}
-    confidence = answer.get('confidence')
-    return {
-        'ok': True, 'selected': answer.get('choice'), 'scores': probs, 'confidence': confidence,
-        'latencyMs': ms, 'tokens': None, 'raw': json.dumps(answer)[:200],
-    }
+        return {'ok': False, 'error': err['message'], 'errorType': err['kind'], 'latencyMs': ms}
+    try:
+        answer = body['answers']['next_action']
+        return decision_result(answer.get('choice'), answer.get('probabilities'), answer.get('confidence'),
+                               ms, raw=json.dumps(answer))
+    except (KeyError, TypeError, AttributeError):
+        return {'ok': False, 'error': 'invalid SystemOne response', 'errorType': 'invalid_response', 'latencyMs': ms}
 
 
 def is_correct(case, selected, offered):
     if selected is None:
         return False, 'no_selection'
+    if selected not in offered:
+        return False, 'invalid_choice'
     if selected == ABSTAIN_ID:
         return case['acceptAbstain'], 'abstain' if case['acceptAbstain'] else 'abstain_when_action_required'
     if selected == case['expected']:
         return True, 'correct'
-    if selected not in offered:
-        return False, 'invalid_choice'
     return False, 'wrong_action'
 
 
-def run_model(spec, cases, args):
+def run_model(spec, cases, args, output=None):
     # SPEC is `model` or `model@protocol`; model ids may contain colons.
     model, _, protocol = spec.partition('@')
     protocol = protocol or 'chat'
     if protocol not in ('chat', 'systemone'):
         raise SystemExit(f'unknown protocol in spec {spec!r}; expected chat or systemone')
     rows = []
+    consecutive_errors = 0
     for index, case in enumerate(cases, 1):
         offered = choices_for(case, args.full_choice_set)
         ask = ask_systemone if protocol == 'systemone' else ask_chat
         result = ask(args.base_url, model, case, args.full_choice_set, args.keep_alive, args.timeout)
         offered_ids = list(offered)
         if not result['ok']:
-            correct, kind = False, result.get('error', 'error')
+            correct, kind = False, result['errorType']
         else:
             correct, kind = is_correct(case, result['selected'], offered_ids)
         row = {
@@ -201,11 +209,30 @@ def run_model(spec, cases, args):
             'confidence': result.get('confidence'), 'tokens': result.get('tokens'),
             'scores': {k: v for k, v in (result.get('scores') or {}).items() if isinstance(v, (int, float))},
             'error': result.get('error'),
+            'errorType': result.get('errorType'),
         }
         rows.append(row)
+        if output is not None:
+            output.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
+            output.flush()
+            os.fsync(output.fileno())
         if args.verbose:
             print(f"  [{index}/{len(cases)}] {case['id']} {case['family']:<24} expected={case['expected']:<11} got={str(result.get('selected')):<11} {kind}")
+        consecutive_errors = consecutive_errors + 1 if kind == 'request_error' else 0
+        if consecutive_errors >= 3:
+            print(f'  stopped after 3 consecutive request errors: {result["error"]}', file=sys.stderr)
+            break
     return rows
+
+
+def failure_kind(row):
+    if row.get('errorType'):
+        return row['errorType']
+    if row['kind'] in ('invalid_choice', 'no_selection', 'unparseable decision JSON', 'invalid_response'):
+        return 'invalid_response'
+    if row.get('error') or row['kind'] == 'request_error':
+        return 'request_error'
+    return 'decision'
 
 
 def summarize(rows, cases):
@@ -213,14 +240,17 @@ def summarize(rows, cases):
     if not n:
         return {}
     correct = sum(1 for r in rows if r['correct'])
+    request_errors = sum(failure_kind(r) == 'request_error' for r in rows)
+    invalid = sum(failure_kind(r) == 'invalid_response' for r in rows)
+    valid = [r for r in rows if failure_kind(r) == 'decision']
     abstains = [r for r in rows if r['predicted'] == ABSTAIN_ID]
     eligible_abstain = {c['id'] for c in cases if c['acceptAbstain']}
     escalations = [r for r in rows if r['predicted'] == 'escalate']
     latencies = [r['latencyMs'] for r in rows]
-    confidences = [r['confidence'] for r in rows if isinstance(r['confidence'], (int, float))]
+    confidences = [r['confidence'] for r in valid if finite_number(r['confidence']) and 0 <= r['confidence'] <= 1]
     buckets = {}
-    for r in rows:
-        if not isinstance(r['confidence'], (int, float)):
+    for r in valid:
+        if not finite_number(r['confidence']) or not 0 <= r['confidence'] <= 1:
             continue
         bucket = min(4, int(r['confidence'] * 5))
         entry = buckets.setdefault(bucket, {'n': 0, 'correct': 0})
@@ -228,6 +258,9 @@ def summarize(rows, cases):
         entry['correct'] += 1 if r['correct'] else 0
     return {
         'cases': n,
+        'plannedCases': len(cases),
+        'unattemptedCases': max(0, len(cases) - n),
+        'status': 'incomplete' if n != len(cases) else ('failed' if request_errors or invalid else 'complete'),
         'correct': correct,
         'accuracy': round(correct / n, 4),
         'accuracyCI95': wilson95(correct, n),
@@ -237,7 +270,13 @@ def summarize(rows, cases):
         'abstainOpportunitiesCovered': round(sum(1 for r in abstains if r['case'] in eligible_abstain) / len(eligible_abstain), 4) if eligible_abstain else None,
         'escalationRate': round(len(escalations) / n, 4),
         'highRiskAccuracy': round(sum(1 for r in rows if r['risk'] == 'high' and r['correct']) / max(1, sum(1 for r in rows if r['risk'] == 'high')), 4),
-        'invalidResponseRate': round(sum(1 for r in rows if r['kind'] in ('invalid_choice', 'no_selection', 'unparseable decision JSON') or r['kind'].startswith('HTTP') or r['kind'].startswith('Err')) / n, 4),
+        'requestErrors': request_errors,
+        'requestErrorRate': round(request_errors / n, 4),
+        'invalidResponses': invalid,
+        'invalidResponseRate': round(invalid / n, 4),
+        'validResponses': len(valid),
+        'responseAccuracy': round(sum(r['correct'] for r in valid) / len(valid), 4) if valid else None,
+        'responseAccuracyCI95': wilson95(sum(r['correct'] for r in valid), len(valid)) if valid else None,
         'meanLatencyMs': round(statistics.mean(latencies), 1) if latencies else 0,
         'p50LatencyMs': percentile(latencies, 50),
         'p95LatencyMs': percentile(latencies, 95),
@@ -250,6 +289,8 @@ def summarize(rows, cases):
             family: {
                 'n': len(items),
                 'accuracy': round(sum(1 for r in items if r['correct']) / len(items), 4),
+                'requestErrors': sum(failure_kind(r) == 'request_error' for r in items),
+                'invalidResponses': sum(failure_kind(r) == 'invalid_response' for r in items),
             }
             for family, items in sorted(_group(rows, 'family').items())
         },
@@ -265,13 +306,17 @@ def _group(rows, key):
 
 def format_markdown(model, summary, rows):
     lines = [f'# Decision routing benchmark — {model}', '',
+             f"status={summary['status']} attempted={summary['cases']} planned={summary['plannedCases']}",
              f"cases={summary['cases']} accuracy={summary['accuracy']:.1%} CI95={summary['accuracyCI95'][0]:.1%}-{summary['accuracyCI95'][1]:.1%}",
              f"abstain={summary['abstainRate']:.1%} (correct-abstain={summary['correctAbstainRate']}), escalation={summary['escalationRate']:.1%}, invalid={summary['invalidResponseRate']:.1%}",
              f"high-risk accuracy={summary['highRiskAccuracy']:.1%} · mean confidence={summary['meanConfidence']}",
              f"latency p50={summary['p50LatencyMs']}ms p95={summary['p95LatencyMs']}ms", '',
-             '| family | n | accuracy |', '|---|---|---:|']
+             f"request errors={summary['requestErrors']} ({summary['requestErrorRate']:.1%}); invalid model responses={summary['invalidResponses']}",
+             f"accuracy on {summary['validResponses']} valid responses=" + (f"{summary['responseAccuracy']:.1%}" if summary['responseAccuracy'] is not None else 'unavailable') + ' (excludes failures; not a promotion score)',
+             summary.get('originalRunProvenance', ''), '',
+             '| family | n | accuracy | request errors | invalid responses |', '|---|---|---:|---:|---:|']
     for family, item in summary['byFamily'].items():
-        lines.append(f"| {family} | {item['n']} | {item['accuracy']:.1%} |")
+        lines.append(f"| {family} | {item['n']} | {item['accuracy']:.1%} | {item['requestErrors']} | {item['invalidResponses']} |")
     lines += ['', '## Calibration (confidence vs correctness)', '', '| bucket | n | accuracy |', '|---|---|---:|']
     for bucket in summary['calibration']:
         lines.append(f"| {bucket['bucket']} | {bucket['n']} | {bucket['accuracy']:.1%} |")
@@ -283,10 +328,40 @@ def format_markdown(model, summary, rows):
     return '\n'.join(lines) + '\n'
 
 
+def artifact_path(stamp, spec, suffix):
+    slug = re.sub(r'[^A-Za-z0-9_.-]+', '_', spec)
+    digest = hashlib.sha256(spec.encode()).hexdigest()[:8]
+    return RESULTS / f'decision-bench-{stamp}-{slug}-{digest}{suffix}'
+
+
+def replay_rows(path, cases):
+    rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    known = {c['id']: c for c in cases}
+    seen = set()
+    models = {(r['model'], r['protocol']) for r in rows}
+    if len(models) != 1:
+        raise ValueError(f'{path}: expected one nonempty model/protocol run')
+    for row in rows:
+        case = known.get(row['case'])
+        if case is None or row['case'] in seen:
+            raise ValueError(f'{path}: unknown or duplicate case {row["case"]}')
+        seen.add(row['case'])
+        if any(row[key] != case[key] for key in ('expected', 'family', 'split', 'risk')):
+            raise ValueError(f'{path}: case metadata differs from corpus for {row["case"]}')
+        if row.get('error'):
+            row['correct'] = False
+        else:
+            row['correct'], row['kind'] = is_correct(case, row['predicted'], row['offered'])
+    return rows, [known[r['case']] for r in rows]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--models', nargs='+', required=True,
+    source = ap.add_mutually_exclusive_group(required=True)
+    source.add_argument('--models', nargs='+',
                     help='model specs: MODEL or MODEL@protocol (chat|systemone); ids may contain colons')
+    source.add_argument('--replay', nargs='+', type=Path, help='reanalyse saved prediction JSONL without model requests')
+    ap.add_argument('--corpus', type=Path, default=CORPUS)
     ap.add_argument('--base-url', default=DEFAULT_BASE)
     ap.add_argument('--split', choices=['all', 'train', 'holdout'], default='holdout',
                     help='corpus split to report on (default: holdout)')
@@ -301,10 +376,11 @@ def main() -> int:
     ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args()
 
-    if not CORPUS.exists():
-        print(f'corpus missing: {CORPUS} (run scripts/build-decision-corpus.py)', file=sys.stderr)
+    if not args.corpus.exists():
+        print(f'corpus missing: {args.corpus} (run scripts/build-decision-corpus.py)', file=sys.stderr)
         return 2
-    cases = [json.loads(line) for line in CORPUS.read_text(encoding='utf-8').splitlines() if line.strip()]
+    corpus_bytes = args.corpus.read_bytes()
+    cases = [json.loads(line) for line in corpus_bytes.decode('utf-8').splitlines() if line.strip()]
     if args.split != 'all':
         cases = [c for c in cases if c['split'] == args.split]
     if args.no_evidence:
@@ -318,34 +394,68 @@ def main() -> int:
         return 2
     print(f'corpus: {len(cases)} cases (split={args.split}, full_choice_set={args.full_choice_set})')
 
-    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    if args.replay and (args.no_evidence or args.full_choice_set or args.limit):
+        ap.error('replay cannot change evidence, choices, or case limits')
+    if args.models and (len(set(args.models)) != len(args.models) or any(
+            not spec.partition('@')[0] or spec.partition('@')[2] not in ('', 'chat', 'systemone') for spec in args.models)):
+        ap.error('model specs must be unique and use chat or systemone')
+    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     RESULTS.mkdir(parents=True, exist_ok=True)
     report = {
+        'schemaVersion': 2,
+        'status': 'running',
         'generatedAt': dt.datetime.now(dt.timezone.utc).isoformat(),
-        'corpus': str(CORPUS.relative_to(Path(__file__).resolve().parents[1])),
+        'corpus': str(args.corpus.resolve()),
+        'corpusSha256': hashlib.sha256(corpus_bytes).hexdigest(),
+        'caseIds': [c['id'] for c in cases],
+        'seed': args.seed,
+        'requestedModels': args.models or [],
+        'harnessSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'evaluationCasesSha256': hashlib.sha256(json.dumps(cases, sort_keys=True).encode()).hexdigest(),
+        'timeoutSeconds': args.timeout,
         'split': args.split,
         'cases': len(cases),
-        'eligibilityFiltering': not args.full_choice_set,
-        'evidenceAugmented': not args.no_evidence,
+        'eligibilityFiltering': None if args.replay else not args.full_choice_set,
+        'evidenceAugmented': None if args.replay else not args.no_evidence,
+        'baseUrl': None if args.replay else args.base_url,
+        'replayed': bool(args.replay),
         'models': {},
     }
-    for spec in args.models:
-        model = spec.partition(':')[0] if ':' in spec else spec
-        print(f'\n== {spec} @ {args.base_url}')
-        rows = run_model(spec, cases, args)
-        summary = summarize(rows, cases)
-        report['models'][spec] = summary
+    report_path = args.out or (RESULTS / f'decision-bench-{stamp}.json')
+    # Reserve before requests, and leave a manifest if the process is interrupted.
+    with report_path.open('x', encoding='utf-8') as handle:
+        handle.write(json.dumps(report, indent=2) + '\n')
+    for item in args.replay or args.models:
+        if args.replay:
+            rows, measured_cases = replay_rows(item, cases)
+            spec = f'{rows[0]["model"]}@{rows[0]["protocol"]}'
+            key = f'{spec} [{item.name}]'
+            summary = summarize(rows, measured_cases)
+            summary.update({'source': str(item.resolve()),
+                            'sourceSha256': hashlib.sha256(item.read_bytes()).hexdigest(),
+                            'originalRunProvenance': 'not recorded; corpus match checks labels, not original prompts',
+                            'plannedCases': None, 'unattemptedCases': None})
+            if summary['status'] == 'complete':
+                summary['status'] = 'replayed'
+        else:
+            spec = key = item
+            print(f'\n== {spec} @ {args.base_url}')
+            path = artifact_path(stamp, key, '.jsonl')
+            with path.open('x', encoding='utf-8') as handle:
+                rows = run_model(spec, cases, args, handle)
+            summary = summarize(rows, cases)
+            summary['predictions'] = str(path)
+        report['models'][key] = summary
         print(f"   accuracy={summary['accuracy']:.1%} correct={summary['correct']}/{summary['cases']} "
               f"abstain={summary['abstainRate']:.1%} escalation={summary['escalationRate']:.1%} "
-              f"invalid={summary['invalidResponseRate']:.1%} p50={summary['p50LatencyMs']}ms")
-        stem = RESULTS / f'decision-bench-{stamp}-{re.sub(r"[^A-Za-z0-9_.-]+", "_", spec)}'
-        stem.with_suffix('.jsonl').write_text('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows) + '\n', encoding='utf-8')
-        stem.with_suffix('.md').write_text(format_markdown(spec, summary, rows), encoding='utf-8')
-        print(f'   predictions: {stem.with_suffix(".jsonl")}')
-    report_path = args.out or (RESULTS / f'decision-bench-{stamp}.json')
+              f"request errors={summary['requestErrorRate']:.1%} invalid={summary['invalidResponseRate']:.1%} p50={summary['p50LatencyMs']}ms")
+        with artifact_path(stamp, key, '.md').open('x', encoding='utf-8') as handle:
+            handle.write(format_markdown(key, summary, rows))
+        report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+    report['status'] = 'replayed' if args.replay else ('failed' if any(s['status'] != 'complete' for s in report['models'].values()) else 'complete')
     report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(f'\nreport: {report_path}')
-    return 0
+    return 1 if report['status'] == 'failed' else 0
 
 
 if __name__ == '__main__':
