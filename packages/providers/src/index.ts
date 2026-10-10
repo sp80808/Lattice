@@ -20,10 +20,48 @@ export interface OpenAICompatibleConfig {
   jsonMode?: boolean;
   fetchImpl?: FetchLike;
   providerName?: string;
+  /** Transient-failure retry policy. Default: 2 attempts, 250ms base, 4s cap. */
+  retry?: RetryPolicy;
 }
+
+export interface RetryPolicy {
+  /** Total attempts including the first call. 1 disables retries. */
+  attempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+}
+
+const DEFAULT_RETRY: Required<RetryPolicy> = { attempts: 2, baseDelayMs: 250, maxDelayMs: 4_000 };
+
+/** An HTTP error from the provider, carrying the status so callers can classify it. */
+export class ProviderHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProviderHttpError";
+  }
+}
+
+/**
+ * Transient failures worth another attempt: rate limits, server-side faults and
+ * network-level fetch failures. Timeouts and 4xx client errors are the caller's
+ * (or the request's) fault and retrying them only doubles latency.
+ */
+function isTransient(error: unknown): boolean {
+  if (error instanceof ProviderHttpError) {
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  // fetch rejects with TypeError on connection reset/refused/DNS errors.
+  return error instanceof TypeError;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface ChatCompletionResponse {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string | null;
     };
@@ -126,41 +164,52 @@ async function postChat(
   config: OpenAICompatibleConfig,
   body: Record<string, unknown>,
 ): Promise<{ response: ChatCompletionResponse; usage: ProviderUsage }> {
-  const started = performance.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    config.timeoutMs ?? 30_000,
-  );
+  const { attempts, baseDelayMs, maxDelayMs } = { ...DEFAULT_RETRY, ...config.retry };
 
-  try {
-    const fetchImpl = config.fetchImpl ?? fetch;
-    const response = await fetchImpl(endpoint(config.baseUrl), {
-      method: "POST",
-      headers: headers(config.apiKey),
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+  for (let attempt = 1; ; attempt++) {
+    const started = performance.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      config.timeoutMs ?? 30_000,
+    );
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        `Provider request failed: ${response.status} ${response.statusText}: ${text.slice(0, 500)}`,
-      );
+    try {
+      const fetchImpl = config.fetchImpl ?? fetch;
+      const response = await fetchImpl(endpoint(config.baseUrl), {
+        method: "POST",
+        headers: headers(config.apiKey),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new ProviderHttpError(
+          response.status,
+          `Provider request failed: ${response.status} ${response.statusText}: ${text.slice(0, 500)}`,
+        );
+      }
+
+      const json = (await response.json()) as ChatCompletionResponse;
+      return {
+        response: json,
+        usage: {
+          inputTokens: json.usage?.prompt_tokens,
+          outputTokens: json.usage?.completion_tokens,
+          totalTokens: json.usage?.total_tokens,
+          latencyMs: performance.now() - started,
+        },
+      };
+    } catch (error) {
+      // Full jitter over a capped exponential window: enough spread that a fleet of
+      // parallel decision calls does not retry in lockstep.
+      const retryable = isTransient(error) && attempt < attempts;
+      if (!retryable) throw error;
+      await sleep(Math.random() * Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1)));
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const json = (await response.json()) as ChatCompletionResponse;
-    return {
-      response: json,
-      usage: {
-        inputTokens: json.usage?.prompt_tokens,
-        outputTokens: json.usage?.completion_tokens,
-        totalTokens: json.usage?.total_tokens,
-        latencyMs: performance.now() - started,
-      },
-    };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -323,7 +372,8 @@ export class SystemOneDecisionProvider implements DecisionProvider {
       keep_alive: this.config.keepAlive ?? "30m",
     };
 
-    const url = `${this.config.baseUrl.replace(/\/+$/, "")}/v1/systemone`;
+    const base = this.config.baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const url = `${base}/v1/systemone`;
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -405,6 +455,9 @@ export class OpenAICompatibleGeneratorProvider implements GeneratorProvider {
   constructor(private readonly config: OpenAICompatibleConfig) {}
 
   async generate(request: GeneratorRequest): Promise<GeneratorResult> {
+    if (request.maxTokens !== undefined && (!Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1)) {
+      throw new Error("maxTokens must be a positive integer");
+    }
     const messages: Array<{ role: string; content: string }> = [];
     if (request.system) {
       messages.push({ role: "system", content: request.system });
@@ -422,9 +475,13 @@ export class OpenAICompatibleGeneratorProvider implements GeneratorProvider {
     const { response, usage } = await postChat(this.config, {
       model: this.config.model,
       temperature: request.temperature ?? 0.2,
+      ...(request.maxTokens === undefined ? {} : { max_tokens: request.maxTokens }),
       messages,
     });
 
+    if (response.choices?.[0]?.finish_reason === "length") {
+      throw new Error("Generator output exceeded the token limit; narrow the task or increase maxTokens");
+    }
     const message = response.choices?.[0]?.message;
     const text =
       message?.content ??

@@ -1,0 +1,29 @@
+{
+  "task": "Create an implementation plan for three new Blockbound islands: Pirate Bay (id 3), Frost Observatory (id 4), and Cloudtop Gardens (id 5), with Pirate Bay delivered as the first complete vertical slice. Each should feel visually distinct and contain exactly five named landmarks with stable proposed IDs suited to the existing landmark archetype matching. Keep the current roll/build/raid economy and unlock mechanics. Include provisional costs and explain how they need balancing against Neon; do not claim playtested balance. Preserve existing saves, contiguous district IDs and unlock order. Cover all theme routing/fallbacks, source-defined persistence limits, archive and travel behavior, building/repair rules, and the tests that currently assume three districts. Scope album parity explicitly: propose a four-card set per new island with art/manifest work, released only when complete. Name exact existing files and clearly label proposed new files. Include concrete acceptance tests and commands, 320px/mobile plus desktop/reload visual checks, and distinguish web checks from Android/device proof. Do not add sailing, weather, flight currencies, dependencies or new gameplay systems. Produce a concise but complete Markdown plan grounded in the supplied source citations, and flag missing evidence. Do not implement or run tools.",
+  "files": [
+    "DESIGN.md:7-57",
+    "docs/ARCHITECTURE.md:9-36",
+    "web/src/store/gameStore.ts:51-66",
+    "web/src/store/gameStore.ts:255-329",
+    "web/src/store/gameStore.ts:398-455",
+    "web/src/store/gameStore.ts:795-823",
+    "web/src/store/gameStore.ts:881-926",
+    "web/src/game/gameSave.ts:184-265",
+    "web/src/game/rollRules.ts:181-197",
+    "web/src/game/boardThemes.ts:1-135",
+    "web/src/App.tsx:177-224",
+    "web/src/components/IslandView.tsx:13-105",
+    "web/src/components/LandmarkDiorama.tsx:1-61",
+    "web/src/components/IslandView.css:1-93",
+    "web/src/components/GameFeel.css:43-115",
+    "web/src/game/cards.ts:8-65",
+    "web/src/game/cards.ts:140-165",
+    "web/src/game/cards.ts:237-249",
+    "web/tests/store.test.mjs:322-373",
+    "web/tests/islandView.test.mjs:42-127",
+    "web/tests/boardTheming.test.mjs:14-71",
+    "web/package.json",
+    "scripts/check-card-art.mjs:1-90",
+    "web/src/game/islandNavigation.ts"
+  ]
+}

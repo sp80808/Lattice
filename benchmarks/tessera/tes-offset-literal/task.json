@@ -62,5 +62,9 @@
       "expectedEvidence": "diagnostics",
       "estimatedCost": "low"
     }
-  ]
+  ],
+  "metadata": {
+    "category": "languages",
+    "difficulty": "medium"
+  }
 }

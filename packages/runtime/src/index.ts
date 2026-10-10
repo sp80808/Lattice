@@ -11,7 +11,7 @@ import type {
   AutonomyMode,
   DecisionReviewer,
 } from "@lattice/search";
-import type { DecisionProvider } from "@lattice/protocol";
+import type { DecisionProvider, GeneratorProvider } from "@lattice/protocol";
 import {
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
@@ -28,6 +28,15 @@ export interface ModelEndpointConfig {
   apiKeyEnv?: string;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** Transient-failure retry policy. Defaults: 2 attempts total, 250ms base, 4s cap. */
+  retry?: RetryPolicy;
+}
+
+export interface RetryPolicy {
+  /** Total attempts including the first call. 1 disables retries. */
+  attempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
 }
 
 export interface QwenAgentConfig {
@@ -79,6 +88,12 @@ export interface LatticeConfig {
     candidatesPerRound?: number;
     topK?: number;
     parallelism?: number;
+    /** Hard spend limits enforced by the search loop. */
+    budget?: {
+      maxTokens?: number;
+      maxCostUsd?: number;
+      maxWallMs?: number;
+    };
   };
   workspace?: {
     cleanup?: CleanupPolicy;
@@ -255,6 +270,7 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
     timeoutMs: model.timeoutMs,
     jsonMode: model.jsonMode,
     providerName: "runtime-config",
+    retry: model.retry,
   };
 }
 
@@ -271,6 +287,13 @@ export function createDecisionProvider(
         timeoutMs: model.timeoutMs,
       })
     : new OpenAICompatibleDecisionProvider(endpointConfig(model));
+}
+
+/** Resolve a generator without requiring a coding agent or verifier. */
+export function createGeneratorProvider(config: LatticeConfig): GeneratorProvider | undefined {
+  const model = config.models?.generator ?? config.model;
+  if (!model) return undefined;
+  return new OpenAICompatibleGeneratorProvider(endpointConfig(model));
 }
 
 export function createRunTaskOptions(
@@ -314,9 +337,7 @@ export function createRunTaskOptions(
           timeoutMs: decisionModel.timeoutMs,
         })
       : new OpenAICompatibleDecisionProvider(endpointConfig(decisionModel!));
-  const generator = new OpenAICompatibleGeneratorProvider(
-    endpointConfig(generatorModel!),
-  );
+  const generator = createGeneratorProvider(config)!;
 
   const agent =
     config.agent!.preset === "qwen-code"
@@ -352,6 +373,7 @@ export function createRunTaskOptions(
       candidatesPerRound: config.search?.candidatesPerRound,
       topK: config.search?.topK,
       parallelism: config.search?.parallelism,
+      budget: config.search?.budget,
       autonomy: {
         mode: config.autonomy?.mode ?? "autopilot",
         minConfidence: config.autonomy?.minConfidence,

@@ -55,5 +55,9 @@
       },
       "solves": true
     }
-  ]
+  ],
+  "metadata": {
+    "category": "software",
+    "difficulty": "easy"
+  }
 }

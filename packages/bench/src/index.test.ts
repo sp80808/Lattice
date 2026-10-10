@@ -5,13 +5,17 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  compareBenchReports,
   loadSuite,
+  passAtK,
   resolveTools,
   runBenchmark,
   seededRandom,
+  selectShard,
   selfCheckSuite,
   wilson95,
   type BenchReport,
+  type StrategyName,
 } from "./index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,7 +48,13 @@ test("wilson95 is sane at the edges and narrows with more data", () => {
 
 test("suite loading validates specs and fingerprints fixtures", async () => {
   const suite = await loadSuite(BASIC);
-  assert.deepEqual(suite.tasks.map((task) => task.id), ["calc-add-sign", "clamp-bounds", "greet-export"]);
+  assert.deepEqual(suite.tasks.map((task) => task.id), [
+    "calc-add-sign",
+    "clamp-bounds",
+    "greet-export",
+    "py-fib-base",
+    "ts-narrow-type",
+  ]);
   assert.match(suite.digest, /^[0-9a-f]{64}$/);
   assert.equal((await loadSuite(BASIC)).digest, suite.digest, "digest is stable");
 
@@ -70,7 +80,7 @@ test("suite loading validates specs and fingerprints fixtures", async () => {
 
 test("every basic fixture fails as shipped and passes with its solution", async () => {
   const rows = await selfCheckSuite(await loadSuite(BASIC), {});
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 5);
   for (const row of rows) {
     assert.equal(row.baselineFails, true, `${row.task} should fail as shipped`);
     assert.equal(row.solutionPasses, true, `${row.task} should pass with its solution`);
@@ -95,10 +105,10 @@ test("the oracle solves in one experiment; other strategies cost more and invali
   assert.ok(by.first!.invalidEdits + by.random!.invalidEdits + by["cheapest-first"]!.invalidEdits > 0);
 
   // Deterministic strategies run once per task; only `random` repeats.
-  assert.equal(by.first!.runs, 3);
-  assert.equal(by.oracle!.runs, 3);
-  assert.equal(by.random!.runs, 36);
-  assert.deepEqual(by.oracle!.solveRateCI95, wilson95(3, 3));
+  assert.equal(by.first!.runs, 5);
+  assert.equal(by.oracle!.runs, 5);
+  assert.equal(by.random!.runs, 60);
+  assert.deepEqual(by.oracle!.solveRateCI95, wilson95(5, 5));
 });
 
 test("a tight budget separates strategies: oracle beats random beats nothing", async () => {
@@ -128,8 +138,17 @@ test("results are reproducible for a fixed seed and the report records its prove
 
   assert.equal(a.schemaVersion, 1);
   assert.equal(a.suite.digest, suite.digest);
-  assert.deepEqual(a.config, { strategies: ["random", "first"], trials: 6, seed: 42, maxRounds: 2, configured: undefined });
+  assert.deepEqual(a.config, {
+    strategies: ["random", "first"],
+    trials: 6,
+    seed: 42,
+    maxRounds: 2,
+    concurrency: 1,
+    passAtK: [1, 5],
+    configured: undefined,
+  });
   assert.equal(a.environment.node, process.version);
+  assert.equal(a.environment.concurrency, 1);
   assert.match(a.note, /orchestration logic, not model quality/);
 });
 
@@ -168,6 +187,214 @@ test("tasks that need tsr are skipped, not failed, when it is unavailable", asyn
 
   const rows = await selfCheckSuite(suite, {});
   assert.ok(rows.every((row) => row.skipped?.includes("tsr")));
+});
+
+test("passAtK is the unbiased probability that one of k sampled trials succeeds", () => {
+  assert.ok(Number.isNaN(passAtK(2, 1, 5)), "fewer trials than k is unknowable");
+  assert.equal(passAtK(4, 0, 1), 0);
+  assert.equal(passAtK(4, 4, 1), 1);
+  assert.equal(passAtK(4, 3, 4), 1, "if only one trial failed, some 4-subset must contain a success");
+  // Known value: n=4, c=2, k=2 -> 1 - C(2,2)/C(4,2) = 1 - 1/6.
+  assert.ok(Math.abs(passAtK(4, 2, 2) - 5 / 6) < 1e-12);
+  // Monotone in k and in c.
+  assert.ok(passAtK(10, 3, 2) < passAtK(10, 3, 5));
+  assert.ok(passAtK(10, 2, 5) < passAtK(10, 5, 5));
+});
+
+test("task metadata is validated and surfaces per difficulty", async () => {
+  const bad = await mkdtemp(join(tmpdir(), "lattice-bench-meta-"));
+  await mkdir(join(bad, "t", "repo"), { recursive: true });
+  const spec = (metadata: unknown) =>
+    writeFile(
+      join(bad, "t", "task.json"),
+      JSON.stringify({
+        id: "t",
+        task: "x",
+        verify: { command: "true" },
+        candidates: [
+          { id: "a", label: "a", action: "a", expectedEvidence: "a" },
+          { id: "b", label: "b", action: "b", expectedEvidence: "b", solves: true, patch: { file: "f", find: "x", replace: "y" } },
+        ],
+        metadata,
+      }),
+    );
+
+  await spec({ difficulty: "easy" });
+  const suite = await loadSuite(bad);
+  assert.equal(suite.tasks[0]!.metadata?.difficulty, "easy");
+
+  await spec({ difficulty: "trivial" });
+  await assert.rejects(loadSuite(bad), /metadata.difficulty must be/);
+  await spec({ category: "" });
+  await assert.rejects(loadSuite(bad), /metadata.category must be a non-empty string/);
+
+  const annotated = await loadSuite(BASIC);
+  assert.deepEqual(annotated.tasks.map((task) => task.metadata?.difficulty), ["easy", "easy", "medium", "easy", "easy"]);
+  const report = await runBenchmark(annotated, { strategies: ["oracle"], tools: {} });
+  assert.deepEqual(
+    report.byDifficulty.map((row) => [row.difficulty, row.solved, row.runs]),
+    [
+      ["easy", 4, 4],
+      ["medium", 1, 1],
+    ],
+  );
+});
+
+test("the report breaks down per task and classifies failures", async () => {
+  const suite = await loadSuite(BASIC);
+  const report = await runBenchmark(suite, { strategies: ["first", "oracle"], maxRounds: 2, tools: {} });
+
+  // One row per task × strategy, in task-then-strategy order.
+  assert.deepEqual(report.byTask.map((row) => [row.task, row.strategy]), [
+    ["calc-add-sign", "first"],
+    ["calc-add-sign", "oracle"],
+    ["clamp-bounds", "first"],
+    ["clamp-bounds", "oracle"],
+    ["greet-export", "first"],
+    ["greet-export", "oracle"],
+    ["py-fib-base", "first"],
+    ["py-fib-base", "oracle"],
+    ["ts-narrow-type", "first"],
+    ["ts-narrow-type", "oracle"],
+  ]);
+
+  const oracle = report.summary.find((row) => row.strategy === "oracle")!;
+  assert.equal(oracle.solveRate, 1);
+  assert.deepEqual(oracle.failures, []);
+  assert.equal(oracle.meanTokens, 0, "scripted strategies bill no tokens");
+  assert.equal(oracle.costPerSolved, null);
+
+  // `first` burns its 2-round budget on decoys: the failing runs are ordinary
+  // verifier failures, not spend on a missing binary.
+  const first = report.summary.find((row) => row.strategy === "first")!;
+  assert.ok(first.solveRate < 1);
+  const kinds = Object.fromEntries(first.failures.map((row) => [row.kind, row.count]));
+  assert.ok(kinds["verifier-failed"] > 0, `expected verifier failures, got ${JSON.stringify(first.failures)}`);
+  assert.ok(kinds["invalid-edit"] === undefined, "2 rounds never reach the hallucinated-target decoys");
+});
+
+/** A suite whose verifier binary does not exist: command failures, not a crash. */
+async function missingBinarySuite(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-bench-nobin-"));
+  await mkdir(join(dir, "nf", "repo"), { recursive: true });
+  await writeFile(join(dir, "nf", "repo", "f.txt"), "x");
+  await writeFile(
+    join(dir, "nf", "task.json"),
+    JSON.stringify({
+      id: "nf",
+      task: "x",
+      verify: { command: "lattice-no-such-verifier-binary" },
+      candidates: [
+        { id: "inspect", label: "inspect", action: "look", expectedEvidence: "nothing" },
+        {
+          id: "fix",
+          label: "fix",
+          action: "edit",
+          expectedEvidence: "verifier passes",
+          solves: true,
+          patch: { file: "f.txt", find: "x", replace: "y" },
+        },
+      ],
+    }),
+  );
+  return dir;
+}
+
+test("a missing verifier binary is classified as command-not-found instead of crashing", async () => {
+  const suite = await loadSuite(await missingBinarySuite());
+  const report = await runBenchmark(suite, { strategies: ["oracle"], tools: {} });
+
+  assert.equal(report.summary[0]!.runs, 1);
+  assert.equal(report.summary[0]!.solved, 0);
+  assert.deepEqual(report.summary[0]!.failures, [{ kind: "command-not-found", count: 1 }]);
+  assert.equal(report.results[0]!.failureKind, "command-not-found");
+});
+
+test("a hallucinated edit target is classified as invalid-edit", async () => {
+  const suite = await loadSuite(BASIC);
+  // A stub decision provider that always picks the candidate whose patch targets a
+  // nonexistent file: the executor must fail the attempt, not throw.
+  const report = await runBenchmark(suite, {
+    strategies: ["configured"],
+    trials: 1,
+    maxRounds: 1,
+    only: ["calc-add-sign"],
+    tools: {},
+    configuredDescription: "stub",
+    configured: {
+      async decide(request) {
+        const id = request.choices.find((choice) => choice.id === "patch-utils")!.id;
+        return { selected: [id], scores: { [id]: 1 }, identity: { provider: "stub" }, usage: { latencyMs: 0 } };
+      },
+    },
+  });
+
+  assert.equal(report.results[0]!.invalidEdits, 1);
+  assert.equal(report.results[0]!.failureKind, "invalid-edit");
+  assert.deepEqual(report.summary[0]!.failures, [{ kind: "invalid-edit", count: 1 }]);
+});
+
+test("compareBenchReports gates regressions and tolerates noise", () => {
+  const report = (solved: number, runs: number, digest = "d1"): BenchReport =>
+    ({
+      schemaVersion: 1,
+      suite: { name: "s", digest, tasks: ["t"] },
+      summary: [{ strategy: "oracle", runs, solved, solveRate: solved / runs }],
+    }) as unknown as BenchReport;
+
+  const base = report(10, 10);
+  const same = compareBenchReports(base, report(10, 10));
+  assert.deepEqual(same.regressions, []);
+  assert.deepEqual(same.improvements, []);
+  assert.equal(same.suiteChanged, false);
+
+  const worse = compareBenchReports(base, report(7, 10));
+  assert.equal(worse.regressions.length, 1);
+  assert.ok(Math.abs(worse.regressions[0]!.delta + 0.3) < 1e-12);
+  // A drop within tolerance is not a regression.
+  assert.deepEqual(compareBenchReports(base, report(9, 10), 0.2).regressions, []);
+
+  const better = compareBenchReports(base, report(10, 10));
+  assert.deepEqual(better.regressions, []);
+  const gain = compareBenchReports(report(5, 10), report(9, 10));
+  assert.equal(gain.improvements.length, 1);
+
+  // A strategy missing from the candidate regressed to zero rather than silently passing.
+  const missing = compareBenchReports(base, { ...report(10, 10), summary: [] } as BenchReport);
+  assert.equal(missing.regressions[0]!.candidateRuns, 0);
+  assert.equal(missing.regressions[0]!.candidateSolveRate, 0);
+
+  assert.equal(compareBenchReports(base, report(10, 10, "other")).suiteChanged, true);
+});
+
+test("selectShard partitions deterministically and rejects bad input", () => {
+  const items = ["a", "b", "c", "d", "e"];
+  assert.deepEqual(selectShard(items, "1/2"), ["a", "c", "e"]);
+  assert.deepEqual(selectShard(items, "2/2"), ["b", "d"]);
+  assert.deepEqual(selectShard(items, "3/3"), ["c"]);
+  assert.deepEqual([...selectShard(items, "1/2"), ...selectShard(items, "2/2")].sort(), items);
+  assert.throws(() => selectShard(items, "0/2"), /1 <= i <= n/);
+  assert.throws(() => selectShard(items, "3/2"), /1 <= i <= n/);
+  assert.throws(() => selectShard(items, "half"), /i\/n/);
+});
+
+test("parallel trials are faster than sequential and give identical results", async (t) => {
+  const suite = await loadSuite(BASIC);
+  const options = { strategies: ["random"] as StrategyName[], trials: 12, seed: 1, maxRounds: 2, tools: {} };
+
+  const serial = await runBenchmark(suite, { ...options, concurrency: 1 });
+  const parallel = await runBenchmark(suite, { ...options, concurrency: 4 });
+
+  assert.equal(parallel.environment.concurrency, 4);
+  assert.equal(parallel.config.concurrency, 4);
+  assert.deepEqual(
+    parallel.results.map(({ wallMs: _w, ...rest }) => rest),
+    serial.results.map(({ wallMs: _w, ...rest }) => rest),
+    "concurrency must not change what is measured",
+  );
+
+  await assert.rejects(runBenchmark(suite, { ...options, concurrency: 0 }), /concurrency must be a positive integer/);
+  t.diagnostic(`serial wall ${serial.summary[0]!.meanWallMs.toFixed(0)}ms vs parallel ${parallel.summary[0]!.meanWallMs.toFixed(0)}ms per trial`);
 });
 
 test("live: the real Tessera compiler verifies the tessera suite", async (t) => {

@@ -16,6 +16,7 @@ import {
   listRuns,
   parseCommandLine,
   parseDecisionRequest,
+  planTask,
   resolveRunId,
   ReviewBroker,
   runDoctor,
@@ -36,6 +37,31 @@ const verifyOk = {
   command: process.execPath,
   args: ["-e", "process.stdout.write('ok')"],
 };
+
+test("planning resolves only the generator and does not run configured agents or verification", async (t) => {
+  const cwd = await tempProject({
+    mode: "auto",
+    models: { generator: { baseUrl: "http://fixture.invalid/v1", model: "planner" } },
+    agent: { preset: "qwen-code", command: "never-run-agent" },
+    verify: { command: "never-run-verifier" },
+  });
+  const latticeDir = await mkdtemp(join(tmpdir(), "lattice-service-plan-"));
+  await writeFile(join(cwd, "islands.ts"), "export const count = 3;");
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    calls++;
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.model, "planner");
+    assert.equal(body.max_tokens, 4096);
+    assert.match(body.messages[1].content, /islands.ts/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "Review save compatibility before adding islands." } }] }));
+  });
+  const result = await planTask("Plan islands", { cwd, files: ["islands.ts"], latticeDir });
+  assert.equal(calls, 1);
+  assert.deepEqual(result.tap.verification, []);
+  assert.equal(result.tap.evidence.filter(item => item.kind === "model")[0]?.verified, false);
+  assert.ok(result.eventLogPath.startsWith(latticeDir));
+});
 
 test("executeTask without config records evidence-only runs that list and resolve", async () => {
   const cwd = await tempProject();

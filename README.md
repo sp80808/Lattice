@@ -122,13 +122,14 @@ Every run writes a versioned TAP task packet and an append-only JSONL event log 
 
 | Surface | Entry point | Docs |
 |---|---|---|
-| CLI | `lattice run / init / doctor / runs / show / config / serve / mcp / stats / mine / policy-sim` | [docs/cli.md](docs/cli.md) |
+| CLI | `lattice run / plan / init / doctor / runs / show / config / serve / mcp / stats / mine / policy-sim / bench` | [docs/cli.md](docs/cli.md) |
 | HTTP daemon | `lattice serve` (127.0.0.1:4774) | [docs/sdk.md](docs/sdk.md) |
 | TypeScript SDK | `@lattice/sdk` | [docs/sdk.md](docs/sdk.md) |
 | Python SDK | `sdks/python` (`lattice_sdk`) | [sdks/python/README.md](sdks/python/README.md) |
 | MCP server | `lattice mcp` for Claude Code, Codex, Cursor, Gemini CLI | [docs/integrations.md](docs/integrations.md) |
 | Setup scripts | `scripts/bootstrap.sh`, `setup-provider.sh`, `setup-agents.sh` | [docs/integrations.md](docs/integrations.md) |
 | Examples | runnable demos, configs, client snippets | [examples/README.md](examples/README.md) |
+| Benchmarks | `lattice bench` over `benchmarks/` fixtures, with a CI regression gate | [docs/benchmarks.md](docs/benchmarks.md) |
 
 The architecture deliberately uses open-source projects as jumping-off points rather than rebuilding commodity plumbing. See [open-source jumping-off points](docs/open-source-jumping-off-points.md).
 

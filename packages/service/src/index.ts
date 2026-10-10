@@ -7,6 +7,7 @@ import { runCommand } from "@lattice/execution";
 import { RandomDecisionProvider } from "@lattice/providers";
 import {
   createDecisionProvider,
+  createGeneratorProvider,
   createRunTaskOptions,
   loadLatticeConfig,
   parseLatticeConfig,
@@ -129,6 +130,25 @@ export interface StartedTask {
   startedAt: string;
   /** Settles when the run ends. Failures after start are also recorded as `run.failed`. */
   done: Promise<ExecuteTaskResult>;
+}
+
+/** Plan with explicit source selections; never uses configured agents or verify commands. */
+export async function planTask(
+  task: string,
+  options: { cwd?: string; configPath?: string; files: string[]; latticeDir?: string },
+): Promise<RunResult> {
+  if (typeof task !== "string" || !task.trim()) invalid("task must be a non-empty string");
+  if (!Array.isArray(options.files) || !options.files.length) invalid("planning requires source files");
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const loaded = await loadConfigOrThrow(cwd, options.configPath);
+  let generator;
+  try {
+    generator = loaded && createGeneratorProvider(loaded.config);
+    if (!generator) throw new Error("Planning requires model or models.generator configuration; use --config");
+  } catch (error) {
+    throw new LatticeServiceError("config_error", errorMessage(error));
+  }
+  return runTask(task, { cwd, latticeDir: options.latticeDir, plan: { generator, files: options.files } });
 }
 
 /**

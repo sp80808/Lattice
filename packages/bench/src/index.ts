@@ -240,7 +240,27 @@ function verifySpec(task: BenchTask, cwd: string, tools: ToolPaths): CommandSpec
 }
 
 async function passes(task: BenchTask, cwd: string, tools: ToolPaths) {
-  const result = await runCommand(verifySpec(task, cwd, tools));
+  const spec = verifySpec(task, cwd, tools);
+  let result: CommandResult;
+  try {
+    result = await runCommand(spec);
+  } catch (error) {
+    // A missing verifier binary is a task/environment failure, not a suite crash:
+    // Terminal-Bench found "executable not installed / not in PATH" is the most
+    // common single command failure, so it must be measurable, not fatal.
+    result = {
+      command: spec.command,
+      args: spec.args ?? [],
+      cwd: spec.cwd ?? cwd,
+      exitCode: 127,
+      signal: null,
+      stdout: "",
+      stderr: String(error),
+      durationMs: 0,
+      timedOut: false,
+      outputTruncated: false,
+    };
+  }
   const ok =
     result.exitCode === 0 &&
     !result.timedOut &&
@@ -670,7 +690,7 @@ function failureHistogram(rows: BenchResult[]): Array<{ kind: FailureKind; count
     const kind = row.failureKind ?? "no-experiment";
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
-  return [...counts entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count);
+  return [...counts.entries()].map(([kind, count]) => ({ kind, count })).sort((a, b) => b.count - a.count);
 }
 
 /** Run `items` through `fn` with at most `limit` in flight, resolving results in input order. */
@@ -967,29 +987,68 @@ export async function selfCheckSuite(suite: BenchSuite, tools?: ToolPaths): Prom
 
 export function formatReport(report: BenchReport): string {
   const pad = (value: string, width: number) => value.padEnd(width);
+  const passKText = (row: { passAtK: Array<{ k: number; value: number }> }) =>
+    row.passAtK.length ? row.passAtK.map((entry) => `@${entry.k}=${(entry.value * 100).toFixed(0)}%`).join(",") : "-";
+  const passKWidth = Math.max(9, ...report.summary.map((row) => passKText(row).length));
   const lines = [
     `suite ${report.suite.name} (${report.suite.tasks.length} task(s), digest ${report.suite.digest.slice(0, 12)})`,
-    `trials=${report.config.trials} seed=${report.config.seed} maxRounds=${report.config.maxRounds}` +
+    `trials=${report.config.trials} seed=${report.config.seed} maxRounds=${report.config.maxRounds} concurrency=${report.config.concurrency}` +
       `${report.environment.tsr ? `  tsr=${report.environment.tsrRevision ?? "?"}` : ""}` +
       `${report.environment.latticeRevision ? `  lattice=${report.environment.latticeRevision}` : ""}`,
     "",
-    `${pad("strategy", 16)}${pad("solved", 16)}${pad("95% CI", 13)}${pad("experiments", 13)}${pad("verifier runs", 15)}${pad("decisions", 11)}${pad("invalid edits", 15)}wall ms`,
+    `${pad("strategy", 16)}${pad("solved", 16)}${pad("95% CI", 13)}${pad("pass@k", passKWidth + 1)}${pad("experiments", 13)}${pad("verifier runs", 15)}${pad("decisions", 11)}${pad("tokens", 10)}${pad("cost $", 10)}${pad("invalid edits", 15)}wall ms`,
   ];
   for (const row of report.summary) {
     lines.push(
       pad(row.strategy, 16) +
         pad(`${row.solved}/${row.runs} (${Math.round(row.solveRate * 100)}%)`, 16) +
         pad(`${Math.round(row.solveRateCI95[0] * 100)}–${Math.round(row.solveRateCI95[1] * 100)}%`, 13) +
+        pad(passKText(row), passKWidth + 1) +
         pad(row.meanExperiments.toFixed(2), 13) +
         pad(row.meanVerifierRuns.toFixed(2), 15) +
         pad(row.meanDecisionCalls.toFixed(2), 11) +
+        pad(row.meanTokens.toFixed(0), 10) +
+        pad(row.totalCostUsd > 0 ? row.totalCostUsd.toFixed(4) : "-", 10) +
         pad(String(row.invalidEdits), 15) +
         row.meanWallMs.toFixed(0),
     );
+    if (row.costPerSolved !== null) lines.push(`  cost per solved: $${row.costPerSolved.toFixed(4)}`);
+    for (const failure of row.failures) lines.push(`  failure ${failure.kind}: ${failure.count}`);
   }
+
+  if (report.byTask.length > report.summary.length) {
+    lines.push("", "per task:");
+    for (const row of report.byTask) {
+      lines.push(
+        `  ${pad(row.task, 22)}${pad(row.strategy, 16)}${pad(`${row.solved}/${row.runs}`, 10)}` +
+          `verifier runs ${row.meanVerifierRuns.toFixed(2)}  tokens ${row.meanTokens.toFixed(0)}`,
+      );
+    }
+  }
+
+  if (report.byDifficulty.length > 1) {
+    lines.push("", "by difficulty:");
+    for (const row of report.byDifficulty) {
+      lines.push(`  ${pad(row.difficulty, 10)}${pad(`${row.solved}/${row.runs}`, 10)}(${Math.round(row.solveRate * 100)}%)`);
+    }
+  }
+
   for (const item of report.skipped) lines.push(`skipped ${item.task}: ${item.reason}`);
+  if (report.comparison) lines.push("", formatComparison(report.comparison));
   lines.push("", `note: ${report.note}`);
   return lines.join("\n");
+}
+
+/** Deterministic sharding for parallel CI: shard `i` of `n` gets items where index % n == i. */
+export function selectShard<T>(items: T[], shard: string): T[] {
+  const match = /^(\d+)\s*\/\s*(\d+)$/.exec(shard.trim());
+  if (!match) throw new Error(`--shard must look like "i/n" (1-based), got: ${shard}`);
+  const index = Number(match[1]);
+  const count = Number(match[2]);
+  if (!Number.isInteger(index) || !Number.isInteger(count) || count < 1 || index < 1 || index > count) {
+    throw new Error(`--shard index and count must satisfy 1 <= i <= n (got ${shard})`);
+  }
+  return items.filter((_, position) => position % count === index - 1);
 }
 
 export async function configuredProvider(
@@ -1002,3 +1061,5 @@ export async function configuredProvider(
   const model = loaded.config.models?.decision ?? loaded.config.model!;
   return { provider, description: `${model.model} @ ${model.baseUrl}` };
 }
+
+export * from "./verse.js";

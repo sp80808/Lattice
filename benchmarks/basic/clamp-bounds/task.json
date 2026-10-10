@@ -55,5 +55,9 @@
         "replace": "export function clamped"
       }
     }
-  ]
+  ],
+  "metadata": {
+    "category": "software",
+    "difficulty": "easy"
+  }
 }

@@ -185,3 +185,16 @@ export async function collectRepositorySnapshot(
 export function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+export {
+  classifyAppType,
+  classifyPlatforms,
+  classifyTask,
+  fingerprintProject,
+  type ManifestFact,
+  type ProjectFingerprint,
+  type StackTag,
+  type TaskClass,
+} from "./fingerprint.js";
+
+export * from "./fidelity.js";

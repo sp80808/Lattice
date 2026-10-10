@@ -49,14 +49,15 @@ The same loop can later use:
 
 ## State compression
 
-The decision state currently includes only:
-
-- task;
-- constraints;
-- recent evidence;
-- unresolved uncertainties.
-
-This is intentionally small. TCG will later replace the simple state packer with graph-selected context under a token budget.
+The decision state packs evidence under a character budget with a fixed
+priority: verified evidence first (an objective result outranks a model
+assertion), then recent unverified records, oldest dropped first. Dropped
+records are reported as `EVIDENCE_OMITTED:n` so the decision model knows its
+context is lossy, and uncertainties are capped with an omission note. Claude
+Code runs a five-layer compaction pipeline and OpenHands condenses conversation
+history; Lattice's equivalent is this priority packer plus the append-only
+event log, which remains the uncompressed canonical source. TCG will later
+replace the packer with graph-selected context under the same budget contract.
 
 ## Stopping
 
@@ -64,7 +65,10 @@ The loop stops when:
 
 - an executor returns verified terminal success;
 - the decision model selects unknown/none;
-- the round budget is exhausted.
+- the round budget is exhausted;
+- a spend budget (tokens, cost or wall time) is exhausted — the loop records
+  the spend and the exceeded limit and returns `budget_exhausted`;
+- the caller's `AbortSignal` fires, before the next model call or experiment.
 
 Later policies can add beam search, pairwise tournaments, information-gain scoring and parallel top-k execution without changing provider/executor contracts.
 
@@ -122,3 +126,25 @@ Human overrides and notes enter the replay log/context, making them future train
 ## Parallel top-k
 
 `topK > 1` asks the decision provider to rank candidates and executes the selected shortlist with bounded parallelism. It is opt-in because it trades additional compute for latency/diversity. Serial top-1 remains the low-cost baseline.
+
+## Deterministic-first capability retrieval (SkillSeek)
+
+Skill retrieval is deterministic-first and model-assisted only when uncertain:
+
+1. **BM25 index:** Tools and skills are indexed over identifier, label, action, and expected evidence keywords.
+2. **Fast scoring:** Zero LLM calls are made for routine, obvious matches where top-1 score and margin exceed configured thresholds ($\tau_{\text{conf}}$ and $\Delta_{\text{margin}}$).
+3. **Escalation gate:** The search loop compiles a `DecisionFrame` and consults the decision provider (e.g. Tev1 0.8B or Qwen 1.7B) only when:
+   - BM25 top score is below confidence threshold;
+   - Margin between top-1 and runner-up is tight (ambiguous intent);
+   - The capability carries high risk (destructive fs/git or network operations).
+
+This reduces decision spend and eliminates redundant model invocations.
+
+## Harness recursive optimization and verification (VERSE)
+
+The recursive harness optimizer follows VERSE (Verified Self-Evolving Optimizer):
+
+1. **Failure replay:** Candidate modifications to harness prompts, policies, or parameters are replayed against historical failures to verify targeted defect resolution.
+2. **Draft testing & targeted perturbation:** Candidate drafts undergo targeted parameter perturbation instead of arbitrary unconstrained rewrites.
+3. **Strict regression audits:** Before any candidate harness is promoted, it must run against the held-out regression suite and produce zero regressions on previously passing tasks.
+4. **Meta-optimization:** The optimizer measures the yield of individual mutation operators and optimizes the optimizer's search distribution.

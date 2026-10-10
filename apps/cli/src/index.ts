@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { LATTICE_VERSION, LatticeServiceError } from "@lattice/service";
 import {
+  adaptiveCommand,
   benchCommand,
   configCommand,
   doctorCommand,
@@ -25,6 +26,8 @@ Usage:
 
 Tasks:
   run <task...>        run a task          [--config path] [--observe] [--json]
+  adaptive <task...>   adaptive one-shot coding workflow with capability routing
+                         [--autonomy supervised|auto|observe] [--json]
   plan <task...>       create a source-grounded implementation plan
                          --file path[:start-end]... [--config path] [--lattice-dir path] [--json]
   runs                 list recorded runs  [-n limit] [--json]
@@ -66,6 +69,7 @@ Docs: docs/cli.md`;
 
 const COMMANDS: Record<string, (args: string[]) => Promise<number>> = {
   run: runCommand,
+  adaptive: adaptiveCommand,
   plan: planCommand,
   bench: benchCommand,
   init: initCommand,

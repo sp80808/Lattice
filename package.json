@@ -13,12 +13,18 @@
     "typecheck": "tsc -b --pretty false",
     "dev": "npm run build && node apps/cli/dist/index.js",
     "daemon": "npm run build && node apps/daemon/dist/index.js",
-    "test": "npm run build && node --test packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js packages/agents/dist/index.test.js packages/runtime/dist/index.test.js packages/ledger/dist/index.test.js packages/analytics/dist/index.test.js packages/mining/dist/index.test.js packages/policy/dist/index.test.js packages/service/dist/index.test.js packages/server/dist/index.test.js packages/mcp/dist/index.test.js packages/bench/dist/index.test.js apps/cli/dist/index.test.js",
+    "test": "npm run build && node --test packages/core/dist/index.test.js packages/core/dist/adaptive.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/execution/dist/fingerprint.test.js packages/execution/dist/fidelity.test.js packages/search/dist/index.test.js packages/search/dist/retrieval.test.js packages/search/dist/capabilities.test.js packages/agents/dist/index.test.js packages/runtime/dist/index.test.js packages/ledger/dist/index.test.js packages/analytics/dist/index.test.js packages/mining/dist/index.test.js packages/policy/dist/index.test.js packages/service/dist/index.test.js packages/server/dist/index.test.js packages/mcp/dist/index.test.js packages/bench/dist/index.test.js packages/bench/dist/verse.test.js apps/cli/dist/index.test.js",
     "lattice": "node apps/cli/dist/index.js",
     "test:python": "python3 -m unittest discover -s sdks/python/tests",
     "test:examples": "scripts/check-examples.sh",
     "bootstrap": "scripts/bootstrap.sh",
-    "bench": "node apps/cli/dist/index.js bench"
+    "bench": "node apps/cli/dist/index.js bench",
+    "benchmark:doctor": "node ../scripts/benchmark-lab.mjs doctor",
+    "benchmark:smoke": "node ../scripts/benchmark-lab.mjs smoke",
+    "benchmark:baseline": "node ../scripts/benchmark-lab.mjs baseline",
+    "benchmark:compare": "node ../scripts/benchmark-lab.mjs compare",
+    "benchmark:remote": "node ../scripts/benchmark-lab.mjs remote",
+    "benchmark:report": "node ../scripts/benchmark-lab.mjs report"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

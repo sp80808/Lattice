@@ -55,5 +55,9 @@
         "replace": "barrel2"
       }
     }
-  ]
+  ],
+  "metadata": {
+    "category": "software",
+    "difficulty": "medium"
+  }
 }

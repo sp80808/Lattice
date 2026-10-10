@@ -13,6 +13,7 @@ overrides:
   '@lattice/ledger': 'workspace:*'
   '@lattice/mcp': 'workspace:*'
   '@lattice/mining': 'workspace:*'
+  '@lattice/orchestrator': 'workspace:*'
   '@lattice/policy': 'workspace:*'
   '@lattice/protocol': 'workspace:*'
   '@lattice/providers': 'workspace:*'

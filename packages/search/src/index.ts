@@ -71,6 +71,36 @@ export interface DecisionFrame {
 
 export type AutonomyMode = "autopilot" | "supervised" | "manual";
 
+/** Live spend accumulated across a search run, from provider-reported usage. */
+export interface BudgetSpend {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  wallMs: number;
+}
+
+/** Hard limits that stop the search before they are exceeded by another round. */
+export interface SearchBudgetLimits {
+  maxTokens?: number;
+  maxCostUsd?: number;
+  maxWallMs?: number;
+}
+
+function exceedBudget(spend: BudgetSpend, limits: SearchBudgetLimits): "tokens" | "cost" | "wall" | undefined {
+  if (limits.maxTokens !== undefined && spend.totalTokens > limits.maxTokens) return "tokens";
+  if (limits.maxCostUsd !== undefined && spend.costUsd > limits.maxCostUsd) return "cost";
+  if (limits.maxWallMs !== undefined && spend.wallMs > limits.maxWallMs) return "wall";
+  return undefined;
+}
+
+function describeSpend(spend: BudgetSpend, limit: "tokens" | "cost" | "wall"): string {
+  return (
+    `${limit} budget exhausted: tokens=${spend.totalTokens} ` +
+    `cost=$${spend.costUsd.toFixed(4)} wall=${Math.round(spend.wallMs)}ms`
+  );
+}
+
 export interface AutonomyPolicy {
   mode?: AutonomyMode;
   minConfidence?: number;
@@ -102,6 +132,12 @@ export type SearchTraceEvent =
       type: "candidates.generated";
       round: number;
       candidates: CandidateAction[];
+    }
+  | {
+      type: "budget.exhausted";
+      round: number;
+      limit: "tokens" | "cost" | "wall";
+      spend: BudgetSpend;
     }
   | {
       type: "decision.framed";
@@ -156,6 +192,10 @@ export interface SearchLoopOptions {
   parallelism?: number;
   autonomy?: AutonomyPolicy;
   reviewer?: DecisionReviewer;
+  /** Hard spend limits; defaults to the TAP budget's token/cost fields. */
+  budget?: SearchBudgetLimits;
+  /** Aborting stops the loop before the next model call or experiment. */
+  signal?: AbortSignal;
   onTrace?: (event: SearchTraceEvent) => void | Promise<void>;
 }
 
@@ -164,6 +204,8 @@ export interface SearchLoopResult {
   rounds: number;
   tap: TapPacket;
   selected: string[];
+  /** Provider-reported spend accumulated over the loop. */
+  spend: BudgetSpend;
 }
 
 interface CandidateEnvelope {
@@ -226,22 +268,78 @@ function parseCandidates(text: string, limit: number): CandidateAction[] {
   return result;
 }
 
+/**
+ * Character budget for the evidence section of a decision state. Claude Code
+ * uses a five-layer compaction pipeline and OpenHands condenses conversation
+ * history; Lattice's equivalent is priority packing: verified evidence is kept
+ * preferentially (an objective result outranks a model assertion), then recent
+ * unverified records, oldest dropped first. Truncation is always reported so
+ * the decision model knows its context is lossy.
+ */
+const STATE_EVIDENCE_CHAR_BUDGET = 12_000;
+const STATE_UNCERTAINTY_LIMIT = 12;
+
+interface PackedEvidence {
+  /** Chronological `id:kind:verified:summary` lines that fit the budget. */
+  lines: string[];
+  /** Evidence ids kept, matching `lines` order. */
+  ids: string[];
+  /** Records omitted for budget, always unverified and oldest-first. */
+  dropped: number;
+}
+
+export function packEvidence(
+  evidence: EvidenceRef[],
+  charBudget = STATE_EVIDENCE_CHAR_BUDGET,
+): PackedEvidence {
+  const line = (item: EvidenceRef) =>
+    `${item.id}:${item.kind}:${item.verified ? "verified" : "unverified"}:${item.summary}`;
+
+  // Visit order = priority: verified first (most recent verified wins), then
+  // unverified most-recent-first; the tail of this order is what gets dropped.
+  const priority = [
+    ...evidence.map((item, index) => ({ item, index })).filter((entry) => entry.item.verified).reverse(),
+    ...evidence.map((item, index) => ({ item, index })).filter((entry) => !entry.item.verified).reverse(),
+  ];
+
+  const kept = new Set<number>();
+  const droppedIndexes: number[] = [];
+  let used = 0;
+  for (const entry of priority) {
+    const size = line(entry.item).length;
+    if (used + size > charBudget && kept.size > 0) {
+      droppedIndexes.push(entry.index);
+      continue;
+    }
+    kept.add(entry.index);
+    used += size;
+  }
+
+  const indexes = [...kept].sort((a, b) => a - b);
+  return {
+    lines: indexes.map((index) => line(evidence[index]!)),
+    ids: indexes.map((index) => evidence[index]!.id),
+    dropped: droppedIndexes.length,
+  };
+}
+
 function compactState(tap: TapPacket): string {
-  const evidence = tap.evidence
-    .slice(-12)
-    .map(
-      (item) =>
-        `${item.id}:${item.kind}:${item.verified ? "verified" : "unverified"}:${item.summary}`,
-    )
-    .join("\n");
+  const packed = packEvidence(tap.evidence);
+  const uncertainties =
+    tap.uncertainties.length > STATE_UNCERTAINTY_LIMIT
+      ? [
+          ...tap.uncertainties.slice(-STATE_UNCERTAINTY_LIMIT),
+          `(${tap.uncertainties.length - STATE_UNCERTAINTY_LIMIT} older uncertainties omitted)`,
+        ]
+      : tap.uncertainties;
 
   return [
     `OBJECTIVE:${tap.task}`,
     tap.constraints.length ? `CONSTRAINTS:${tap.constraints.join(" | ")}` : "CONSTRAINTS:none",
-    evidence ? `EVIDENCE:\n${evidence}` : "EVIDENCE:none",
-    tap.uncertainties.length
-      ? `UNCERTAINTIES:${tap.uncertainties.join(" | ")}`
-      : "UNCERTAINTIES:none",
+    packed.lines.length
+      ? `EVIDENCE:\n${packed.lines.join("\n")}${packed.dropped ? `\nEVIDENCE_OMITTED:${packed.dropped} older unverified record(s)` : ""}`
+      : "EVIDENCE:none",
+    uncertainties.length ? `UNCERTAINTIES:${uncertainties.join(" | ")}` : "UNCERTAINTIES:none",
   ].join("\n");
 }
 
@@ -317,11 +415,11 @@ export function compileDecisionFrame(
     id: UNKNOWN_CHOICE_ID,
     label: "Insufficient evidence / none of these",
     detail:
-      "Select when the supplied evidence does not justify any option or the option set is materially incomplete.",
+      "Select ONLY when no supplied action can advance the task or when evidence explicitly contradicts all candidates.",
   });
 
   const question =
-    "Rank the available next actions by expected verified progress per unit cost and risk, using only the supplied evidence. Do not assume any candidate hypothesis is true.";
+    "Select the best candidate action or experiment to advance the objective using only the supplied evidence, prioritizing low-cost discriminating probes and validated repairs.";
 
   const state = compactState(tap);
   const audit: QuestionAuditFinding[] = [];
@@ -393,7 +491,7 @@ export function compileDecisionFrame(
       "reversibility",
     ],
     state,
-    evidenceIds: tap.evidence.slice(-12).map((item) => item.id),
+    evidenceIds: packEvidence(tap.evidence).ids,
     choices,
     allowUnknown,
     audit,
@@ -493,8 +591,34 @@ export async function runSearchLoop(
   const parallelism = Math.max(1, Math.min(options.parallelism ?? topK, topK));
   const autonomy = options.autonomy ?? { mode: "autopilot" };
   const selected: string[] = [];
+  const limits: SearchBudgetLimits = {
+    maxTokens: options.budget?.maxTokens ?? tap.budget.maxTokens,
+    maxCostUsd: options.budget?.maxCostUsd ?? tap.budget.maxCostUsd,
+    maxWallMs: options.budget?.maxWallMs,
+  };
+  const started = performance.now();
+  const spend: BudgetSpend = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, wallMs: 0 };
+  const track = (usage: ProviderUsage | undefined) => {
+    spend.inputTokens += usage?.inputTokens ?? 0;
+    spend.outputTokens += usage?.outputTokens ?? 0;
+    spend.totalTokens +=
+      usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+    spend.costUsd += usage?.costUsd ?? 0;
+  };
 
   for (let round = 1; round <= maxRounds; round++) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new Error("search aborted");
+    }
+    spend.wallMs = performance.now() - started;
+
+    let exceeded = exceedBudget(spend, limits);
+    if (exceeded) {
+      await options.onTrace?.({ type: "budget.exhausted", round, limit: exceeded, spend });
+      tap.uncertainties.push(`round ${round}: ${describeSpend(spend, exceeded)}`);
+      return { status: "budget_exhausted", rounds: round, tap, selected, spend };
+    }
+
     const state = compactState(tap);
     const generated = await options.generator.generate({
       system:
@@ -503,6 +627,14 @@ export async function runSearchLoop(
       context: [state],
       temperature: 0.3,
     });
+    track(generated.usage);
+    spend.wallMs = performance.now() - started;
+    exceeded = exceedBudget(spend, limits);
+    if (exceeded) {
+      await options.onTrace?.({ type: "budget.exhausted", round, limit: exceeded, spend });
+      tap.uncertainties.push(`round ${round}: ${describeSpend(spend, exceeded)} (proposal stage)`);
+      return { status: "budget_exhausted", rounds: round, tap, selected, spend };
+    }
 
     const candidates = parseCandidates(generated.text, candidatesPerRound);
     tap.candidateActions = candidates.map(
@@ -531,7 +663,7 @@ export async function runSearchLoop(
           (finding) => `round ${round} framing error: ${finding.message}`,
         ),
       );
-      return { status: "blocked", rounds: round, tap, selected };
+      return { status: "blocked", rounds: round, tap, selected, spend };
     }
 
     const decision = await options.decision.decide({
@@ -545,6 +677,15 @@ export async function runSearchLoop(
       allowUnknown: frame.allowUnknown,
       choices: frame.choices.filter((choice) => choice.id !== UNKNOWN_CHOICE_ID),
     });
+    track(decision.usage);
+    spend.wallMs = performance.now() - started;
+
+    const exceededAfterDecision = exceedBudget(spend, limits);
+    if (exceededAfterDecision) {
+      await options.onTrace?.({ type: "budget.exhausted", round, limit: exceededAfterDecision, spend });
+      tap.uncertainties.push(`round ${round}: ${describeSpend(spend, exceededAfterDecision)} (decision stage)`);
+      return { status: "budget_exhausted", rounds: round, tap, selected, spend };
+    }
 
     await options.onTrace?.({
       type: "decision.completed",
@@ -560,10 +701,25 @@ export async function runSearchLoop(
       usage: decision.usage,
     });
 
+    const explicitlyUnknown = decision.selected.includes(UNKNOWN_CHOICE_ID);
     let selectedIds = decision.selected
       .filter((id) => id !== UNKNOWN_CHOICE_ID)
       .filter((id, index, all) => all.indexOf(id) === index)
       .slice(0, topK);
+
+    if (
+      !explicitlyUnknown &&
+      selectedIds.length === 0 &&
+      autonomy.mode === "autopilot" &&
+      decision.scores
+    ) {
+      const substantive = Object.entries(decision.scores)
+        .filter(([id]) => id !== UNKNOWN_CHOICE_ID)
+        .sort((a, b) => b[1] - a[1]);
+      if (substantive.length > 0 && substantive[0][1] > 0) {
+        selectedIds = [substantive[0][0]];
+      }
+    }
 
     let selectedCandidates = selectedIds
       .map((id) => candidates.find((candidate) => candidate.id === id))
@@ -593,7 +749,7 @@ export async function runSearchLoop(
         tap.uncertainties.push(
           `round ${round}: human review required but no reviewer is available (${reasons.join("; ")})`,
         );
-        return { status: "blocked", rounds: round, tap, selected };
+        return { status: "blocked", rounds: round, tap, selected, spend };
       }
 
       const review = await options.reviewer({
@@ -615,7 +771,7 @@ export async function runSearchLoop(
         tap.uncertainties.push(
           `round ${round}: human stopped decision${review.note ? `: ${review.note}` : ""}`,
         );
-        return { status: "blocked", rounds: round, tap, selected };
+        return { status: "blocked", rounds: round, tap, selected, spend };
       }
 
       if (review.action === "refine") {
@@ -652,7 +808,7 @@ export async function runSearchLoop(
       tap.uncertainties.push(
         `round ${round}: decision layer could not justify any candidate`,
       );
-      return { status: "blocked", rounds: round, tap, selected };
+      return { status: "blocked", rounds: round, tap, selected, spend };
     }
 
     selected.push(...selectedIds);
@@ -699,15 +855,20 @@ export async function runSearchLoop(
     }
 
     if (solved) {
-      return { status: "solved", rounds: round, tap, selected };
+      return { status: "solved", rounds: round, tap, selected, spend };
     }
   }
 
   tap.uncertainties.push("search round budget exhausted");
+  spend.wallMs = performance.now() - started;
   return {
     status: "budget_exhausted",
     rounds: maxRounds,
     tap,
     selected,
+    spend,
   };
 }
+
+export * from "./retrieval.js";
+export * from "./capabilities.js";

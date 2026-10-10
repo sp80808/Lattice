@@ -65,3 +65,30 @@ test("auto mode refuses to run without objective verification", () => {
     /requires configuration for: verify/,
   );
 });
+
+test("retry and budget settings survive config parsing and reach the search options", () => {
+  const config = parseLatticeConfig({
+    mode: "auto",
+    model: {
+      provider: "systemone",
+      baseUrl: "http://127.0.0.1:8080",
+      model: "tev1:0.8b",
+      retry: { attempts: 4, baseDelayMs: 100, maxDelayMs: 2000 },
+    },
+    agent: { preset: "qwen-code" },
+    verify: { command: "npm", args: ["test"] },
+    search: {
+      maxRounds: 3,
+      budget: { maxTokens: 50_000, maxCostUsd: 0.5, maxWallMs: 120_000 },
+    },
+  });
+
+  assert.deepEqual(config.model?.retry, { attempts: 4, baseDelayMs: 100, maxDelayMs: 2000 });
+  const options = createRunTaskOptions(config);
+  assert.equal(options.search?.maxRounds, 3);
+  assert.deepEqual(options.search?.budget, {
+    maxTokens: 50_000,
+    maxCostUsd: 0.5,
+    maxWallMs: 120_000,
+  });
+});
