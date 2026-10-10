@@ -1,0 +1,51 @@
+{
+  "id": "py-fib-base",
+  "description": "fib(1) returns 0 instead of 1",
+  "task": "fix the failing fib test",
+  "verify": {
+    "command": "python3",
+    "args": [
+      "test_fib.py"
+    ],
+    "timeoutMs": 30000,
+    "expectStdout": "OK"
+  },
+  "candidates": [
+    {
+      "id": "inspect",
+      "label": "Inspect fibonacci implementation",
+      "action": "read fib.py",
+      "expectedEvidence": "source of fib()",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "wrong-zero",
+      "label": "Change base case for zero to 1",
+      "action": "edit fib.py base case for n <= 0",
+      "expectedEvidence": "tests after touching n <= 0",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "fib.py",
+        "find": "return 0\n    if n == 1:",
+        "replace": "return 1\n    if n == 1:"
+      }
+    },
+    {
+      "id": "fix-fib-one",
+      "label": "Correct fib(1) base case to return 1",
+      "action": "return 1 when n == 1",
+      "expectedEvidence": "fib tests pass",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "fib.py",
+        "find": "return 0  # BUG: should be 1",
+        "replace": "return 1"
+      },
+      "solves": true
+    }
+  ],
+  "metadata": {
+    "category": "software",
+    "difficulty": "easy"
+  }
+}

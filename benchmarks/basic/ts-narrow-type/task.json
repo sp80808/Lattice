@@ -1,0 +1,39 @@
+{
+  "id": "ts-narrow-type",
+  "description": "formatValue crashes on non-string or null values",
+  "task": "handle non-string and null in formatValue",
+  "verify": {
+    "command": "{NODE}",
+    "args": [
+      "--test",
+      "test/"
+    ],
+    "timeoutMs": 30000
+  },
+  "candidates": [
+    {
+      "id": "inspect",
+      "label": "Inspect formatValue implementation",
+      "action": "read src/format.js",
+      "expectedEvidence": "source of formatValue()",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "fix-format",
+      "label": "Coerce to string safely before toUpperCase",
+      "action": "handle null and numbers in formatValue",
+      "expectedEvidence": "all format tests pass",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "src/format.js",
+        "find": "return val.toUpperCase();",
+        "replace": "if (val == null) return \"\";\n  return String(val).toUpperCase();"
+      },
+      "solves": true
+    }
+  ],
+  "metadata": {
+    "category": "software",
+    "difficulty": "easy"
+  }
+}

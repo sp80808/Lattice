@@ -31,6 +31,12 @@
     },
     {
       "path": "../../packages/policy"
+    },
+    {
+      "path": "../../packages/bench"
+    },
+    {
+      "path": "../tui"
     }
   ],
   "include": [

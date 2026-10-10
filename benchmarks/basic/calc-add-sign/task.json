@@ -1,0 +1,63 @@
+{
+  "id": "calc-add-sign",
+  "description": "add() subtracts instead of adding",
+  "task": "fix the failing add test",
+  "verify": {
+    "command": "{NODE}",
+    "args": [
+      "--test",
+      "test/"
+    ],
+    "timeoutMs": 60000
+  },
+  "candidates": [
+    {
+      "id": "inspect",
+      "label": "Inspect the calculator module",
+      "action": "read src/calc.js",
+      "expectedEvidence": "source of add()",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "rewrite",
+      "label": "Rewrite the calculator module",
+      "action": "replace src/calc.js wholesale",
+      "expectedEvidence": "tests after a rewrite",
+      "estimatedCost": "high",
+      "patch": {
+        "file": "src/calc.js",
+        "find": "export function add",
+        "replace": "export function plus"
+      }
+    },
+    {
+      "id": "patch-utils",
+      "label": "Patch the shared utils helper",
+      "action": "edit src/utils.js",
+      "expectedEvidence": "tests after touching utils",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "src/utils.js",
+        "find": "helper",
+        "replace": "helper2"
+      }
+    },
+    {
+      "id": "fix-add",
+      "label": "Change the operator in add",
+      "action": "use + in add()",
+      "expectedEvidence": "add test passes",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "src/calc.js",
+        "find": "a - b",
+        "replace": "a + b"
+      },
+      "solves": true
+    }
+  ],
+  "metadata": {
+    "category": "software",
+    "difficulty": "easy"
+  }
+}

@@ -74,6 +74,7 @@ export type RunEventType =
   | "tap.updated"
   | "decision.requested"
   | "decision.completed"
+  | "budget.exhausted"
   | "tool.started"
   | "tool.completed"
   | "run.completed"
@@ -147,6 +148,8 @@ export interface GeneratorRequest {
   prompt: string;
   context?: string[];
   temperature?: number;
+  /** Maximum generated output tokens; excludes input tokens. */
+  maxTokens?: number;
 }
 
 export interface GeneratorRoutingMetadata {

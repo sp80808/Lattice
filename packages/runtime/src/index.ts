@@ -7,7 +7,7 @@ import {
   type CleanupPolicy,
 } from "@lattice/agents";
 import type { RunTaskOptions } from "@lattice/core";
-import type { DecisionProvider, Verifier } from "@lattice/protocol";
+import type { DecisionProvider, GeneratorProvider, Verifier } from "@lattice/protocol";
 import {
   createWitnessVerifier,
   resolveTsr,
@@ -23,6 +23,7 @@ import {
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
   RandomDecisionProvider,
+  SystemOneDecisionProvider,
   seededRandom,
   type OpenAICompatibleConfig,
 } from "@lattice/providers";
@@ -34,7 +35,7 @@ export type { RoutingCandidate } from "./model-routing.js";
 export type RuntimeMode = "auto" | "observe";
 
 export interface ModelEndpointConfig {
-  provider?: "openai-compatible";
+  provider?: "openai-compatible" | "systemone";
   baseUrl: string;
   model: string;
   apiKeyEnv?: string;
@@ -42,6 +43,15 @@ export interface ModelEndpointConfig {
   jsonMode?: boolean;
   /** Provider-side maximum completion tokens, when supported. */
   maxTokens?: number;
+  /** Transient-failure retry policy. Defaults: 2 attempts total, 250ms base, 4s cap. */
+  retry?: RetryPolicy;
+}
+
+export interface RetryPolicy {
+  /** Total attempts including the first call. 1 disables retries. */
+  attempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
 }
 
 /** One explicitly configured generator; availability figures are run-start snapshots. */
@@ -150,6 +160,12 @@ export interface LatticeConfig {
     candidatesPerRound?: number;
     topK?: number;
     parallelism?: number;
+    /** Hard spend limits enforced by the search loop. */
+    budget?: {
+      maxTokens?: number;
+      maxCostUsd?: number;
+      maxWallMs?: number;
+    };
   };
   workspace?: {
     cleanup?: CleanupPolicy;
@@ -175,7 +191,8 @@ function validateModel(value: unknown, field: string): ModelEndpointConfig {
   }
   if (
     value.provider !== undefined &&
-    value.provider !== "openai-compatible"
+    value.provider !== "openai-compatible" &&
+    value.provider !== "systemone"
   ) {
     throw new Error(`${field}.provider is not supported yet`);
   }
@@ -404,6 +421,7 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
     jsonMode: model.jsonMode,
     maxTokens: model.maxTokens,
     providerName: "runtime-config",
+    retry: model.retry,
   };
 }
 
@@ -419,7 +437,21 @@ export function createDecisionProvider(
       { allowUnknown: false },
     );
   }
+  if (model.provider === "systemone") {
+    return new SystemOneDecisionProvider({
+      baseUrl: model.baseUrl,
+      model: model.model,
+      timeoutMs: model.timeoutMs,
+    });
+  }
   return new OpenAICompatibleDecisionProvider(endpointConfig(model));
+}
+
+/** Resolve a generator without requiring a coding agent or verifier. */
+export function createGeneratorProvider(config: LatticeConfig): GeneratorProvider | undefined {
+  const model = config.models?.generator ?? config.model;
+  if (!model) return undefined;
+  return new OpenAICompatibleGeneratorProvider(endpointConfig(model));
 }
 
 export function createRunTaskOptions(
@@ -469,7 +501,7 @@ export function createRunTaskOptions(
         })),
         decision,
       )
-    : new OpenAICompatibleGeneratorProvider(endpointConfig(generatorModel!));
+    : createGeneratorProvider(config)!;
 
   const agent =
     config.agent!.preset === "qwen-code"
@@ -507,6 +539,7 @@ export function createRunTaskOptions(
       candidatesPerRound: config.search?.candidatesPerRound,
       topK: config.search?.topK,
       parallelism: config.search?.parallelism,
+      budget: config.search?.budget,
       autonomy: {
         mode: config.autonomy?.mode ?? "autopilot",
         minConfidence: config.autonomy?.minConfidence,

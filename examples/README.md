@@ -1,12 +1,13 @@
 # Lattice examples
 
 Everything here runs offline after `npm run build` unless noted. `scripts/check-examples.sh`
-runs all of them (CI does too).
+runs the offline checks (CI does too); live provider calls are opt-in.
 
 | Example | What it shows | Run |
 |---|---|---|
 | [`demo/run-demo.sh`](demo/run-demo.sh) | CLI walkthrough: `init` → `doctor` → run → `runs` → `show` on a repo with a failing test | `examples/demo/run-demo.sh` |
 | [`embedded/offline-search-loop.mjs`](embedded/offline-search-loop.mjs) | Embedding `@lattice/core`'s search loop with your own generator, decision provider and executor; the bug is fixed and *proven* fixed by test evidence | `node examples/embedded/offline-search-loop.mjs` |
+| [`planning/`](planning/) | Source-grounded island planning with explicit excerpts and unverified draft receipts; live Codex trial requires authentication and source-transfer approval | `node examples/planning/plan-with-codex.mjs --self-test` (offline adapter check) |
 | [`sdk/typescript/run-and-inspect.mjs`](sdk/typescript/run-and-inspect.mjs) | `@lattice/sdk` against the daemon: run, list, show, events, decide, doctor, typed errors | `node examples/sdk/typescript/run-and-inspect.mjs` |
 | [`sdk/python/run_and_inspect.py`](sdk/python/run_and_inspect.py) | The same flow with the stdlib-only Python client | `python3 examples/sdk/python/run_and_inspect.py` |
 | [`review/remote-reviewer.mjs`](review/remote-reviewer.mjs) | A full **auto-mode** run (fake model, real worktree + tests) where a program answers Lattice's manual-mode review over the API, streaming events via SSE | `node examples/review/remote-reviewer.mjs` |

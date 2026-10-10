@@ -13,6 +13,9 @@
     "@lattice/protocol": "0.0.1",
     "@lattice/analytics": "0.0.1",
     "@lattice/mining": "0.0.1",
-    "@lattice/policy": "0.0.1"
+    "@lattice/policy": "0.0.1",
+    "@lattice/bench": "0.0.1",
+    "@lattice/orchestrator": "0.0.1",
+    "@lattice/tui": "workspace:*"
   }
 }

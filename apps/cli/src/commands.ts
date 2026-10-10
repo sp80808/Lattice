@@ -1,6 +1,19 @@
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { resolve } from "node:path";
 import { buildStatsReport, formatStatsReport } from "@lattice/analytics";
+import {
+  compareBenchReports,
+  configuredProvider,
+  formatComparison,
+  formatReport,
+  loadSuite,
+  OFFLINE_STRATEGIES,
+  resolveTools,
+  runBenchmark,
+  selectShard,
+  selfCheckSuite,
+  type StrategyName,
+} from "@lattice/bench";
 import { serveMcpStdio } from "@lattice/mcp";
 import {
   formatMiningReport,
@@ -25,6 +38,7 @@ import {
   listRuns,
   loadConfig,
   parseCommandLine,
+  planTask,
   runDoctor,
   writeConfig,
   type InitPreset,
@@ -101,6 +115,61 @@ export async function runCommand(args: string[]): Promise<number> {
   console.log(`evidence: ${result.tap.evidence.length}`);
   console.log(`events: ${result.eventLogPath}`);
   return 0;
+}
+
+export async function planCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parse(args, {
+    config: { type: "string" },
+    file: { type: "string", multiple: true },
+    "lattice-dir": { type: "string" },
+  });
+  const task = positionals.join(" ").trim();
+  if (!task) throw new UsageError("plan requires a task");
+  if (!values.file?.length) throw new UsageError("plan requires at least one --file");
+
+  const result = await planTask(task, {
+    cwd: cwdOf(values),
+    configPath: values.config,
+    files: values.file,
+    latticeDir: values["lattice-dir"],
+  });
+  if (values.json) {
+    printJson(result);
+  } else {
+    console.log(result.summary);
+    console.error(`receipt: ${result.eventLogPath}`);
+  }
+  return 0;
+}
+
+export async function adaptiveCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parse(args, {
+    autonomy: { type: "string" },
+  });
+  const task = positionals.join(" ").trim();
+  if (!task) throw new UsageError("adaptive requires a task");
+
+  const cwd = cwdOf(values);
+  const autonomy = (values.autonomy ?? "supervised") as "observe" | "plan" | "supervised" | "auto";
+  const { runAdaptiveWorkflow } = await import("@lattice/core");
+  const outcome = await runAdaptiveWorkflow({ task, cwd, autonomy });
+
+  if (values.json) {
+    printJson(outcome);
+    return outcome.status === "completed" ? 0 : 1;
+  }
+
+  console.log(`adaptive: status=${outcome.status}`);
+  console.log(`class: ${outcome.taskClassification.class} (${(outcome.taskClassification.confidence * 100).toFixed(0)}%)`);
+  console.log(`stack: ${outcome.fingerprint.stacks.join(", ") || "none"} [${outcome.fingerprint.appType}]`);
+  console.log(`capabilities: ${outcome.capabilities.selected.map((c) => c.id).join(", ") || "none"}`);
+  console.log(`contract: ${outcome.contract.commands.join("; ") || "none"}`);
+  console.log(`fidelity: score=${outcome.fidelityReport.fidelityScore.toFixed(2)} (ok=${outcome.fidelityReport.ok})`);
+  console.log(`summary: ${outcome.summary}`);
+  if (outcome.clarificationPrompt) {
+    console.log(`clarification needed: ${outcome.clarificationPrompt}`);
+  }
+  return outcome.status === "completed" ? 0 : 1;
 }
 
 export async function initCommand(args: string[]): Promise<number> {
@@ -336,6 +405,90 @@ export async function mcpCommand(args: string[]): Promise<number> {
   const { values } = parse(args, {});
   await serveMcpStdio({ cwd: cwdOf(values) });
   return 0;
+}
+
+export async function benchCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parse(args, {
+    strategies: { type: "string", short: "s" },
+    trials: { type: "string", short: "n" },
+    seed: { type: "string" },
+    rounds: { type: "string" },
+    task: { type: "string", multiple: true },
+    config: { type: "string" },
+    out: { type: "string", short: "o" },
+    check: { type: "boolean" },
+    concurrency: { type: "string", short: "j" },
+    baseline: { type: "string" },
+    shard: { type: "string" },
+  });
+  const cwd = cwdOf(values);
+  const suiteDir = positionals[0] ?? "benchmarks/basic";
+  const number = (name: string, raw: string | undefined, fallback: number, min = 0) => {
+    const value = raw === undefined ? fallback : Number(raw);
+    if (!Number.isInteger(value) || value < min) throw new UsageError(`--${name} must be an integer >= ${min}`);
+    return value;
+  };
+
+  const loaded = await loadSuite(resolve(cwd, suiteDir));
+  const suite = values.shard
+    ? { ...loaded, tasks: selectShard(loaded.tasks, values.shard) }
+    : loaded;
+  const tools = await resolveTools(cwd);
+
+  if (values.check) {
+    const rows = await selfCheckSuite(suite, tools);
+    if (values.json) printJson(rows);
+    else {
+      for (const row of rows) {
+        const ok = row.baselineFails && row.solutionPasses;
+        console.log(
+          `${row.skipped ? "-" : ok ? "✓" : "✗"} ${row.task.padEnd(24)} ` +
+            (row.skipped ?? `fails as shipped: ${row.baselineFails}  passes with solution: ${row.solutionPasses}`),
+        );
+      }
+    }
+    return rows.every((row) => row.skipped || (row.baselineFails && row.solutionPasses)) ? 0 : 1;
+  }
+
+  const requested = (values.strategies ? values.strategies.split(",") : [...OFFLINE_STRATEGIES]).map((name) => name.trim());
+  const known = new Set<string>([...OFFLINE_STRATEGIES, "configured"]);
+  const unknown = requested.filter((name) => !known.has(name));
+  if (unknown.length) {
+    throw new UsageError(`unknown strategy: ${unknown.join(", ")} (known: ${[...known].join(", ")})`);
+  }
+  const strategies = requested as StrategyName[];
+
+  let configured;
+  if (strategies.includes("configured")) {
+    configured = await configuredProvider(cwd, values.config);
+  }
+
+  const report = await runBenchmark(suite, {
+    strategies,
+    trials: number("trials", values.trials, 40, 1),
+    seed: number("seed", values.seed, 1),
+    maxRounds: number("rounds", values.rounds, 2, 1),
+    only: values.task,
+    tools,
+    concurrency: number("concurrency", values.concurrency, 1, 1),
+    configured: configured?.provider,
+    configuredDescription: configured?.description,
+  });
+
+  if (values.baseline) {
+    const { readFile } = await import("node:fs/promises");
+    const baseline = JSON.parse(await readFile(resolve(cwd, values.baseline), "utf8")) as Parameters<
+      typeof compareBenchReports
+    >[0];
+    report.comparison = compareBenchReports(baseline, report);
+  }
+
+  if (values.out) {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(resolve(cwd, values.out), JSON.stringify(report, null, 2) + "\n", "utf8");
+  }
+  console.log(values.json ? JSON.stringify(report, null, 2) : formatReport(report));
+  return report.comparison?.regressions.length ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------

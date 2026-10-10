@@ -4,11 +4,13 @@ import {
   TAP_VERSION,
   UNKNOWN_CHOICE_ID,
   type DecisionProvider,
+  type EvidenceRef,
   type GeneratorProvider,
   type TapPacket,
 } from "@lattice/protocol";
 import {
   compileDecisionFrame,
+  packEvidence,
   runSearchLoop,
   type ExperimentExecutor,
   type SearchTraceEvent,
@@ -67,6 +69,63 @@ const generator: GeneratorProvider = {
     };
   },
 };
+
+function evidence(id: string, verified: boolean, summary = `summary ${id}`): EvidenceRef {
+  return {
+    id,
+    kind: verified ? "test" : "model",
+    verified,
+    source: `source ${id}`,
+    summary,
+    createdAt: new Date(0).toISOString(),
+  };
+}
+
+test("evidence packing prioritizes verified records, drops oldest unverified, and reports loss", () => {
+  const records = [
+    evidence("ev-old-unverified", false),
+    evidence("ev-verified", true),
+    evidence("ev-new-unverified", false),
+  ];
+  const packed = packEvidence(records, 120);
+  // Verified first, then recent unverified; the oldest unverified is what drops.
+  assert.deepEqual(packed.lines.map((line) => line.split(":")[0]), ["ev-verified", "ev-new-unverified"]);
+  assert.deepEqual(packed.ids, ["ev-verified", "ev-new-unverified"]);
+  assert.equal(packed.dropped, 1);
+
+  // Everything fits: no loss reported, chronological order preserved.
+  const roomy = packEvidence(records, 10_000);
+  assert.deepEqual(roomy.ids, ["ev-old-unverified", "ev-verified", "ev-new-unverified"]);
+  assert.equal(roomy.dropped, 0);
+
+  // A single record larger than the budget is still kept: dropping everything
+  // would silently make the state evidence-free.
+  const huge = packEvidence([evidence("ev-huge", true, "x".repeat(500))], 100);
+  assert.deepEqual(huge.ids, ["ev-huge"]);
+  assert.equal(huge.dropped, 0);
+
+  assert.deepEqual(packEvidence([], 100), { lines: [], ids: [], dropped: 0 });
+});
+
+test("decision state omits stale evidence and says so instead of silently shrinking", async () => {
+  const many: EvidenceRef[] = Array.from({ length: 40 }, (_, index) =>
+    evidence(`ev-${index}`, index % 4 === 0, "y".repeat(400)),
+  );
+  const verifiedCount = many.filter((item) => item.verified).length;
+  const frame = compileDecisionFrame({ ...tap(), evidence: many }, [
+    { id: "a", label: "Inspect", action: "inspect", expectedEvidence: "evidence" },
+  ]);
+
+  assert.ok(frame.evidenceIds.length < many.length, "truncation must happen");
+  // Every verified record survives; only stale unverified ones are omitted.
+  const verifiedIds = many.filter((item) => item.verified).map((item) => item.id);
+  for (const id of verifiedIds) assert.ok(frame.evidenceIds.includes(id), `${id} must survive compaction`);
+  assert.equal(verifiedCount, 10);
+  assert.ok(
+    frame.state.includes(`EVIDENCE_OMITTED:${many.length - frame.evidenceIds.length}`),
+    frame.state.slice(0, 300),
+  );
+});
 
 test("question compiler produces evidence-grounded neutral frame", () => {
   const frame = compileDecisionFrame(tap(), [
@@ -483,4 +542,192 @@ test("an unusable generator reply is traced with its usage before the run fails"
   );
   const rejected = trace.find((event) => event.type === "candidates.rejected");
   assert.equal(rejected?.type === "candidates.rejected" && rejected.usage?.inputTokens, 30);
+});
+
+/** Providers that bill tokens/cost per call so budget logic can be exercised. */
+function metered(options: { generatorTokens?: number; decisionTokens?: number; costUsd?: number } = {}) {
+  const generatorTokens = options.generatorTokens ?? 100;
+  const decisionTokens = options.decisionTokens ?? 50;
+  const costUsd = options.costUsd ?? 0.01;
+  const generatorProvider: GeneratorProvider = {
+    async generate() {
+      return {
+        text: JSON.stringify({
+          candidates: [
+            { id: "inspect", label: "Inspect parser state", action: "read the parser state transition", expectedEvidence: "identify where state diverges" },
+            { id: "repro", label: "Minimize failing test", action: "run a minimal reproduction", expectedEvidence: "isolate the smallest failing input" },
+          ],
+        }),
+        identity: { provider: "metered" },
+        usage: { inputTokens: generatorTokens, outputTokens: generatorTokens / 2, totalTokens: generatorTokens * 1.5, costUsd, latencyMs: 5 },
+      };
+    },
+  };
+  const decisionProvider: DecisionProvider = {
+    async decide(request) {
+      const id = request.choices[0]!.id;
+      return {
+        selected: [id],
+        scores: { [id]: 0.9 },
+        confidence: 0.9,
+        identity: { provider: "metered" },
+        usage: { inputTokens: decisionTokens, outputTokens: decisionTokens / 2, totalTokens: decisionTokens * 1.5, costUsd, latencyMs: 5 },
+      };
+    },
+  };
+  return { generator: generatorProvider, decision: decisionProvider };
+}
+
+const neverExecutor: ExperimentExecutor = {
+  async execute(candidate) {
+    return {
+      candidateId: candidate.id,
+      status: "failure",
+      terminal: false,
+      summary: "not solved",
+      evidence: [],
+    };
+  },
+};
+
+test("spend accumulates from generator and decision usage and is returned", async () => {
+  const { generator: gen, decision } = metered();
+  const result = await runSearchLoop({
+    tap: { ...tap(), budget: { maxRounds: 2 } },
+    generator: gen,
+    decision,
+    executor: neverExecutor,
+  });
+
+  assert.equal(result.status, "budget_exhausted", "round budget runs out");
+  // 2 rounds × (generator 150 + decision 75) tokens.
+  assert.equal(result.spend.totalTokens, 450);
+  assert.equal(result.spend.inputTokens, 300);
+  assert.equal(result.spend.outputTokens, 150);
+  assert.ok(Math.abs(result.spend.costUsd - 0.04) < 1e-9, `cost was ${result.spend.costUsd}`);
+  assert.ok(result.spend.wallMs >= 0);
+});
+
+test("a token budget stops the loop before it is exceeded and records why", async () => {
+  const { generator: gen, decision } = metered();
+  const events: SearchTraceEvent[] = [];
+  const result = await runSearchLoop({
+    tap: { ...tap(), budget: { maxRounds: 4, maxTokens: 200 } },
+    generator: gen,
+    decision,
+    executor: neverExecutor,
+    onTrace: (event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(result.status, "budget_exhausted");
+  assert.equal(result.rounds, 1, "round 1 ran and hit the limit before round 2 could start");
+  assert.equal(result.spend.totalTokens, 225);
+  const exhausted = events.filter((event) => event.type === "budget.exhausted");
+  assert.equal(exhausted.length, 1);
+  assert.equal(exhausted[0]!.type === "budget.exhausted" && exhausted[0].limit, "tokens");
+  assert.match(result.tap.uncertainties.at(-1) ?? "", /tokens budget exhausted/);
+  // TAP budget fields are honoured without an explicit option.
+  const same = await runSearchLoop({
+    tap: { ...tap(), budget: { maxRounds: 4, maxTokens: 200 } },
+    generator: gen,
+    decision,
+    executor: neverExecutor,
+  });
+  assert.equal(same.spend.totalTokens, 225);
+});
+
+test("a cost budget and an explicit option both gate the loop", async () => {
+  const { generator: gen, decision } = metered({ costUsd: 0.5 });
+
+  const byCost = await runSearchLoop({
+    tap: { ...tap(), budget: { maxRounds: 4, maxCostUsd: 0.6 } },
+    generator: gen,
+    decision,
+    executor: neverExecutor,
+  });
+  assert.equal(byCost.status, "budget_exhausted");
+  assert.equal(byCost.rounds, 1, "one round costs $1.00, over the $0.60 cap");
+  assert.equal(byCost.spend.costUsd, 1);
+
+  const byOption = await runSearchLoop({
+    tap: tap(),
+    generator: gen,
+    decision,
+    executor: neverExecutor,
+    budget: { maxTokens: 10 },
+  });
+  assert.equal(byOption.status, "budget_exhausted");
+  assert.equal(byOption.rounds, 1, "the option overrides the TAP budget and stops inside round 1");
+});
+
+test("a wall-clock budget stops the loop without any token spend", async () => {
+  const slowGenerator: GeneratorProvider = {
+    async generate() {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return {
+        text: JSON.stringify({
+          candidates: [{ id: "inspect", label: "inspect", action: "inspect", expectedEvidence: "evidence" }],
+        }),
+        identity: { provider: "slow" },
+        usage: { latencyMs: 30 },
+      };
+    },
+  };
+  const quickDecision: DecisionProvider = {
+    async decide(request) {
+      return { selected: [request.choices[0]!.id], scores: {}, identity: { provider: "quick" }, usage: { latencyMs: 0 } };
+    },
+  };
+
+  const result = await runSearchLoop({
+    tap: { ...tap(), budget: { maxRounds: 4 } },
+    generator: slowGenerator,
+    decision: quickDecision,
+    executor: neverExecutor,
+    budget: { maxWallMs: 20 },
+  });
+  assert.equal(result.status, "budget_exhausted");
+  assert.equal(result.rounds, 1);
+  assert.equal(result.spend.totalTokens, 0);
+});
+
+test("an aborted signal stops the loop before further model calls", async () => {
+  const { generator: gen, decision } = metered();
+  const controller = new AbortController();
+  let generatorCalls = 0;
+  const countingGenerator: GeneratorProvider = {
+    async generate(request) {
+      generatorCalls++;
+      if (generatorCalls === 2) controller.abort(new Error("user pressed escape"));
+      return gen.generate(request);
+    },
+  };
+
+  await assert.rejects(
+    runSearchLoop({
+      tap: { ...tap(), budget: { maxRounds: 5 } },
+      generator: countingGenerator,
+      decision,
+      executor: neverExecutor,
+      signal: controller.signal,
+    }),
+    /user pressed escape/,
+  );
+
+  // Aborting before the loop starts throws the signal's reason.
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    runSearchLoop({
+      tap: tap(),
+      generator: countingGenerator,
+      decision,
+      executor: neverExecutor,
+      signal: preAborted.signal,
+    }),
+    /abort/i,
+  );
+  assert.equal(generatorCalls, 2, "no generator call happens after the pre-aborted signal");
 });
