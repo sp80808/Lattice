@@ -35,6 +35,8 @@ import {
   getRun,
   getRunEvents,
   INIT_PRESETS,
+  INIT_PRESET_DEFAULTS,
+  listAvailableModels,
   listRuns,
   loadConfig,
   parseCommandLine,
@@ -181,6 +183,7 @@ export async function initCommand(args: string[]): Promise<number> {
     agent: { type: "string" },
     verify: { type: "string" },
     "no-verify": { type: "boolean" },
+    "no-probe": { type: "boolean" },
     autonomy: { type: "string" },
     force: { type: "boolean", short: "f" },
     print: { type: "boolean" },
@@ -205,14 +208,21 @@ export async function initCommand(args: string[]): Promise<number> {
       ? parseCommandLine(values.verify)
       : await detectVerifyCommand(cwd);
 
+  const baseUrl = values["base-url"] ?? INIT_PRESET_DEFAULTS[preset as Exclude<InitPreset, "observe">]?.baseUrl;
+  const apiKeyEnv = values["api-key-env"];
+  const availableModels = baseUrl && !values["no-probe"]
+    ? await listAvailableModels(baseUrl, apiKeyEnv ? { apiKeyEnv } : {})
+    : undefined;
+
   const plan = buildInitConfig({
     preset,
     model: values.model,
-    baseUrl: values["base-url"],
-    apiKeyEnv: values["api-key-env"],
+    baseUrl,
+    apiKeyEnv,
     agent: values.agent,
     verify,
     autonomy,
+    availableModels,
   });
 
   if (values.print) {

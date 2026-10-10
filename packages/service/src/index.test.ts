@@ -14,6 +14,8 @@ import {
   followRunEvents,
   getRun,
   getRunEvents,
+  isModelListed,
+  listAvailableModels,
   LatticeServiceError,
   listRuns,
   parseCommandLine,
@@ -22,6 +24,7 @@ import {
   resolveRunId,
   ReviewBroker,
   runDoctor,
+  selectPreferredModel,
   startTask,
   writeConfig,
 } from "./index.js";
@@ -185,6 +188,60 @@ test("init builds validated configs and falls back to observe without a verifier
   });
   assert.equal(hosted.config.model?.apiKeyEnv, "LATTICE_API_KEY");
   assert.equal(hosted.config.agent?.preset, "opencode");
+});
+
+test("init replaces an unavailable preset default with a listed model", () => {
+  const available = ["qwen3:1.7b", "qwen2.5-coder:1.5b", "nomic-embed-text"];
+  assert.equal(isModelListed(available, "qwen3-coder"), false);
+  assert.equal(isModelListed(available, "qwen3"), true);
+  assert.equal(selectPreferredModel(available), "qwen2.5-coder:1.5b");
+  assert.equal(selectPreferredModel([]), undefined);
+
+  const auto = buildInitConfig({
+    preset: "ollama",
+    verify: parseCommandLine("npm test"),
+    availableModels: available,
+  });
+  assert.equal(auto.config.model?.model, "qwen2.5-coder:1.5b");
+  assert.equal(auto.config.mode, "auto");
+  assert.match(auto.warnings.join("\n"), /qwen3-coder is not installed/);
+
+  const explicit = buildInitConfig({
+    preset: "ollama",
+    model: "qwen3-coder",
+    verify: parseCommandLine("npm test"),
+    availableModels: available,
+  });
+  assert.equal(explicit.config.model?.model, "qwen3-coder");
+  assert.match(explicit.warnings.join("\n"), /does not list model qwen3-coder/);
+
+  const listed = buildInitConfig({
+    preset: "ollama",
+    verify: parseCommandLine("npm test"),
+    availableModels: ["qwen3-coder:30b"],
+  });
+  assert.equal(listed.config.model?.model, "qwen3-coder");
+  assert.deepEqual(listed.warnings, []);
+});
+
+test("listAvailableModels parses ids and degrades to empty on failure", async () => {
+  const ok = await listAvailableModels("http://models.test/v1/", {
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ data: [{ id: "a" }, { id: 5 }, {}] }), { status: 200 }),
+  });
+  assert.deepEqual(ok, ["a"]);
+
+  const unauthorized = await listAvailableModels("http://models.test/v1", {
+    fetchImpl: async () => new Response("nope", { status: 401 }),
+  });
+  assert.deepEqual(unauthorized, []);
+
+  const unreachable = await listAvailableModels("http://models.test/v1", {
+    fetchImpl: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+  assert.deepEqual(unreachable, []);
 });
 
 test("detectVerifyCommand and writeConfig", async () => {

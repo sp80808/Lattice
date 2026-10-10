@@ -957,6 +957,62 @@ const PRESET_DEFAULTS: Record<Exclude<InitPreset, "observe">, { baseUrl?: string
   "openai-compatible": {},
 };
 
+export const INIT_PRESET_DEFAULTS = PRESET_DEFAULTS;
+
+/** True when `ids` lists `model`, tolerating Ollama-style `name:tag` suffixes. */
+export function isModelListed(ids: readonly string[], model: string): boolean {
+  return ids.some((id) => id === model || id.startsWith(`${model}:`));
+}
+
+const SIZE_SUFFIX = /([\d.]+)\s*b\b/i;
+
+/** Prefer coding models, then instruct/chat models, and smaller sizes on small hosts. */
+export function selectPreferredModel(ids: readonly string[]): string | undefined {
+  const usable = ids.filter((id) => id && !/embed|rerank|whisper|tts|diffusion/i.test(id));
+  if (!usable.length) return undefined;
+  const scored = usable.map((id) => {
+    const base = /coder/i.test(id) ? 100 : /instruct|chat|it\b/i.test(id) ? 80 : 10;
+    const billions = Number(SIZE_SUFFIX.exec(id)?.[1] ?? 7);
+    return { id, score: base - billions };
+  });
+  scored.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  return scored[0]!.id;
+}
+
+export interface ListModelsOptions {
+  timeoutMs?: number;
+  apiKeyEnv?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Query an OpenAI-compatible `/models` endpoint.
+ * Returns `[]` when the endpoint is unreachable or unreadable; callers treat
+ * that as "unknown availability" and keep the configured model.
+ */
+export async function listAvailableModels(baseUrl: string, options: ListModelsOptions = {}): Promise<string[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const headers: Record<string, string> = {};
+  const key = options.apiKeyEnv ? process.env[options.apiKeyEnv] : undefined;
+  if (key) headers.authorization = `Bearer ${key}`;
+  try {
+    const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/models`, {
+      headers,
+      signal: AbortSignal.timeout(options.timeoutMs ?? 3_000),
+    });
+    if (!response.ok) return [];
+    const body = (await response.json().catch(() => undefined)) as
+      | { data?: Array<{ id?: unknown }> }
+      | undefined;
+    if (!Array.isArray(body?.data)) return [];
+    return body.data
+      .map((item) => item?.id)
+      .filter((value): value is string => typeof value === "string");
+  } catch {
+    return [];
+  }
+}
+
 export interface VerifyCommand {
   command: string;
   args: string[];
@@ -970,6 +1026,8 @@ export interface InitOptions {
   agent?: "qwen-code" | "opencode";
   verify?: VerifyCommand;
   autonomy?: "autopilot" | "supervised" | "manual";
+  /** Model ids reported by `${baseUrl}/models`; when absent the default is trusted. */
+  availableModels?: readonly string[];
 }
 
 export interface InitPlan {
@@ -1000,13 +1058,32 @@ export function buildInitConfig(options: InitOptions = {}): InitPlan {
 
   const defaults = PRESET_DEFAULTS[preset];
   const baseUrl = options.baseUrl ?? defaults.baseUrl;
-  const model = options.model ?? defaults.model;
+  const requested = options.model ?? defaults.model;
   if (!baseUrl) invalid(`preset ${preset} requires a base URL`);
-  if (!model) invalid(`preset ${preset} requires a model name`);
+  if (!requested) invalid(`preset ${preset} requires a model name`);
 
   const apiKeyEnv =
     options.apiKeyEnv ?? (preset === "openai-compatible" ? "LATTICE_API_KEY" : undefined);
   const agent = options.agent ?? "qwen-code";
+
+  let model = requested;
+  const available = options.availableModels;
+  if (available?.length && !isModelListed(available, requested)) {
+    const preferred = selectPreferredModel(available);
+    const listed = available.slice(0, 8).join(", ");
+    if (options.model) {
+      warnings.push(
+        `${baseUrl} does not list model ${requested}; available: ${listed}. Every model call fails until the model is installed or --model names an installed one`,
+      );
+    } else if (preferred) {
+      model = preferred;
+      warnings.push(
+        `preset default ${requested} is not installed at ${baseUrl}; selected ${preferred} instead (available: ${listed})`,
+      );
+    } else {
+      warnings.push(`${baseUrl} lists no usable model (available: ${listed}); model calls will fail`);
+    }
+  }
 
   let mode: "auto" | "observe" = "auto";
   if (!verify) {
@@ -1024,8 +1101,7 @@ export function buildInitConfig(options: InitOptions = {}): InitPlan {
       baseUrl,
       model,
       ...(apiKeyEnv ? { apiKeyEnv } : {}),
-    },
-    agent:
+    },    agent:
       agent === "qwen-code"
         ? { preset: "qwen-code", approvalMode: "auto-edit", outputFormat: "json" }
         : { preset: "opencode", format: "json" },

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { resolve } from "node:path";
 import { Box, useApp, useInput, useStdout } from "ink";
-import { executeWorkflow, loadConfig, getRunChanges, LatticeServiceError } from "@lattice/service";
+import { executeWorkflow, loadConfig, getRunChanges, LatticeServiceError, detectVerifyCommand, buildInitConfig, writeConfig, listAvailableModels, INIT_PRESET_DEFAULTS } from "@lattice/service";
 import type { RunEvent } from "@lattice/protocol";
 import { Header } from "./components/Header.js";
 import { EventStream } from "./components/EventStream.js";
@@ -29,8 +29,7 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
   });
   const [configPath, setConfigPath] = useState<string>();
   const [readiness, setReadiness] = useState("Checking configuration...");
-  const [view, setView] = useState<ViewState>("idle");
-  const [workflow, setWorkflow] = useState<WorkflowMode>("plan");
+  const [view, setView] = useState<ViewState>("idle");  const [workflow, setWorkflow] = useState<WorkflowMode>("plan");
   const [feed, setFeed] = useState<FeedItem[]>([{ id: "welcome", type: "info", title: "Plan, build and verify with Lattice", text: "PLAN reads sources. BUILD reviews decisions. AUTO runs bounded isolated workers. /project selects the target; /doctor checks setup.", timestamp: new Date() }]);
   const [activePhase, setActivePhase] = useState<string>();
   const [composerHeight, setComposerHeight] = useState(2);
@@ -52,15 +51,40 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
   useEffect(() => {
     let current = true;
     setConfigPath(undefined);
-    loadConfig(cwd).then(loaded => {
+    loadConfig(cwd).then(async loaded => {
       if (!current) return;
-      setConfigPath(loaded?.path);
-      const generator = loaded?.config.models?.generator?.model ?? loaded?.config.model?.model ?? (loaded?.config.models?.generatorPool?.length ? "routed model pool" : "missing generator");
-      const agent = loaded?.config.agent?.preset ?? "missing agent";
-      setReadiness(loaded ? `${generator} · ${agent} · ${loaded.config.verify ? "verifier configured" : "missing verifier"} · /doctor` : "SETUP REQUIRED · no config · select /project, then lattice init and /doctor");
-    }).catch(error => { if (current) setReadiness(`CONFIG ERROR · ${error.message}`); });
+      if (loaded) {
+        setConfigPath(loaded.path);
+        const generator = loaded.config.models?.generator?.model ?? loaded.config.model?.model ?? (loaded.config.models?.generatorPool?.length ? "routed model pool" : "missing generator");
+        const agent = loaded.config.agent?.preset ?? "missing agent";
+        setReadiness(`${generator} · ${agent} · ${loaded.config.verify ? "verifier configured" : "missing verifier"} · /doctor`);
+        return;
+      }
+      await autoInitialize(cwd);
+    }).then(() => {}, error => { if (current) setReadiness(`CONFIG ERROR · ${error.message}`); });
     return () => { current = false; };
   }, [cwd]);
+
+  /** Auto-init: write .lattice/config.json on launch so /plan, /build and /auto work immediately. */
+  const autoInitialize = async (target: string) => {
+    setReadiness("initializing configuration...");
+    try {
+      const verify = await detectVerifyCommand(target);
+      const baseUrl = INIT_PRESET_DEFAULTS.ollama.baseUrl;
+      const availableModels = baseUrl ? await listAvailableModels(baseUrl) : [];
+      const plan = buildInitConfig({ preset: "ollama", verify, availableModels });
+      const path = await writeConfig(plan.config, { cwd: target });
+      setConfigPath(path);
+      const generator = plan.config.model?.model ?? "missing generator";
+      setReadiness(`${generator} · ${plan.config.agent?.preset ?? "missing agent"} · ${plan.config.verify ? "verifier configured" : "missing verifier"} · /doctor`);
+      addFeedItem({ type: "info", title: "Auto-initialized configuration", text: `wrote ${path} (mode=${plan.config.mode}, model=${generator})` });
+      for (const warning of plan.warnings) {
+        addFeedItem({ type: "info", tone: "warning", title: "Init warning", text: warning });
+      }
+    } catch (error) {
+      setReadiness(`SETUP REQUIRED · ${error instanceof Error ? error.message : String(error)} · /doctor`);
+    }
+  };
 
   const flushEvents = () => {
     clearTimeout(eventTimer.current);

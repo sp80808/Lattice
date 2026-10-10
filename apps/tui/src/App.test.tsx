@@ -139,13 +139,13 @@ test("review Enter cannot approve accidentally and navigation submits the actual
   const answers: ReviewOutcome[] = [];
   const request: ReviewRequest = {
     round: 1, reasons: ["review required"], selectedCandidates: [],
-    frame: { id: "frame", class: "next-action", objective: "edit", state: "source evidence", question: "Choose", choices: [{ id: "real-id", label: "Inspect" }], allowUnknown: false, audit: [] },
+    frame: { id: "frame", class: "next-action", objective: "edit", state: "source evidence", question: "Choose", criteria: [], evidenceIds: [], choices: [{ id: "real-id", label: "Inspect" }], allowUnknown: false, audit: [] },
     decision: { selected: ["real-id"], scores: { "real-id": 1 }, identity: { provider: "fixture" }, usage: { latencyMs: 1 } },
   };
   const tty = await terminal(<DecisionReviewModal request={request} onResolve={answer => answers.push(answer)} height={12} />);
   try {
     await tty.key("\r");
-    assert.deepEqual(answers, []);
+    assert.equal(answers.length, 0);
     await tty.key("\x1b[B");
     await tty.key("\r");
     assert.equal(answers[0]?.action, "replace");
