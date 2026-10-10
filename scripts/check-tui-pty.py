@@ -59,6 +59,13 @@ class Terminal:
             self.until(expected)
         return (time.perf_counter() - started) * 1000
 
+    def ready(self):
+        deadline = time.perf_counter() + 3
+        while termios.tcgetattr(self.master)[3] & termios.ICANON:
+            assert time.perf_counter() < deadline, 'CLI did not enable raw keyboard input'
+            time.sleep(0.005)
+        return (time.perf_counter() - self.start) * 1000
+
     def resize(self, columns, rows):
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, columns, 0, 0))
         os.kill(self.process.pid, signal.SIGWINCH)
@@ -71,7 +78,11 @@ class Terminal:
                 self.process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 os.killpg(self.process.pid, signal.SIGTERM)
-                self.process.wait(timeout=3)
+                try:
+                    self.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                    self.process.wait(timeout=3)
         os.close(self.master)
 
 
@@ -80,6 +91,7 @@ def probe(entry, baseline=False, no_color=False):
         tty = Terminal(entry, cwd, no_color=no_color)
         try:
             startup = tty.until('Enter task or /command' if baseline else 'PLAN task or /help')
+            startup = max(startup, tty.ready())
             startup_bytes = len(tty.raw.encode())
             latency = tty.send('latency_probe', 'latency_probe')
             if baseline:
@@ -100,7 +112,7 @@ def probe(entry, baseline=False, no_color=False):
             tty.send('\r')
             time.sleep(0.1)
             tty.send('line two', 'line two')
-            assert 'BLOCKED' not in tty.plain(), 'Continuation submitted the draft'
+            assert 'AUTO · line one' not in tty.plain(), 'Continuation submitted the draft'
             tty.send('\r', 'BLOCKED')
             tty.send('\x1b[A', 'line two')
             tty.send('\x15')

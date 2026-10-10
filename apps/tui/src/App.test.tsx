@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -10,6 +10,10 @@ import { render } from "ink";
 import { App } from "./App.js";
 import { DiffViewer } from "./components/DiffViewer.js";
 import { ICONS, modeColor, nextWorkflow } from "./theme/icons.js";
+import { PromptBar } from "./components/PromptBar.js";
+import { DecisionReviewModal } from "./components/DecisionReviewModal.js";
+import { describeEvent } from "./state/events.js";
+import type { ReviewRequest, ReviewOutcome } from "./state/types.js";
 
 async function terminal(element: React.ReactElement, columns = 80, rows = 24) {
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
@@ -79,4 +83,82 @@ test("diff input pages beyond forty lines and closes with Escape", async () => {
     await tty.key("\x1b");
     assert.equal(closed, true);
   } finally { tty.close(); }
+});
+
+test("multiline, pasted text and recalled drafts are preserved without submitting on continuation", async () => {
+  const submitted: string[] = [];
+  const tty = await terminal(<PromptBar columns={80} workflow="build" onSubmit={value => submitted.push(value)} />);
+  try {
+    await tty.key("first\\");
+    await tty.key("\r");
+    await tty.key("second");
+    assert.deepEqual(submitted, []);
+    await tty.key("\r");
+    assert.deepEqual(submitted, ["first\nsecond"]);
+    await tty.key("\x1b[200~pasted\r\nlines\x1b[201~");
+    assert.equal(submitted.length, 1);
+    await tty.key("\r");
+    assert.equal(submitted[1], "pasted\nlines");
+    await tty.key("draft");
+    await tty.key("\x1b[A");
+    assert.match(tty.last(), /pasted/);
+    await tty.key("\x1b[B");
+    // Multiline recall navigates within the recalled text; Ctrl+U clears it explicitly.
+    await tty.key("\x15");
+    await tty.key("x".repeat(400));
+    assert.ok(tty.last().trimEnd().split("\n").length <= 5);
+  } finally { tty.close(); }
+});
+
+test("an active PLAN retains its mode and cancellation waits for the pending provider", async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-tui-active-"));
+  await mkdir(join(cwd, ".lattice"));
+  await writeFile(join(cwd, ".lattice", "config.json"), JSON.stringify({ model: { baseUrl: "http://fixture.invalid/v1", model: "planner" } }));
+  await writeFile(join(cwd, "source.ts"), "export const x = 1;\n");
+  let finish: ((response: Response) => void) | undefined;
+  t.mock.method(globalThis, "fetch", () => new Promise<Response>(resolve => { finish = resolve; }));
+  const tty = await terminal(<App globals={["--cwd", cwd]} />);
+  try {
+    await tty.key("plan x");
+    await tty.key("\r");
+    assert.ok(finish, "planner must actually be invoked");
+    await tty.key("\x1b[Z");
+    assert.match(tty.last(), /\[PLAN\]/);
+    assert.match(tty.last(), /Mode locked/);
+    await tty.key("\x03");
+    assert.match(tty.last(), /Cancellation requested/);
+    assert.match(tty.last(), /RUNNING/);
+    finish!(new Response(JSON.stringify({ choices: [{ message: { content: "A bounded draft." } }] })));
+    await delay(150);
+    assert.match(tty.last(), /CANCELLED/);
+    assert.match(tty.last(), /IDLE/);
+  } finally { finish?.(new Response('{}')); tty.close(); }
+});
+
+test("review Enter cannot approve accidentally and navigation submits the actual choice ID", async () => {
+  const answers: ReviewOutcome[] = [];
+  const request: ReviewRequest = {
+    round: 1, reasons: ["review required"], selectedCandidates: [],
+    frame: { id: "frame", class: "next-action", objective: "edit", state: "source evidence", question: "Choose", choices: [{ id: "real-id", label: "Inspect" }], allowUnknown: false, audit: [] },
+    decision: { selected: ["real-id"], scores: { "real-id": 1 }, identity: { provider: "fixture" }, usage: { latencyMs: 1 } },
+  };
+  const tty = await terminal(<DecisionReviewModal request={request} onResolve={answer => answers.push(answer)} height={12} />);
+  try {
+    await tty.key("\r");
+    assert.deepEqual(answers, []);
+    await tty.key("\x1b[B");
+    await tty.key("\r");
+    assert.equal(answers[0]?.action, "replace");
+    assert.deepEqual(answers[0]?.action === "replace" && answers[0].selected, ["real-id"]);
+  } finally { tty.close(); }
+});
+
+test("event descriptions expose only recorded model, usage and verification metadata", () => {
+  const model = describeEvent({ runId: "r", seq: 1, at: "2026-10-10T00:00:00Z", type: "decision.requested", payload: { event: { type: "candidates.generated", identity: { model: "actual-model" }, usage: { totalTokens: 17 }, candidates: [{ label: "Inspect source" }] } } });
+  assert.match(model.text ?? "", /actual-model/);
+  assert.match(model.text ?? "", /Tokens: 17/);
+  assert.doesNotMatch(model.text ?? "", /Cost/);
+  const check = describeEvent({ runId: "r", seq: 2, at: "2026-10-10T00:00:00Z", type: "tool.completed", payload: { result: { command: "node", exitCode: 1, stderr: "private output" } } });
+  assert.match(check.text ?? "", /exit=1/);
+  assert.doesNotMatch(check.text ?? "", /private output/);
 });
