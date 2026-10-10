@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -36,6 +37,24 @@ test("wordmark contains all seven fixed-width glyphs and mode accents differ", (
   assert.equal(ICONS.logo[0]?.slice(24, 29), "█████"); // I
   assert.deepEqual(["plan", "build", "auto"].map(mode => nextWorkflow(mode as "plan" | "build" | "auto")), ["build", "auto", "plan"]);
   assert.deepEqual([modeColor("plan"), modeColor("build"), modeColor("auto")], ["yellow", "cyan", "magenta"]);
+});
+
+test("a missing config is auto-initialized on launch in the selected folder", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-tui-autoinit-"));
+  await writeFile(join(cwd, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  const tty = await terminal(<App globals={["--cwd", cwd]} />);
+  try {
+    for (let attempt = 0; attempt < 60 && !existsSync(join(cwd, ".lattice", "config.json")); attempt++) {
+      await delay(50);
+    }
+    const config = JSON.parse(await readFile(join(cwd, ".lattice", "config.json"), "utf8"));
+    assert.equal(config.mode, "auto");
+    assert.deepEqual(config.verify, { command: "npm", args: ["test"], timeoutMs: 120_000 });
+    assert.equal(config.model.baseUrl, "http://127.0.0.1:11434/v1");
+    assert.ok(typeof config.model.model === "string" && config.model.model.length > 0);
+    assert.match(tty.last(), /Auto-initialized configuration/);
+    assert.doesNotMatch(tty.last(), /SETUP REQUIRED/);
+  } finally { tty.close(); }
 });
 
 test("reverse-tab cycles once, preserves drafts and slash suggestions; missing setup blocks coding", async () => {
