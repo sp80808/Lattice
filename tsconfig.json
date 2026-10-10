@@ -53,6 +53,9 @@
       "path": "./apps/cli"
     },
     {
+      "path": "./apps/tui"
+    },
+    {
       "path": "./apps/daemon"
     }
   ]

@@ -34,6 +34,9 @@
     },
     {
       "path": "../../packages/bench"
+    },
+    {
+      "path": "../tui"
     }
   ],
   "include": [
