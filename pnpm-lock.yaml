@@ -8,6 +8,12 @@ importers:
 
   .:
     devDependencies:
+      '@lattice/providers':
+        specifier: 0.0.1
+        version: link:packages/providers
+      '@lattice/tessera':
+        specifier: 0.0.1
+        version: link:packages/tessera
       '@lattice/core':
         specifier: 0.0.1
         version: link:packages/core
