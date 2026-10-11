@@ -1,7 +1,1 @@
-[
-  {
-    "file": "packages/bench/dist/index.test.js",
-    "test": "live: the real Tessera compiler verifies the tessera suite",
-    "reason": "The general Node CI job intentionally lacks tsr. The separately required tessera-witness job builds pinned Tessera from source and runs its real compiler verified integration/ablation; unexpected new skips still fail."
-  }
-]
+[]
