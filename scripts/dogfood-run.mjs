@@ -20,6 +20,8 @@
 // Every workspace is a history-less snapshot of one commit (git archive), so the
 // agent cannot reach the gold fix or any later commit through git, and paths in
 // leakage_guard.exclude_paths_from_context are removed before anything runs.
+// Files in acceptance.held_out_from_gold are copied from the gold fix after the
+// patch or agent has run, so held-out tests judge the change without being visible.
 // A setup failure, a patch that does not apply, or a leak makes the result
 // inconclusive; it never counts as a pass or as a discriminating failure.
 //
@@ -200,6 +202,18 @@ async function runPhase(phase, sha, ctx, change) {
     if (changed) return finish("inconclusive", changed);
   }
 
+  // Held-out checks come from the gold fix and land only after any change, so
+  // the agent never sees them but acceptance does.
+  for (const rel of manifest.acceptance.held_out_from_gold ?? []) {
+    const target = resolve(ws.dir, rel);
+    if (!target.startsWith(ws.dir + "/")) throw new Error(`held-out path escapes workspace: ${rel}`);
+    const blob = spawnSync("git", ["show", `${manifest.reference.gold_fix_sha}:${rel}`], { cwd: source, maxBuffer: 1 << 30 });
+    if (blob.status !== 0) return finish("inconclusive", `held-out file ${rel} missing at gold fix`);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, blob.stdout);
+    (phaseResult.heldOut ??= []).push(rel);
+  }
+
   for (const command of manifest.acceptance.setup ?? []) {
     const result = await runCommand(command, ws.dir, { timeoutMs });
     phaseResult.setup.push(result);
@@ -300,6 +314,7 @@ function writeRunLog(outDir, runId, manifest, mode, phases, outcome) {
           leaks: phase.leaks,
           patchSha256: phase.patchSha256,
           changedFiles: phase.changedFiles,
+          heldOut: phase.heldOut,
           agent: phase.agent,
           setup: phase.setup,
           acceptance: phase.acceptance,
@@ -315,7 +330,8 @@ function writeRunLog(outDir, runId, manifest, mode, phases, outcome) {
 export async function runCase({ caseRef, source, mode = "calibrate", patch, agent, outDir, timeoutMs = DEFAULT_TIMEOUT_MS, keep = false, dogfoodRoot }) {
   const { manifest } = loadCase(caseRef, dogfoodRoot);
   const repo = resolve(source);
-  for (const sha of [manifest.base_sha, ...(mode === "calibrate" ? [manifest.reference.gold_fix_sha] : [])]) {
+  const needsGold = mode === "calibrate" || (manifest.acceptance.held_out_from_gold ?? []).length > 0;
+  for (const sha of [manifest.base_sha, ...(needsGold ? [manifest.reference.gold_fix_sha] : [])]) {
     if (!hasCommit(repo, sha)) throw new Error(`${repo} does not contain ${sha}; fetch ${manifest.repository} first`);
   }
   const parent = mkdtempSync(join(tmpdir(), "lattice-dogfood-"));

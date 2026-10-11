@@ -36,9 +36,17 @@ npm run dogfood -- tessera-tcap-binder --source ../Tessera --agent 'claude -p "$
 - **Patch** applies a candidate diff to `base_sha` and runs acceptance.
 - **Agent** runs a command in the base workspace with the task statement on stdin and in `LATTICE_DOGFOOD_TASK`, captures its diff, then runs acceptance.
 
-Each workspace is a history-less snapshot of one commit (`git archive` into a fresh single-commit repo), so the gold fix and later commits are not reachable through git, and `leakage_guard.exclude_paths_from_context` is deleted before anything runs. Optional `acceptance.setup` commands (install, build) run first. A setup failure, a patch that does not apply, or a leak makes the run **inconclusive**: it never counts as a pass or as a discriminating failure.
+Each workspace is a history-less snapshot of one commit (`git archive` into a fresh single-commit repo), so the gold fix and later commits are not reachable through git, and `leakage_guard.exclude_paths_from_context` is deleted before anything runs. Files listed in `acceptance.held_out_from_gold` are copied from the gold fix after the patch or agent has run, so the fix's own tests judge the change without the agent seeing them. Optional `acceptance.setup` commands (install, build) run next. A setup failure, a patch that does not apply, or a leak makes the run **inconclusive**: it never counts as a pass or as a discriminating failure.
 
 Results are written as a run log (`.lattice/runs/dogfood-*.jsonl`, or `--out`) that `@lattice/ledger` reads: one `tool.completed` experiment per phase with `command` evidence for each acceptance command. Exit code 0 means verified/discriminating, 1 failed/not discriminating, 2 inconclusive.
+
+## Calibration (2026-10-11)
+
+| Case | Verdict | Discriminating command |
+| --- | --- | --- |
+| `lattice-false-green` | discriminating | `npm test` (`check-examples.sh` passes at base too: the false green itself) |
+| `tessera-tcap-binder` | discriminating, with `tests/derive.rs` held out from the gold fix | `cargo test -p tessera-tcap` |
+| `tessera-mir-asymptotic` | **not discriminating** | none: the gold fix adds no test, so a scaling check has to be written |
 
 ## Status
 

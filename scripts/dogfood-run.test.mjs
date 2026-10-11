@@ -31,7 +31,9 @@ function fixture() {
   git(repo, "commit", "-q", "-m", "base");
   const base = git(repo, "rev-parse", "HEAD");
   writeFileSync(join(repo, "add.sh"), "echo $(( $1 + $2 ))\n");
-  git(repo, "commit", "-q", "-am", "fix");
+  writeFileSync(join(repo, "held.sh"), '[ "$(bash add.sh 4 4)" = 8 ]\n');
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "fix");
   const gold = git(repo, "rev-parse", "HEAD");
 
   const manifestFor = (overrides = {}) => {
@@ -127,7 +129,7 @@ test("patch mode verifies a correct patch and rejects a wrong one", async (t) =>
   t.after(f.cleanup);
   const caseRef = f.manifestFor();
   const good = join(f.dir, "good.patch");
-  writeFileSync(good, spawnSync("git", ["diff", f.base, f.gold], { cwd: f.repo, encoding: "utf8" }).stdout);
+  writeFileSync(good, spawnSync("git", ["diff", f.base, f.gold, "--", "add.sh"], { cwd: f.repo, encoding: "utf8" }).stdout);
   const verified = await runCase({ caseRef, source: f.repo, mode: "patch", patch: good, outDir: join(f.dir, "runs") });
   assert.equal(verified.verdict, "verified", verified.reason);
   assert.deepEqual(verified.phases[0].changedFiles, ["add.sh"]);
@@ -167,6 +169,24 @@ test("agent mode gets only the task statement and its diff is verified", async (
   assert.equal(seen("seen-stdin.txt"), "add.sh returns the wrong sum; make check.sh pass.");
   assert.doesNotMatch(seen("seen-files.txt"), /SECRET_FIX_NOTES/);
   assert.doesNotMatch(seen("seen-env.txt"), new RegExp(f.gold));
+});
+
+test("held-out files from the gold fix judge the change without the agent seeing them", async (t) => {
+  const f = fixture();
+  t.after(f.cleanup);
+  const caseRef = f.manifestFor({
+    acceptance: { held_out_from_gold: ["held.sh"], commands: ["bash held.sh"], must_fail_on_broken_base: true, must_pass_on_fixed_sha: true },
+  });
+  const calibrated = await runCase({ caseRef, source: f.repo, outDir: join(f.dir, "runs") });
+  assert.equal(calibrated.verdict, "discriminating", calibrated.reason);
+  assert.deepEqual(calibrated.phases[0].heldOut, ["held.sh"]);
+
+  const agent = "ls > ../seen-files.txt && sed -i 's/-/+/' add.sh";
+  const result = await runCase({ caseRef, source: f.repo, mode: "agent", agent, keep: true, outDir: join(f.dir, "runs") });
+  t.after(() => rmSync(result.workspaces, { recursive: true, force: true }));
+  assert.equal(result.verdict, "verified", result.reason);
+  assert.doesNotMatch(readFileSync(join(result.workspaces, "seen-files.txt"), "utf8"), /held\.sh/);
+  assert.deepEqual(result.phases[0].changedFiles, ["add.sh"]);
 });
 
 test("runCommand kills a command that outlives its timeout", async () => {
