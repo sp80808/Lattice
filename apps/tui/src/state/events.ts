@@ -13,6 +13,7 @@ export function describeEvent(event: RunEvent): { phase: string; text?: string }
   const outcome = object(payload.outcome);
   const command = object(payload.result);
   const records = verificationRecords(payload);
+  const tessera = records.length > 0 || payload.tool === "tessera.witness";
   const phase = [event.type, detail.type, payload.tool].filter(value => typeof value === "string").join(" · ");
   const text: string[] = [];
   if (typeof identity.model === "string") text.push(`Model: ${identity.model}`);
@@ -22,9 +23,10 @@ export function describeEvent(event: RunEvent): { phase: string; text?: string }
   if (Array.isArray(detail.selected)) text.push(`Selected: ${detail.selected.filter(value => typeof value === "string").join(", ")}`);
   if (Array.isArray(detail.candidates)) text.push(`Candidates: ${detail.candidates.map(value => object(value).label).filter(value => typeof value === "string").join("; ")}`);
   if (Array.isArray(payload.evidence)) text.push(`Evidence: ${payload.evidence.length}`);
-  if (!records.length && typeof outcome.summary === "string") text.push(outcome.summary);
+  if (!tessera && typeof outcome.summary === "string") text.push(outcome.summary);
   if (typeof command.command === "string") text.push(`Check: ${command.command} · exit=${command.exitCode ?? "unknown"}${command.timedOut ? " · timed out" : ""}`);
   if (records.length) text.push(...records.map(renderVerification));
+  else if (tessera) text.push("Tessera · untrusted saved evidence: verification record missing");
   else if (typeof payload.passed === "boolean") text.push(`Verification: ${payload.passed ? "passed" : "failed"}`);
   if (typeof detail.error === "string") text.push(detail.error);
   return { phase, text: text.join("\n") || undefined };

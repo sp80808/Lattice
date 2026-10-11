@@ -51,11 +51,11 @@ function help(d: WitnessDiagnostic): string | undefined {
  * rest are usually parser cascades and only counted.
  */
 export function renderDiagnostics(
-  source: string,
+  source: string | undefined,
   diagnostics: WitnessDiagnostic[],
   max = 3,
 ): string {
-  const lines = source.split("\n");
+  const lines = source?.split("\n") ?? [];
   const out: string[] = [];
   for (const d of diagnostics.slice(0, max)) {
     const at = d.line != null && d.col != null ? `${d.line}:${d.col}` : "-";
@@ -77,7 +77,7 @@ export function renderDiagnostics(
 }
 
 /** What `tsr` said about one verification, for the model. */
-export function renderVerdict(source: string, record: TesseraVerificationRecord): string {
+export function renderVerdict(source: string | undefined, record: TesseraVerificationRecord): string {
   const { verdict, document } = record.witness;
   if (verdict.outcome === "fail" && document) {
     return renderDiagnostics(source, document.diagnostics);
@@ -120,7 +120,7 @@ export function renderVerification(record: TesseraVerificationRecord): string {
         replayed.replayedOutcome !== "tool_error" && doc
           ? `Compiler: ${doc.tool.version}@${doc.tool.commit.slice(0, 12)}${doc.tool.dirty ? "+dirty" : ""}`
           : undefined,
-        replayed.replayedOutcome !== "pass" || failed ? renderVerdict("", record) : undefined,
+        replayed.replayedOutcome !== "pass" || failed ? renderVerdict(undefined, record) : undefined,
       ].filter(Boolean).join("\n");
     }
   } catch (error) {

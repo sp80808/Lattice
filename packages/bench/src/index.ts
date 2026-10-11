@@ -1069,3 +1069,4 @@ export async function configuredProvider(
 }
 
 export * from "./verse.js";
+export * from "./agentic.js";

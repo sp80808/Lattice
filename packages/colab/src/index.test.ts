@@ -254,7 +254,7 @@ test("recovers a LoRA adapter and classifies the experiment as completed", () =>
       outcome,
       reason,
       artifacts,
-      modelIdentity: { modelId: "Qwen/Qwen2.5-Coder-0.5B-Instruct", provider: "huggingface", device: "cuda" },
+      modelIdentity: { modelId: "THUDM/glm-5.3-flash", provider: "huggingface", device: "cuda" },
       metrics: { post_accuracy: 0.5, accuracy_gain: 0.1667 },
     });
     const manifestPath = store.writeManifest("lattice-train");

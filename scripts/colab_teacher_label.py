@@ -32,7 +32,8 @@ import time
 import traceback
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # local: scripts/
+if '__file__' in globals():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))  # local: scripts/
 if Path("/content/colab_persist.py").exists():             # remote: uploaded helper
     sys.path.insert(0, "/content")
 try:
@@ -202,7 +203,10 @@ def main():
 
     corpus = Path(args.corpus)
     if not corpus.exists():
-        corpus = Path(__file__).resolve().parents[1] / 'benchmarks' / 'decisions' / 'corpus.jsonl'
+        if Path('/content/corpus.jsonl').exists():
+            corpus = Path('/content/corpus.jsonl')
+        elif '__file__' in globals():
+            corpus = Path(__file__).resolve().parents[1] / 'benchmarks' / 'decisions' / 'corpus.jsonl'
     cases = [json.loads(line) for line in corpus.read_text(encoding='utf-8').splitlines() if line.strip()]
     seeded = sorted({c['family'] for c in cases})
 

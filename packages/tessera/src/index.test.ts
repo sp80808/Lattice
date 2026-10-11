@@ -290,6 +290,7 @@ test("verification presentation distinguishes compilation from recorded behaviou
 test("verification presentation retains bounded compiler help and tool outcomes", async () => {
   const foreign = renderVerification(record(await recorded("foreign_syntax"), 1));
   assert.match(foreign, /Witness: fail[\s\S]*E-syntax-foreign[\s\S]*help:/);
+  assert.doesNotMatch(foreign, /^  \|/m, "saved diagnostics have no source text to underline");
   assert.match(foreign, /more, likely follow-on errors/);
   const unsupported = renderVerification(record(await recorded("unsupported"), 3));
   assert.match(unsupported, /phase=backend[\s\S]*Witness: unsupported[\s\S]*Behaviour: not verified/);

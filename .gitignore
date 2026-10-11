@@ -16,4 +16,6 @@ __pycache__/
 
 # Runtime output from scripts/recover-colab-artifacts.mjs
 .colab-artifacts/
+.colab-logs/
 
+scripts/beat-sonnet-eval.mjs

@@ -18,6 +18,7 @@ FILES = [
     "scripts/colab_train_router_v2.py",
     "scripts/colab_zero_shot.py",
     "scripts/colab_teacher_label.py",
+    "scripts/colab_overnight_loop.py",
 ]
 CONTRACT_RE = re.compile(r"ABSTAIN_ID = 'abstain'.*?\n\}", re.S)
 

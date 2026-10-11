@@ -31,6 +31,8 @@ Jobs:
                and generate synthetic cases for the failing families.
   zero-shot    Measure every candidate student base on the 110-case holdout.
   sft          Fine-tune the router with LoRA (one base per call).
+  overnight    Run autonomous overnight distillation, evaluation & feedback loop
+               pairing Quantised GLM 5.3 Flash with SystemOne Tev decision router.
 
 Options:
   --gpu T4              GPU accelerator (default T4)
@@ -54,6 +56,7 @@ case "$JOB" in
   teacher) SCRIPT="scripts/colab_teacher_label.py" ;;
   zero-shot) SCRIPT="scripts/colab_zero_shot.py" ;;
   sft) SCRIPT="scripts/colab_train_router_v2.py" ;;
+  overnight) SCRIPT="scripts/colab_overnight_loop.py" ;;
   *) echo "unknown job: $JOB"; usage; exit 1 ;;
 esac
 
@@ -90,8 +93,8 @@ colab upload -s "$SESSION" "$ROOT_DIR/benchmarks/decisions/corpus.jsonl" /conten
 
 # --- 3. resume run id from the previous log --------------------------------
 RUN_ID=""
-if [ "$FRESH" -eq 0 ]; then
-  RUN_ID="$(grep -o '"runId": "[^"]*"' "$LOG" 2>/dev/null | tail -1 | sed 's/.*: "//;s/"$//')"
+if [ "$FRESH" -eq 0 ] && [ -f "$LOG" ]; then
+  RUN_ID="$( (grep -o '"runId": "[^"]*"' "$LOG" 2>/dev/null || true) | tail -1 | sed 's/.*: "//;s/"$//')"
 fi
 
 # --- 4. exec loop: bounded calls, resume between them ----------------------
@@ -101,16 +104,18 @@ while [ "$CALL" -lt "$MAX_CALLS" ]; do
   ENVARGS=()
   [ -n "$RUN_ID" ] && ENVARGS+=(--env "LATTICE_RUN_ID=$RUN_ID")
   [ "$FRESH" -eq 1 ] && ENVARGS+=(--env "LATTICE_FRESH=1")
-  for e in "${EXTRA_ENV[@]:-}"; do [ -n "$e" ] && ENVARGS+=(--env "$e"); done
+  if [ "${#EXTRA_ENV[@]}" -gt 0 ]; then
+    for e in "${EXTRA_ENV[@]}"; do [ -n "$e" ] && ENVARGS+=(--env "$e"); done
+  fi
   echo "== exec call $CALL/$MAX_CALLS (timeout=${TIMEOUT}s)"
   set +e
-  colab exec -s "$SESSION" --timeout "$TIMEOUT" "${ENVARGS[@]}" -f "$ROOT_DIR/$SCRIPT" 2>&1 | tee -a "$LOG"
+  colab exec -s "$SESSION" --timeout "$TIMEOUT" ${ENVARGS[@]+"${ENVARGS[@]}"} -f "$ROOT_DIR/$SCRIPT" 2>&1 | tee -a "$LOG"
   RC="${PIPESTATUS[0]}"
   set -e
-  NEWID="$(grep -o '"runId": "[^"]*"' "$LOG" 2>/dev/null | tail -1 | sed 's/.*: "//;s/"$//')"
+  NEWID="$( (grep -o '"runId": "[^"]*"' "$LOG" 2>/dev/null || true) | tail -1 | sed 's/.*: "//;s/"$//')"
   [ -n "$NEWID" ] && RUN_ID="$NEWID"
-  if tail -80 "$LOG" | grep -q "JOB_COMPLETE"; then echo "== job complete"; break; fi
-  if tail -80 "$LOG" | grep -q "JOB_FAILED"; then echo "== job failed (rc=$RC)"; break; fi
+  if [ -f "$LOG" ] && tail -80 "$LOG" | grep -q "JOB_COMPLETE"; then echo "== job complete"; break; fi
+  if [ -f "$LOG" ] && tail -80 "$LOG" | grep -q "JOB_FAILED"; then echo "== job failed (rc=$RC)"; break; fi
   [ "$RC" -ne 0 ] && echo "== exec call returned $RC; resuming with the next call"
 done
 

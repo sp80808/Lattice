@@ -17,7 +17,8 @@ import {
   type LoadedLatticeConfig,
   type ModelEndpointConfig,
 } from "@lattice/runtime";
-export { describeVerify } from "@lattice/runtime";
+export { describeVerify, parseLatticeConfig } from "@lattice/runtime";
+export { runCommand } from "@lattice/execution";
 import type { DecisionReviewer } from "@lattice/search";
 import { UNKNOWN_CHOICE_ID } from "@lattice/protocol";
 import type {

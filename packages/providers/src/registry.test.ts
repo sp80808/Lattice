@@ -27,11 +27,11 @@ const LIVE: OllamaModelReport[] = [
     runner: "mlx",
   },
   {
-    name: "qwen2.5-coder:1.5b",
-    model: "qwen2.5-coder:1.5b",
+    name: "glm-5.3-flash",
+    model: "glm-5.3-flash",
     capabilities: ["completion", "tools", "insert"],
-    parameterSize: "1.5B",
-    family: "qwen2",
+    parameterSize: "4.0B",
+    family: "glm",
     format: "gguf",
   },
   {

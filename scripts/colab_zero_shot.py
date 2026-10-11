@@ -32,7 +32,8 @@ import traceback
 import zlib
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # local: scripts/
+if '__file__' in globals():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))  # local: scripts/
 if Path("/content/colab_persist.py").exists():             # remote: uploaded helper
     sys.path.insert(0, "/content")
 try:
@@ -64,7 +65,7 @@ DEFAULT_BASES = [
     'Qwen/Qwen3-0.6B',
     'Qwen/Qwen3-1.7B',
     'Qwen/Qwen3-4B-Instruct-2507',
-    'Qwen/Qwen2.5-Coder-1.5B',
+    'THUDM/glm-edge-4b-chat',
 ]
 TEMPLATE_KWARGS = {'enable_thinking': False}
 
@@ -242,7 +243,10 @@ def main():
 
     corpus = Path(args.corpus)
     if not corpus.exists():
-        corpus = Path(__file__).resolve().parents[1] / 'benchmarks' / 'decisions' / 'corpus.jsonl'
+        if Path('/content/corpus.jsonl').exists():
+            corpus = Path('/content/corpus.jsonl')
+        elif '__file__' in globals():
+            corpus = Path(__file__).resolve().parents[1] / 'benchmarks' / 'decisions' / 'corpus.jsonl'
     rows = [json.loads(line) for line in corpus.read_text(encoding='utf-8').splitlines() if line.strip()]
     cases = rows if args.split == 'all' else [r for r in rows if r['split'] == args.split]
     print(f'corpus: {len(cases)} cases (split={args.split}) from {corpus}', flush=True)

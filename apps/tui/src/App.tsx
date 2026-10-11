@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { resolve } from "node:path";
 import { Box, useApp, useInput, useStdout } from "ink";
-import { executeWorkflow, loadConfig, getRunChanges, LatticeServiceError, detectVerifyCommand, buildInitConfig, writeConfig, listAvailableModels, INIT_PRESET_DEFAULTS } from "@lattice/service";
+import { executeWorkflow, loadConfig, getRunChanges, LatticeServiceError, detectVerifyCommand, buildInitConfig, writeConfig, listAvailableModels, INIT_PRESET_DEFAULTS, checkModelReadiness, parseLatticeConfig, runCommand } from "@lattice/service";
 import type { RunEvent } from "@lattice/protocol";
 import { Header } from "./components/Header.js";
 import { EventStream } from "./components/EventStream.js";
@@ -68,15 +68,34 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
   useEffect(() => {
     let current = true;
     setConfigPath(undefined);
-    loadConfig(cwd).then(async loaded => {
+    (async () => {
+      // If current directory is not a Git repo, check if child ./Lattice is a Git repo and auto-select
+      const gitCheck = await runCommand({ command: "git", args: ["rev-parse", "--is-inside-work-tree"], cwd }).catch(() => ({ exitCode: 1 }));
+      if (gitCheck.exitCode !== 0) {
+        const childGit = await runCommand({ command: "git", args: ["rev-parse", "--is-inside-work-tree"], cwd: resolve(cwd, "Lattice") }).catch(() => ({ exitCode: 1 }));
+        if (childGit.exitCode === 0 && current) {
+          const target = resolve(cwd, "Lattice");
+          setCwd(target);
+          addFeedItem({ type: "info", title: "Git project detected", text: `Switched target project to ${target}` });
+          return;
+        }
+      }
+
+      const loaded = await loadConfig(cwd);
       if (!current) return;
       if (loaded) {
+        // If config models are uninstalled or unreachable, attempt auto-healing with local endpoints
+        const readiness = await checkModelReadiness(loaded.config, { timeoutMs: 2000 }).catch(() => undefined);
+        if (readiness && !readiness.ok && readiness.blockers.some(b => /is not installed/i.test(b))) {
+          await autoInitialize(cwd);
+          return;
+        }
         setConfigPath(loaded.path);
         await applyReadiness(loaded);
         return;
       }
       await autoInitialize(cwd);
-    }).then(() => {}, error => { if (current) setReadiness(`CONFIG ERROR · ${error.message}`); });
+    })().catch(error => { if (current) setReadiness(`CONFIG ERROR · ${error instanceof Error ? error.message : String(error)}`); });
     return () => { current = false; };
   }, [cwd]);
 
@@ -94,10 +113,52 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
       const verify = await detectVerifyCommand(target);
       const baseUrl = INIT_PRESET_DEFAULTS.ollama.baseUrl;
       const availableModels = baseUrl ? await listAvailableModels(baseUrl) : [];
-      const plan = buildInitConfig({ preset: "ollama", verify, availableModels });
-      const path = await writeConfig(plan.config, { cwd: target });
+      let mlxModels: string[] = [];
+      try {
+        mlxModels = await listAvailableModels("http://127.0.0.1:8000/v1", { timeoutMs: 1500 });
+      } catch {}
+
+      const hasMlx = mlxModels.length > 0;
+      const tevModel = availableModels.find(m => /tev1:0\.8b/i.test(m)) ?? availableModels.find(m => /tev1/i.test(m));
+      let plan;
+      if (hasMlx && tevModel) {
+        plan = {
+          config: parseLatticeConfig({
+            mode: verify ? "auto" : "observe",
+            autonomy: { mode: "supervised" },
+            models: {
+              decision: {
+                provider: "openai-compatible",
+                baseUrl: "http://127.0.0.1:11434/v1",
+                model: tevModel,
+                timeoutMs: 30000,
+              },
+              generator: {
+                provider: "openai-compatible",
+                baseUrl: "http://127.0.0.1:8000/v1",
+                model: mlxModels[0]!,
+                timeoutMs: 300000,
+              },
+            },
+            agent: {
+              preset: "qwen-code",
+              command: "node",
+              extraArgs: ["/Volumes/Harry/DEV/Tessillate/scripts/ornith-worker.mjs"],
+              approvalMode: "auto-edit",
+              outputFormat: "json",
+            },
+            ...(verify ? { verify } : {}),
+            search: { maxRounds: 4, candidatesPerRound: 4 },
+          }),
+          warnings: [] as string[],
+        };
+      } else {
+        plan = buildInitConfig({ preset: "ollama", verify, availableModels });
+      }
+
+      const path = await writeConfig(plan.config, { cwd: target, force: true });
       setConfigPath(path);
-      const generator = plan.config.model?.model ?? "missing generator";
+      const generator = plan.config.models?.generator?.model ?? plan.config.model?.model ?? "missing generator";
       setReadiness(`${generator} · ${plan.config.agent?.preset ?? "missing agent"} · ${plan.config.verify ? "verifier configured" : "missing verifier"} · /doctor`);
       addFeedItem({ type: "info", title: "Auto-initialized configuration", text: `wrote ${path} (mode=${plan.config.mode}, model=${generator})` });
       for (const warning of plan.warnings) {

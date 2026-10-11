@@ -28,6 +28,9 @@ async function terminal(element: React.ReactElement, columns = 80, rows = 24) {
   return {
     last: () => (frames.at(-1) || "").replace(/\x1b\[[0-9;]*m/g, ""),
     key: async (input: string) => { stdin.write(input); await delay(100); },
+    waitFor: async (pattern: RegExp) => {
+      for (let attempt = 0; attempt < 60 && !pattern.test(frames.at(-1) || ""); attempt++) await delay(50);
+    },
     resize: async (width: number, height: number) => { stdout.columns = width; stdout.rows = height; stdout.emit("resize"); await delay(100); },
     close: () => { instance.unmount(); stdin.destroy(); stdout.destroy(); },
   };
@@ -51,9 +54,11 @@ test("a missing config is auto-initialized on launch in the selected folder", as
     }
     const config = JSON.parse(await readFile(join(cwd, ".lattice", "config.json"), "utf8"));
     assert.equal(config.mode, "auto");
-    assert.deepEqual(config.verify, { command: "npm", args: ["test"], timeoutMs: 120_000 });
-    assert.equal(config.model.baseUrl, "http://127.0.0.1:11434/v1");
-    assert.ok(typeof config.model.model === "string" && config.model.model.length > 0);
+    assert.deepEqual(config.verify, { command: "npm", args: ["test"] });
+    const baseUrl = config.models?.decision?.baseUrl ?? config.model?.baseUrl;
+    assert.equal(baseUrl, "http://127.0.0.1:11434/v1");
+    const model = config.models?.decision?.model ?? config.model?.model;
+    assert.ok(typeof model === "string" && model.length > 0);
     assert.match(tty.last(), /Auto-initialized configuration/);
     assert.doesNotMatch(tty.last(), /SETUP REQUIRED/);
   } finally { tty.close(); }
@@ -75,6 +80,7 @@ test("reverse-tab cycles once, preserves drafts and slash suggestions; missing s
     await tty.key("\x1b[Z");
     assert.match(tty.last(), /\[PLAN\]/);
     await tty.key("\r");
+    await tty.waitFor(/BLOCKED/);
     assert.match(tty.last(), /BLOCKED/);
     assert.doesNotMatch(tty.last(), /Task Finished|VERIFIED PATCH/);
     await tty.key("/mo");
@@ -87,6 +93,7 @@ test("reverse-tab cycles once, preserves drafts and slash suggestions; missing s
     assert.match(tty.last(), /\[AUTO\]/);
     await tty.key("fix it");
     await tty.key("\r");
+    await tty.waitFor(/BLOCKED/);
     assert.match(tty.last(), /BLOCKED/);
     await tty.resize(100, 30);
     assert.ok(tty.last().trimEnd().split("\n").length <= 30);
@@ -142,6 +149,7 @@ test("an active PLAN retains its mode and cancellation waits for the pending pro
   try {
     await tty.key("plan x");
     await tty.key("\r");
+    for (let attempt = 0; attempt < 60 && !finish; attempt++) await delay(50);
     assert.ok(finish, "planner must actually be invoked");
     await tty.key("\x1b[Z");
     assert.match(tty.last(), /\[PLAN\]/);
@@ -150,7 +158,7 @@ test("an active PLAN retains its mode and cancellation waits for the pending pro
     assert.match(tty.last(), /Cancellation requested/);
     assert.match(tty.last(), /RUNNING/);
     finish!(new Response(JSON.stringify({ choices: [{ message: { content: "A bounded draft." } }] })));
-    await delay(150);
+    await tty.waitFor(/CANCELLED/);
     assert.match(tty.last(), /CANCELLED/);
     assert.match(tty.last(), /IDLE/);
   } finally { finish?.(new Response('{}')); tty.close(); }
@@ -206,6 +214,12 @@ test("event descriptions expose Tessera help and ignore untrusted success flags"
     record: { schema: "lattice.tessera-verification/v0", witness: null } } }).text ?? "";
   assert.match(malformed, /untrusted saved evidence/i);
   assert.doesNotMatch(malformed, /Verification: passed/);
+  const missing = describeEvent({ ...event, payload: { tool: "tessera.witness", passed: true } }).text ?? "";
+  assert.match(missing, /verification record missing/);
+  assert.doesNotMatch(missing, /Verification: passed/);
+  const unknown = describeEvent({ ...event, payload: { passed: true, record: { ...record, schema: "lattice.tessera-verification/v9" } } }).text ?? "";
+  assert.match(unknown, /Untrusted saved evidence/);
+  assert.doesNotMatch(unknown, /Verification: passed|Witness: pass/);
 });
 
 test("Tessera feedback wraps in a narrow terminal and remains reachable by paging", async () => {

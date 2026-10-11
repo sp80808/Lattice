@@ -192,10 +192,10 @@ test("init builds validated configs and falls back to observe without a verifier
 });
 
 test("init replaces an unavailable preset default with a listed model", () => {
-  const available = ["qwen3:1.7b", "qwen2.5-coder:1.5b", "nomic-embed-text"];
+  const available = ["qwen3:1.7b", "glm-5.3-flash:coder", "nomic-embed-text"];
   assert.equal(isModelListed(available, "qwen3-coder"), false);
   assert.equal(isModelListed(available, "qwen3"), true);
-  assert.equal(selectPreferredModel(available), "qwen2.5-coder:1.5b");
+  assert.equal(selectPreferredModel(available), "glm-5.3-flash:coder");
   assert.equal(selectPreferredModel([]), undefined);
 
   const auto = buildInitConfig({
@@ -203,7 +203,7 @@ test("init replaces an unavailable preset default with a listed model", () => {
     verify: parseCommandLine("npm test"),
     availableModels: available,
   });
-  assert.equal(auto.config.model?.model, "qwen2.5-coder:1.5b");
+  assert.equal(auto.config.model?.model, "glm-5.3-flash:coder");
   assert.equal(auto.config.mode, "auto");
   assert.match(auto.warnings.join("\n"), /qwen3-coder is not installed/);
 

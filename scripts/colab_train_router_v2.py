@@ -45,7 +45,8 @@ except ImportError:
     from peft import LoraConfig, get_peft_model
 
 # --- persistence: manifest at start, per-milestone flush, --resume idempotence
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # local: Lattice/scripts/
+if '__file__' in globals():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))  # local: Lattice/scripts/
 if Path("/content/colab_persist.py").exists():             # remote: uploaded helper
     sys.path.insert(0, "/content")
 try:

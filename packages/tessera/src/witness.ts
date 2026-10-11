@@ -589,7 +589,7 @@ export function replayVerification(record: TesseraVerificationRecord): ReplayedV
 
 export function verificationRecords(value: unknown, out: TesseraVerificationRecord[] = []): TesseraVerificationRecord[] {
   // Keep malformed records too, so replay/rendering reports them rather than hiding missing evidence.
-  if (isObject(value) && value.schema === VERIFICATION_SCHEMA) {
+  if (isObject(value) && typeof value.schema === "string" && value.schema.startsWith("lattice.tessera-verification/")) {
     out.push(value as unknown as TesseraVerificationRecord);
     return out;
   }
