@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { LATTICE_VERSION, LatticeServiceError } from "@lattice/service";
 import {
+  adaptiveCommand,
+  benchCommand,
   configCommand,
   doctorCommand,
   initCommand,
   mcpCommand,
   mineCommand,
   policySimCommand,
+  planCommand,
   runCommand,
   runsCommand,
   serveCommand,
@@ -23,6 +26,10 @@ Usage:
 
 Tasks:
   run <task...>        run a task          [--config path] [--observe] [--json]
+  adaptive <task...>   adaptive one-shot coding workflow with capability routing
+                         [--autonomy supervised|auto|observe] [--json]
+  plan <task...>       create a source-grounded implementation plan
+                         --file path[:start-end]... [--config path] [--lattice-dir path] [--json]
   runs                 list recorded runs  [-n limit] [--json]
   show [id|latest]     show one run        [--events] [-f|--follow] [--json]
 
@@ -34,6 +41,13 @@ Setup:
                          [--autonomy autopilot|supervised|manual] [--force] [--print]
   doctor               check node, git, config, models, agent and verifier [--offline] [--json]
   config               print the resolved config [--config path] [--json]
+
+Benchmarks:
+  bench [suite-dir]    compare decision strategies on fixture tasks (default: benchmarks/basic)
+                         [-s first,random,cheapest-first,oracle,configured] [-n trials] [--seed N]
+                         [--rounds N] [--task id ...] [--config path] [-o report.json] [--json]
+                         [-j concurrency] [--shard i/n] [--baseline report.json]   exit 1 on regression
+                         [--check]   verify fixtures fail as shipped and pass with their solution
 
 Integrations:
   serve                HTTP daemon on 127.0.0.1 [--port 4774] [--token t] [--origin url ...]
@@ -55,6 +69,9 @@ Docs: docs/cli.md`;
 
 const COMMANDS: Record<string, (args: string[]) => Promise<number>> = {
   run: runCommand,
+  adaptive: adaptiveCommand,
+  plan: planCommand,
+  bench: benchCommand,
   init: initCommand,
   doctor: doctorCommand,
   runs: runsCommand,
@@ -92,7 +109,22 @@ async function main(argv: string[]): Promise<number> {
   const { globals, remaining } = hoistGlobals(argv);
   const [first, ...tail] = remaining;
   const rest = [...globals, ...tail];
-  if (first === undefined || first === "help" || first === "-h" || first === "--help") {
+  if (first === undefined) {
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      try {
+        // @ts-ignore dynamic import resolved when @lattice/tui workspace is present
+        const { runTui } = await import("@lattice/tui");
+        return await runTui(globals);
+      } catch (err: any) {
+        if (err?.code !== "ERR_MODULE_NOT_FOUND" && !err?.message?.includes("@lattice/tui")) {
+          throw err;
+        }
+      }
+    }
+    console.log(HELP);
+    return 0;
+  }
+  if (first === "help" || first === "-h" || first === "--help") {
     console.log(HELP);
     return 0;
   }
