@@ -7,16 +7,17 @@
     "lattice": "./dist/index.js"
   },
   "dependencies": {
-    "@lattice/service": "0.0.1",
-    "@lattice/server": "0.0.1",
-    "@lattice/mcp": "0.0.1",
-    "@lattice/protocol": "0.0.1",
     "@lattice/analytics": "0.0.1",
-    "@lattice/mining": "0.0.1",
-    "@lattice/policy": "0.0.1",
     "@lattice/bench": "0.0.1",
+    "@lattice/core": "0.0.1",
+    "@lattice/mcp": "0.0.1",
+    "@lattice/mining": "0.0.1",
     "@lattice/orchestrator": "0.0.1",
-    "@lattice/tui": "workspace:*",
-    "@lattice/tessera": "0.0.1"
+    "@lattice/policy": "0.0.1",
+    "@lattice/protocol": "0.0.1",
+    "@lattice/server": "0.0.1",
+    "@lattice/service": "0.0.1",
+    "@lattice/tessera": "0.0.1",
+    "@lattice/tui": "workspace:*"
   }
 }
