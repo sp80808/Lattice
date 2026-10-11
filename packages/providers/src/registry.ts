@@ -294,6 +294,8 @@ function inferCapabilities(name: string, family?: string): string[] {
   if (/(coder|code|starcoder|codestral)/.test(haystack)) caps.push("code", "insert");
   if (/(instruct|chat|it$)/.test(haystack)) caps.push("chat");
   if (/(thinking|reasoner|r1)/.test(haystack)) caps.push("thinking");
+  if (/(tev|systemone|decision|router)/.test(haystack)) caps.push("decision", "choice");
+  if (/(glm|flash)/.test(haystack)) caps.push("code", "completion", "tools", "chat");
   return caps;
 }
 

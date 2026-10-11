@@ -1129,12 +1129,13 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 // ---------------------------------------------------------------------------
 // Init
 
-export type InitPreset = "ollama" | "vllm" | "openai-compatible" | "observe";
+export type InitPreset = "ollama" | "vllm" | "openai-compatible" | "tandem" | "observe";
 
 export const INIT_PRESETS: readonly InitPreset[] = [
   "ollama",
   "vllm",
   "openai-compatible",
+  "tandem",
   "observe",
 ];
 
@@ -1142,6 +1143,7 @@ const PRESET_DEFAULTS: Record<Exclude<InitPreset, "observe">, { baseUrl?: string
   ollama: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen3-coder" },
   vllm: { baseUrl: "http://127.0.0.1:8000/v1" },
   "openai-compatible": {},
+  tandem: { baseUrl: "http://127.0.0.1:8000/v1", model: "glm-5.3-flash" },
 };
 
 export const INIT_PRESET_DEFAULTS = PRESET_DEFAULTS;
@@ -1209,6 +1211,9 @@ export interface InitOptions {
   preset?: InitPreset;
   baseUrl?: string;
   model?: string;
+  decisionModel?: string;
+  decisionBaseUrl?: string;
+  decisionProvider?: "openai-compatible" | "systemone";
   apiKeyEnv?: string;
   agent?: "qwen-code" | "opencode";
   verify?: VerifyCommand;
@@ -1280,15 +1285,45 @@ export function buildInitConfig(options: InitOptions = {}): InitPlan {
     );
   }
 
+  const isTandem = preset === "tandem" || options.decisionModel !== undefined;
+  const decisionModelId = options.decisionModel ?? (preset === "tandem" ? "tev1:0.8b" : undefined);
+  const decisionBaseUrl = options.decisionBaseUrl ?? (preset === "tandem" ? "http://127.0.0.1:11434/v1" : baseUrl);
+  const decisionProvider = options.decisionProvider ?? (
+    decisionModelId?.toLowerCase().startsWith("tev") || preset === "tandem"
+      ? "systemone"
+      : "openai-compatible"
+  );
+
+  const modelPayload = isTandem && decisionModelId
+    ? {
+        models: {
+          generator: {
+            provider: "openai-compatible" as const,
+            baseUrl,
+            model,
+            ...(apiKeyEnv ? { apiKeyEnv } : {}),
+          },
+          decision: {
+            provider: decisionProvider,
+            baseUrl: decisionBaseUrl,
+            model: decisionModelId,
+          },
+        },
+      }
+    : {
+        model: {
+          provider: "openai-compatible" as const,
+          baseUrl,
+          model,
+          ...(apiKeyEnv ? { apiKeyEnv } : {}),
+        },
+      };
+
   const config = parseLatticeConfig({
     mode,
     autonomy: { mode: options.autonomy ?? "supervised" },
-    model: {
-      provider: "openai-compatible",
-      baseUrl,
-      model,
-      ...(apiKeyEnv ? { apiKeyEnv } : {}),
-    },    agent:
+    ...modelPayload,
+    agent:
       agent === "qwen-code"
         ? { preset: "qwen-code", approvalMode: "auto-edit", outputFormat: "json" }
         : { preset: "opencode", format: "json" },

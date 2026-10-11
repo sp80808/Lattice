@@ -54,7 +54,7 @@ test("a missing config is auto-initialized on launch in the selected folder", as
     }
     const config = JSON.parse(await readFile(join(cwd, ".lattice", "config.json"), "utf8"));
     assert.equal(config.mode, "auto");
-    assert.deepEqual(config.verify, { command: "npm", args: ["test"] });
+    assert.deepEqual(config.verify, { command: "npm", args: ["test"], timeoutMs: 120000 });
     const baseUrl = config.models?.decision?.baseUrl ?? config.model?.baseUrl;
     assert.equal(baseUrl, "http://127.0.0.1:11434/v1");
     const model = config.models?.decision?.model ?? config.model?.model;

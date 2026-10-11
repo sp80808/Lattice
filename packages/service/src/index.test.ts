@@ -225,6 +225,21 @@ test("init replaces an unavailable preset default with a listed model", () => {
   assert.deepEqual(listed.warnings, []);
 });
 
+test("init builds tandem preset with generator and Tev SystemOne decision router", () => {
+  const tandem = buildInitConfig({
+    preset: "tandem",
+    verify: parseCommandLine("npm test"),
+  });
+  assert.equal(tandem.config.models?.generator?.model, "glm-5.3-flash");
+  assert.equal(tandem.config.models?.generator?.baseUrl, "http://127.0.0.1:8000/v1");
+  const decision = tandem.config.models?.decision;
+  assert.ok(decision && "model" in decision);
+  assert.equal(decision.model, "tev1:0.8b");
+  assert.equal(decision.baseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(decision.provider, "systemone");
+  assert.equal(tandem.config.mode, "auto");
+});
+
 test("listAvailableModels parses ids and degrades to empty on failure", async () => {
   const ok = await listAvailableModels("http://models.test/v1/", {
     fetchImpl: async () =>
