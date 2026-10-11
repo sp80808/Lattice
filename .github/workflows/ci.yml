@@ -22,7 +22,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: npm install
+      # npm 10 does not install this repo's workspace:* dependencies.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+      - run: pnpm install --frozen-lockfile
       # The same command contributors run locally; see docs/ci.md.
       - run: scripts/ci-health.sh
 
@@ -53,7 +57,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      # npm 10 does not install this repo's workspace:* dependencies.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+      - run: pnpm install --frozen-lockfile
       - run: npm run build
       - run: node scripts/run-node-tests.mjs packages/tessera/dist/e2e.test.js
       - run: node examples/tessera-repair/compare.mjs --seeds 3 --ablation
