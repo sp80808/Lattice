@@ -28,7 +28,11 @@ jobs:
           version: 10.33.3
       - run: pnpm install --frozen-lockfile
       # The same command contributors run locally; see docs/ci.md.
+      # Node suite legitimately skips the live-tsr benchmark here; the required
+      # tessera-witness job runs real compiler integration separately.
       - run: scripts/ci-health.sh
+        env:
+          LATTICE_TEST_ALLOWLIST: scripts/test-allowlist-node-ci.json
 
   # Tessera issue #41: the witness path runs the real `tsr`, never a stub.
   # Bump TESSERA_REF when Lattice should follow a newer compiler build.
