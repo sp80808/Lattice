@@ -139,3 +139,22 @@ test("retry and budget settings survive config parsing and reach the search opti
     maxWallMs: 120_000,
   });
 });
+
+test("createDecisionProvider wraps model in MemoizedDecisionProvider when requested", () => {
+  const config = parseLatticeConfig({
+    mode: "auto",
+    models: {
+      decision: {
+        provider: "systemone",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        model: "tev1:0.8b",
+      },
+    },
+  });
+
+  const plain = createDecisionProvider(config);
+  assert.equal(plain?.constructor.name, "SystemOneDecisionProvider");
+
+  const memoized = createDecisionProvider(config, { memoize: true, getRepoRevision: () => "rev1" });
+  assert.equal(memoized?.constructor.name, "MemoizedDecisionProvider");
+});

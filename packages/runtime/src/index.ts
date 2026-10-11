@@ -20,6 +20,7 @@ import type {
   DecisionReviewer,
 } from "@lattice/search";
 import {
+  MemoizedDecisionProvider,
   OpenAICompatibleDecisionProvider,
   OpenAICompatibleGeneratorProvider,
   RandomDecisionProvider,
@@ -428,23 +429,32 @@ function endpointConfig(model: ModelEndpointConfig): OpenAICompatibleConfig {
 /** Decision provider for `models.decision ?? model`, or undefined when unconfigured. */
 export function createDecisionProvider(
   config: LatticeConfig,
+  options: { getRepoRevision?: () => string | undefined; memoize?: boolean } = {},
 ): DecisionProvider | undefined {
   const model = config.models?.decision ?? config.model;
   if (!model) return undefined;
+  let provider: DecisionProvider;
   if (model.provider === "random") {
-    return new RandomDecisionProvider(
+    provider = new RandomDecisionProvider(
       model.seed === undefined ? Math.random : seededRandom(model.seed),
       { allowUnknown: false },
     );
-  }
-  if (model.provider === "systemone") {
-    return new SystemOneDecisionProvider({
+  } else if (model.provider === "systemone") {
+    provider = new SystemOneDecisionProvider({
       baseUrl: model.baseUrl,
       model: model.model,
       timeoutMs: model.timeoutMs,
     });
+  } else {
+    provider = new OpenAICompatibleDecisionProvider(endpointConfig(model));
   }
-  return new OpenAICompatibleDecisionProvider(endpointConfig(model));
+
+  if (options.memoize && model.provider !== "random") {
+    return new MemoizedDecisionProvider(provider, {
+      getRepoRevision: options.getRepoRevision,
+    });
+  }
+  return provider;
 }
 
 /** Resolve a generator without requiring a coding agent or verifier. */

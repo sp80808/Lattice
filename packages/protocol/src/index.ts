@@ -124,6 +124,7 @@ export interface ProviderUsage {
 export interface ProviderIdentity {
   provider: string;
   model?: string;
+  cached?: boolean;
 }
 
 export interface DecisionRequest {
