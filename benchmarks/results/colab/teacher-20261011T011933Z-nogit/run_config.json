@@ -1,0 +1,12 @@
+{
+  "job": "overnight_distillation_loop",
+  "student_base": "Qwen/Qwen2.5-Coder-1.5B",
+  "generator": "Quantised GLM 5.3 Flash",
+  "decision_router": "SystemOne Tev",
+  "benchmarks": [
+    "https://github.com/swe-bench/SWE-bench",
+    "https://github.com/harbor-framework/terminal-bench"
+  ],
+  "cycles": 8,
+  "started_at": "2026-10-11T01:45:44.564937+00:00"
+}

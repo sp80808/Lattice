@@ -16,6 +16,7 @@ import {
   runParallelAgents,
   verifiedBatchResults,
   workspaceExists,
+  objectiveVerification,
 } from "./index.js";
 
 async function createRepo(): Promise<string> {
@@ -247,7 +248,7 @@ test("scheduler can stop launching queued jobs after verified success", async ()
   assert.equal(verifiedBatchResults(results).length, 1);
 });
 
-test("a structured verifier replaces the verify command and gates success", async () => {
+test("a structured verifier gates success and is mutually exclusive with verifyCommand", async () => {
   const repo = await createRepo();
   const adapter = new ProcessAgentAdapter({
     name: "fixture-agent",
@@ -270,11 +271,22 @@ test("a structured verifier replaces the verify command and gates success", asyn
     },
   });
 
+  await assert.rejects(
+    runIsolatedAgent({
+      repoRoot: repo,
+      task: { prompt: "change" },
+      adapter,
+      verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+      verifier: verifier(false),
+      cleanup: "always",
+    }),
+    /Cannot specify both verifyCommand and verifier/
+  );
+
   const rejected = await runIsolatedAgent({
     repoRoot: repo,
     task: { prompt: "change" },
     adapter,
-    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
     verifier: verifier(false),
     cleanup: "always",
   });
@@ -420,4 +432,294 @@ test("cancelling during verification records the verify stage", async () => {
   } finally {
     clearInterval(watcher);
   }
+});
+
+test("parallel agents correctly handle both command and structured verifiers", async () => {
+  const repo = await createRepo();
+
+  const adapter = {
+    name: "fixture",
+    async run() {
+      return {
+        agent: "fixture",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 10,
+        timedOut: false,
+      };
+    },
+  };
+
+  const verifier = (passed: boolean) => ({
+    tool: "fixture.verifier",
+    describe: () => ({}),
+    async verify() {
+      return {
+        tool: "fixture.verifier",
+        passed,
+        summary: passed ? "ok" : "fail",
+        evidence: [],
+        record: {},
+      };
+    },
+  });
+
+  const jobs = [
+    {
+      id: "passing-cmd",
+      task: { prompt: "" },
+      adapter,
+      verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+      cleanup: "always" as const,
+    },
+    {
+      id: "failing-cmd",
+      task: { prompt: "" },
+      adapter,
+      verifyCommand: { command: process.execPath, args: ["-e", "process.exit(1)"] },
+      cleanup: "always" as const,
+    },
+    {
+      id: "passing-struct",
+      task: { prompt: "" },
+      adapter,
+      verifier: verifier(true),
+      cleanup: "always" as const,
+    },
+    {
+      id: "failing-struct",
+      task: { prompt: "" },
+      adapter,
+      verifier: verifier(false),
+      cleanup: "always" as const,
+    },
+    {
+      id: "no-verifier",
+      task: { prompt: "" },
+      adapter,
+      cleanup: "always" as const,
+    },
+  ];
+
+  const results = await runParallelAgents({
+    repoRoot: repo,
+    maxConcurrency: 5,
+    jobs,
+  });
+
+  assert.equal(results.length, 5);
+  // 9. deterministic result ordering remains unchanged
+  assert.deepEqual(
+    results.map((r) => r.id),
+    ["passing-cmd", "failing-cmd", "passing-struct", "failing-struct", "no-verifier"],
+  );
+
+  const survivors = verifiedBatchResults(results).map((r) => r.id);
+  // 1, 2, 3, 4, 6, 8. passing structures/commands are survivors, failing or missing are not
+  assert.deepEqual(survivors, ["passing-cmd", "passing-struct"]);
+});
+
+test("structured verifier pass triggers stopLaunchingAfterVerified", async () => {
+  const repo = await createRepo();
+
+  const adapter = {
+    name: "fixture",
+    async run() {
+      return {
+        agent: "fixture",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 10,
+        timedOut: false,
+      };
+    },
+  };
+
+  const verifier = (passed: boolean) => ({
+    tool: "fixture.verifier",
+    describe: () => ({}),
+    async verify() {
+      return {
+        tool: "fixture.verifier",
+        passed,
+        summary: passed ? "ok" : "fail",
+        evidence: [],
+        record: {},
+      };
+    },
+  });
+
+  const results = await runParallelAgents({
+    repoRoot: repo,
+    maxConcurrency: 1,
+    stopLaunchingAfterVerified: true,
+    jobs: [
+      {
+        id: "fail-1",
+        task: { prompt: "" },
+        adapter,
+        verifier: verifier(false),
+        cleanup: "always" as const,
+      },
+      {
+        id: "pass-2",
+        task: { prompt: "" },
+        adapter,
+        verifier: verifier(true),
+        cleanup: "always" as const,
+      },
+      {
+        id: "skip-3",
+        task: { prompt: "" },
+        adapter,
+        verifier: verifier(true),
+        cleanup: "always" as const,
+      },
+    ],
+  });
+
+  // 5. structured verifier pass triggers stopLaunchingAfterVerified
+  assert.equal(results[0]?.status, "fulfilled");
+  assert.equal(results[1]?.status, "fulfilled");
+  assert.equal(results[2]?.status, "skipped");
+  assert.equal(verifiedBatchResults(results).length, 1);
+  assert.equal(verifiedBatchResults(results)[0]?.id, "pass-2");
+});
+
+test("verifier tool error => not verified survivor", async () => {
+  const repo = await createRepo();
+
+  const adapter = {
+    name: "fixture",
+    async run() {
+      return {
+        agent: "fixture",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 10,
+        timedOut: false,
+      };
+    },
+  };
+
+  const verifier = {
+    tool: "error.verifier",
+    describe: () => ({}),
+    async verify(): Promise<any> {
+      throw new Error("tool unsupported");
+    },
+  };
+
+  const results = await runParallelAgents({
+    repoRoot: repo,
+    maxConcurrency: 1,
+    jobs: [
+      {
+        id: "error-1",
+        task: { prompt: "" },
+        adapter,
+        verifier,
+        cleanup: "always" as const,
+      },
+    ],
+  });
+
+  // 7. verifier tool error/unsupported => not verified survivor
+  assert.equal(results[0]?.status, "rejected");
+  assert.equal(verifiedBatchResults(results).length, 0);
+});
+
+test("Tessera regression fixture: tsr witness verifier integration", async () => {
+  const repo = await createRepo();
+
+  const adapter = {
+    name: "fixture",
+    async run() {
+      return {
+        agent: "fixture",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 10,
+        timedOut: false,
+      };
+    },
+  };
+
+  const tsrVerifier = {
+    tool: "tsr witness",
+    describe: () => ({ command: "tsr", args: ["witness"] }),
+    async verify() {
+      return {
+        tool: "tsr witness",
+        passed: true,
+        summary: "verified via tessera",
+        evidence: [
+          {
+            id: "ev:123",
+            kind: "test" as const,
+            verified: true,
+            source: "test",
+            summary: "ok",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        record: { tsr: "data" },
+      };
+    },
+  };
+
+  const results = await runParallelAgents({
+    repoRoot: repo,
+    maxConcurrency: 1,
+    jobs: [
+      {
+        id: "tsr-1",
+        task: { prompt: "" },
+        adapter,
+        verifier: tsrVerifier,
+        cleanup: "always" as const,
+      },
+    ],
+  });
+
+  assert.equal(results[0]?.status, "fulfilled");
+  const survivors = verifiedBatchResults(results);
+  assert.equal(survivors.length, 1);
+  assert.equal(survivors[0]?.id, "tsr-1");
+  
+  if (survivors[0]) {
+    const obj = objectiveVerification(survivors[0].result);
+    assert.equal(obj.passed, true);
+    assert.equal(obj.evidenceIds.length, 1);
+    assert.equal(obj.evidenceIds[0], "ev:123");
+  }
+});
+
+test("passing checks cannot solve a coding candidate with no edits or a failed worker", async () => {
+  const repo = await createRepo();
+  for (const code of ["console.log('no edit')", "require('fs').appendFileSync('base.txt','change'); process.exit(1)"]) {
+    const executor = createAgentExperimentExecutor({
+      adapter: new ProcessAgentAdapter({ name: "fixture", command: process.execPath, args: ["-e", code] }),
+      verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] }, cleanup: "always",
+    });
+    const result = await executor.execute({ id: "fix", label: "fix", action: "fix", expectedEvidence: "pass" }, {
+      version: "0.1", runId: "fixture", task: "edit", repo: { root: repo }, objectives: [], constraints: [], context: [], hypotheses: [], candidateActions: [], evidence: [], uncertainties: [], verification: [], budget: {}, childRunIds: [],
+    });
+    assert.notEqual(result.status, "success");
+    assert.equal(result.terminal, false);
+  }
+});
+
+test("new files with spaces in a new directory have a recorded patch", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({ repoRoot: repo,
+    adapter: new ProcessAgentAdapter({ name: "fixture", command: process.execPath, args: ["-e", "require('fs').mkdirSync('new dir'); require('fs').writeFileSync('new dir/new file.txt','cloth mesh\\n')"] }),
+    task: { id: "create", prompt: "create file" }, cleanup: "always",
+  });
+  assert.ok(result.changes.changedFiles.includes("new dir/new file.txt"));
+  assert.match(result.changes.diff, /\+cloth mesh/);
 });

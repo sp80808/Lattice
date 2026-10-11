@@ -92,13 +92,14 @@ export class ProcessAgentAdapter implements AgentAdapter {
         ? [task.prompt, ...(task.context ?? [])].join("\n\n")
         : undefined;
 
+    const envPolicy = this.config.trustedHost ? "inherit" : "minimal";
     const result = await runCommand({
       command: this.config.command,
       args,
       cwd: workspace,
       stdin,
       env: this.config.env,
-      envPolicy: this.config.trustedHost ? "inherit" : "minimal",
+      envPolicy,
       allowEnv: this.config.allowEnv,
       killTree: true,
       signal: task.signal,
@@ -116,7 +117,7 @@ export class ProcessAgentAdapter implements AgentAdapter {
       ...(result.cancelled
         ? { cancelled: true, cancelReason: result.cancelReason }
         : {}),
-      environment: { policy: result.envPolicy, names: result.envNames },
+      environment: { policy: envPolicy, names: result.envNames ?? [] },
     };
   }
 }
@@ -310,7 +311,7 @@ export interface WorkspaceChanges {
 export async function captureWorkspaceChanges(
   workspace: string,
 ): Promise<WorkspaceChanges> {
-  const status = await gitOrThrow(workspace, ["status", "--porcelain=v1"]);
+  const status = await gitOrThrow(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   const diff = await gitOrThrow(workspace, [
     "diff",
     "--no-ext-diff",
@@ -322,18 +323,28 @@ export async function captureWorkspaceChanges(
   const changedFiles: string[] = [];
   const untrackedFiles: string[] = [];
 
-  for (const line of status.stdout.split("\n").filter(Boolean)) {
+  const entries = status.stdout.split("\0").filter(Boolean);
+  for (let index = 0; index < entries.length; index++) {
+    const line = entries[index]!;
     const code = line.slice(0, 2);
-    const file = line.slice(3).trim();
+    const file = line.slice(3);
     if (!file) continue;
     changedFiles.push(file);
     if (code === "??") untrackedFiles.push(file);
+    if (/[RC]/.test(code)) index++; // -z rename/copy records include the old path next.
+  }
+
+  let patch = diff.stdout;
+  for (const file of untrackedFiles) {
+    const added = await runCommand({ command: "git", args: ["diff", "--no-ext-diff", "--binary", "--no-index", "--", "/dev/null", file], cwd: workspace });
+    if (added.exitCode !== 0 && added.exitCode !== 1) throw new Error(`Cannot capture added file ${file}: ${added.stderr}`);
+    patch += added.stdout;
   }
 
   return {
     changedFiles,
     untrackedFiles,
-    diff: diff.stdout,
+    diff: patch,
   };
 }
 
@@ -368,9 +379,58 @@ export interface IsolatedAgentRunResult {
   cancelled?: { reason: string; stage: "agent" | "verify" };
 }
 
+export interface ObjectiveVerificationStatus {
+  ran: boolean;
+  passed: boolean;
+  objective: boolean;
+  tool?: string;
+  evidenceIds: string[];
+  reason?: string;
+}
+
+export function objectiveVerification(
+  result: IsolatedAgentRunResult,
+): ObjectiveVerificationStatus {
+  if (result.verifierResult) {
+    return {
+      ran: true,
+      passed: result.verifierResult.passed,
+      objective: true,
+      tool: result.verifierResult.tool,
+      evidenceIds: result.verifierResult.evidence
+        ? result.verifierResult.evidence.map((e) => e.id)
+        : [],
+      reason: result.verifierResult.summary,
+    };
+  }
+
+  if (result.verification) {
+    return {
+      ran: true,
+      passed:
+        result.verification.exitCode === 0 && !result.verification.timedOut,
+      objective: true,
+      tool: "command",
+      evidenceIds: [],
+    };
+  }
+
+  return {
+    ran: false,
+    passed: false,
+    objective: false,
+    evidenceIds: [],
+    reason: "no verifier configured",
+  };
+}
+
 export async function runIsolatedAgent(
   options: IsolatedAgentRunOptions,
 ): Promise<IsolatedAgentRunResult> {
+  if (options.verifyCommand && options.verifier) {
+    throw new Error("Cannot specify both verifyCommand and verifier");
+  }
+
   const workspace = await createDetachedWorktree(
     options.repoRoot,
     options.baseRevision,
@@ -461,6 +521,7 @@ export interface ParallelAgentJob {
   task: AgentTask;
   adapter: AgentAdapter;
   verifyCommand?: CommandSpec;
+  verifier?: Verifier;
   cleanup?: CleanupPolicy;
 }
 
@@ -549,6 +610,7 @@ export async function runParallelAgents(
           task: job.task,
           adapter: job.adapter,
           verifyCommand: job.verifyCommand,
+          verifier: job.verifier,
           cleanup: job.cleanup,
         });
 
@@ -559,11 +621,7 @@ export async function runParallelAgents(
         };
         results[index] = item;
 
-        if (
-          result.success &&
-          result.verification?.exitCode === 0 &&
-          !result.verification.timedOut
-        ) {
+        if (result.success && objectiveVerification(result).passed) {
           verifiedFound = true;
         }
 
@@ -609,8 +667,7 @@ export function verifiedBatchResults(
     ): item is Extract<ParallelAgentJobResult, { status: "fulfilled" }> =>
       item.status === "fulfilled" &&
       item.result.success &&
-      item.result.verification?.exitCode === 0 &&
-      !item.result.verification.timedOut,
+      objectiveVerification(item.result).passed,
   );
 }
 
@@ -802,11 +859,14 @@ export function createAgentExperimentExecutor(
 
       if (result.verifierResult) records.push(...result.verifierResult.evidence);
 
-      const verifiedSuccess = result.verifierResult
+      const verificationPassed = result.verifierResult
         ? result.verifierResult.passed
         : result.verification !== undefined &&
           result.verification.exitCode === 0 &&
           !result.verification.timedOut;
+
+      const verifiedSuccess = verificationPassed && result.execution.exitCode === 0 && !result.execution.timedOut &&
+        result.changes.changedFiles.length > 0;
 
       return {
         candidateId: candidate.id,
@@ -828,11 +888,17 @@ export function createAgentExperimentExecutor(
           `worktree=${result.workspace.path}`,
         ].join(" "),
         evidence: records,
+        changes: {
+          diff: result.changes.diff,
+          changedFiles: result.changes.changedFiles,
+          workspace: result.workspace.path,
+          retained: result.workspaceRetained,
+        },
         uncertainties: verifiedSuccess
           ? undefined
           : result.cancelled
             ? [`run cancelled during ${result.cancelled.stage}: ${result.cancelled.reason}`]
-            : ["agent result is not yet backed by a passing verification command"],
+            : ["Implementation requires actual changes, a successful agent and passing verification"],
       };
     },
   };

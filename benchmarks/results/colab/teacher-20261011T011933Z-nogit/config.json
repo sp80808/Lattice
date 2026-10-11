@@ -1,0 +1,19 @@
+{
+  "job": "teacher",
+  "teacher": "Qwen/Qwen3-8B",
+  "fourBit": true,
+  "gpu": "Tesla T4",
+  "vramGiB": 14.6,
+  "corpus": "/content/corpus.jsonl",
+  "corpusCases": 240,
+  "families": [
+    "ambiguous-underdetermined",
+    "evidence-missing",
+    "conflicting-evidence",
+    "wrong-green",
+    "injection-resistance"
+  ],
+  "syntheticPerFamily": 12,
+  "skipSynthetic": false,
+  "torch": "2.11.0+cu130"
+}

@@ -1,0 +1,1358 @@
+{
+  "schemaVersion": 2,
+  "status": "replayed",
+  "generatedAt": "2026-10-10T21:53:23.138502+00:00",
+  "corpus": "/Volumes/Harry/DEV/Tessillate/Lattice/benchmarks/decisions/corpus.jsonl",
+  "corpusSha256": "1ffeb527b523da7d630f1885780982891645339904ad06bec419c62ed926f444",
+  "caseIds": [
+    "dec-0010",
+    "dec-0011",
+    "dec-0012",
+    "dec-0013",
+    "dec-0014",
+    "dec-0015",
+    "dec-0016",
+    "dec-0017",
+    "dec-0019",
+    "dec-0030",
+    "dec-0031",
+    "dec-0032",
+    "dec-0033",
+    "dec-0034",
+    "dec-0035",
+    "dec-0036",
+    "dec-0037",
+    "dec-0046",
+    "dec-0047",
+    "dec-0048",
+    "dec-0049",
+    "dec-0050",
+    "dec-0051",
+    "dec-0052",
+    "dec-0054",
+    "dec-0062",
+    "dec-0063",
+    "dec-0064",
+    "dec-0065",
+    "dec-0066",
+    "dec-0067",
+    "dec-0068",
+    "dec-0069",
+    "dec-0071",
+    "dec-0078",
+    "dec-0079",
+    "dec-0080",
+    "dec-0081",
+    "dec-0082",
+    "dec-0083",
+    "dec-0084",
+    "dec-0094",
+    "dec-0095",
+    "dec-0096",
+    "dec-0097",
+    "dec-0106",
+    "dec-0107",
+    "dec-0108",
+    "dec-0109",
+    "dec-0110",
+    "dec-0116",
+    "dec-0117",
+    "dec-0118",
+    "dec-0119",
+    "dec-0120",
+    "dec-0122",
+    "dec-0128",
+    "dec-0129",
+    "dec-0130",
+    "dec-0131",
+    "dec-0132",
+    "dec-0133",
+    "dec-0138",
+    "dec-0139",
+    "dec-0140",
+    "dec-0141",
+    "dec-0142",
+    "dec-0143",
+    "dec-0144",
+    "dec-0152",
+    "dec-0153",
+    "dec-0154",
+    "dec-0158",
+    "dec-0159",
+    "dec-0162",
+    "dec-0163",
+    "dec-0164",
+    "dec-0165",
+    "dec-0166",
+    "dec-0170",
+    "dec-0171",
+    "dec-0172",
+    "dec-0174",
+    "dec-0179",
+    "dec-0180",
+    "dec-0181",
+    "dec-0186",
+    "dec-0187",
+    "dec-0188",
+    "dec-0191",
+    "dec-0192",
+    "dec-0193",
+    "dec-0194",
+    "dec-0198",
+    "dec-0200",
+    "dec-0201",
+    "dec-0202",
+    "dec-0203",
+    "dec-0204",
+    "dec-0209",
+    "dec-0210",
+    "dec-0216",
+    "dec-0217",
+    "dec-0218",
+    "dec-0222",
+    "dec-0224",
+    "dec-0226",
+    "dec-0227",
+    "dec-0234",
+    "dec-0236"
+  ],
+  "seed": 1,
+  "requestedModels": [],
+  "harnessSha256": "4a638c4d07c25c4310033a4349fd3061b6e5026ff450f4d575ba610a1384cf6f",
+  "evaluationCasesSha256": "d9ff426a82a7420ab32ddf6bed9e37c05173272bfaf02bf7c39fc3bb9ff271fa",
+  "timeoutSeconds": 180,
+  "split": "holdout",
+  "cases": 110,
+  "eligibilityFiltering": null,
+  "evidenceAugmented": null,
+  "baseUrl": null,
+  "replayed": true,
+  "models": {
+    "qwen3:1.7b@chat [decision-bench-20261010T172927Z-qwen3_1.jsonl]": {
+      "cases": 6,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "replayed",
+      "correct": 5,
+      "accuracy": 0.8333,
+      "accuracyCI95": [
+        0.4365,
+        0.9699
+      ],
+      "abstainRate": 0.0,
+      "correctAbstainRate": null,
+      "abstainOpportunities": 0,
+      "abstainOpportunitiesCovered": null,
+      "escalationRate": 0.1667,
+      "highRiskAccuracy": 0.6667,
+      "requestErrors": 0,
+      "requestErrorRate": 0.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 6,
+      "responseAccuracy": 0.8333,
+      "responseAccuracyCI95": [
+        0.4365,
+        0.9699
+      ],
+      "meanLatencyMs": 5231.3,
+      "p50LatencyMs": 3811.6,
+      "p95LatencyMs": 9424.6,
+      "meanConfidence": 1,
+      "calibration": [
+        {
+          "bucket": "0.8-1.0",
+          "n": 4,
+          "accuracy": 0.75
+        }
+      ],
+      "byFamily": {
+        "data-loss-risk": {
+          "n": 1,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 1,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 1,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 1,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 1,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 1,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T172927Z-qwen3_1.jsonl",
+      "sourceSha256": "e8cce58bb3ff974b3de55f1f3d90e774df0ae3a32b0f93b03c31b0d8bf4feb1a",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "qwen3:1.7b@chat [decision-bench-20261010T173024Z-qwen3_1.jsonl]": {
+      "cases": 84,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "replayed",
+      "correct": 48,
+      "accuracy": 0.5714,
+      "accuracyCI95": [
+        0.4648,
+        0.6718
+      ],
+      "abstainRate": 0.0714,
+      "correctAbstainRate": 1.0,
+      "abstainOpportunities": 12,
+      "abstainOpportunitiesCovered": 0.5,
+      "escalationRate": 0.0952,
+      "highRiskAccuracy": 0.5652,
+      "requestErrors": 0,
+      "requestErrorRate": 0.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 84,
+      "responseAccuracy": 0.5714,
+      "responseAccuracyCI95": [
+        0.4648,
+        0.6718
+      ],
+      "meanLatencyMs": 5833.3,
+      "p50LatencyMs": 4713.5,
+      "p95LatencyMs": 11926.5,
+      "meanConfidence": 0.9423,
+      "calibration": [
+        {
+          "bucket": "0.0-0.2",
+          "n": 3,
+          "accuracy": 0.3333
+        },
+        {
+          "bucket": "0.8-1.0",
+          "n": 68,
+          "accuracy": 0.5294
+        }
+      ],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 8,
+          "accuracy": 0.875,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 6,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 3,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 6,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 3,
+          "accuracy": 0.3333,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 7,
+          "accuracy": 0.5714,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 7,
+          "accuracy": 0.5714,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T173024Z-qwen3_1.jsonl",
+      "sourceSha256": "18b8d1db4dec4f12c8bf0dfb376c0810d03be171c3c01cdc35b974962601d927",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "tev1:0.8b@systemone [decision-bench-20261010T173024Z-tev1_0.jsonl]": {
+      "cases": 84,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "replayed",
+      "correct": 73,
+      "accuracy": 0.869,
+      "accuracyCI95": [
+        0.7805,
+        0.9253
+      ],
+      "abstainRate": 0.0476,
+      "correctAbstainRate": 1.0,
+      "abstainOpportunities": 12,
+      "abstainOpportunitiesCovered": 0.3333,
+      "escalationRate": 0.131,
+      "highRiskAccuracy": 0.7826,
+      "requestErrors": 0,
+      "requestErrorRate": 0.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 84,
+      "responseAccuracy": 0.869,
+      "responseAccuracyCI95": [
+        0.7805,
+        0.9253
+      ],
+      "meanLatencyMs": 209.0,
+      "p50LatencyMs": 146.8,
+      "p95LatencyMs": 260.9,
+      "meanConfidence": 0.3051,
+      "calibration": [
+        {
+          "bucket": "0.0-0.2",
+          "n": 35,
+          "accuracy": 0.8
+        },
+        {
+          "bucket": "0.2-0.4",
+          "n": 21,
+          "accuracy": 0.8095
+        },
+        {
+          "bucket": "0.4-0.6",
+          "n": 18,
+          "accuracy": 1.0
+        },
+        {
+          "bucket": "0.6-0.8",
+          "n": 10,
+          "accuracy": 1.0
+        }
+      ],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 6,
+          "accuracy": 0.6667,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.5714,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 3,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 6,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 3,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T173024Z-tev1_0.jsonl",
+      "sourceSha256": "8aaa16143b3ce1d3662333ae02d3496e1c657104f9e721c0fa044ca9fe1beda9",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "qwen3:1.7b@systemone [decision-bench-20261010T174008Z-qwen3_1.jsonl]": {
+      "cases": 84,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "failed",
+      "correct": 0,
+      "accuracy": 0.0,
+      "accuracyCI95": [
+        0.0,
+        0.0437
+      ],
+      "abstainRate": 0.0,
+      "correctAbstainRate": null,
+      "abstainOpportunities": 12,
+      "abstainOpportunitiesCovered": 0.0,
+      "escalationRate": 0.0,
+      "highRiskAccuracy": 0.0,
+      "requestErrors": 84,
+      "requestErrorRate": 1.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 0,
+      "responseAccuracy": null,
+      "responseAccuracyCI95": null,
+      "meanLatencyMs": 7.4,
+      "p50LatencyMs": 6.4,
+      "p95LatencyMs": 13.0,
+      "meanConfidence": null,
+      "calibration": [],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 3,
+          "accuracy": 0.0,
+          "requestErrors": 3,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 3,
+          "accuracy": 0.0,
+          "requestErrors": 3,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T174008Z-qwen3_1.jsonl",
+      "sourceSha256": "e607c99342e3182c41886b13b6c1b24fdf434bd123b87821a0999041698091d5",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "tev1:0.8b@chat [decision-bench-20261010T174008Z-tev1_0.jsonl]": {
+      "cases": 84,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "failed",
+      "correct": 0,
+      "accuracy": 0.0,
+      "accuracyCI95": [
+        0.0,
+        0.0437
+      ],
+      "abstainRate": 0.0,
+      "correctAbstainRate": null,
+      "abstainOpportunities": 12,
+      "abstainOpportunitiesCovered": 0.0,
+      "escalationRate": 0.0,
+      "highRiskAccuracy": 0.0,
+      "requestErrors": 84,
+      "requestErrorRate": 1.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 0,
+      "responseAccuracy": null,
+      "responseAccuracyCI95": null,
+      "meanLatencyMs": 20.7,
+      "p50LatencyMs": 19.6,
+      "p95LatencyMs": 31.0,
+      "meanConfidence": null,
+      "calibration": [],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 3,
+          "accuracy": 0.0,
+          "requestErrors": 3,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 6,
+          "accuracy": 0.0,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 3,
+          "accuracy": 0.0,
+          "requestErrors": 3,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T174008Z-tev1_0.jsonl",
+      "sourceSha256": "c34901eaf164bb769a61977701d9a69484f3a90655a9bbab1373fc84d220a7f1",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "qwen3:1.7b@chat [decision-bench-20261010T174105Z-qwen3_1.jsonl]": {
+      "cases": 110,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "failed",
+      "correct": 41,
+      "accuracy": 0.3727,
+      "accuracyCI95": [
+        0.2881,
+        0.4659
+      ],
+      "abstainRate": 0.0455,
+      "correctAbstainRate": 1.0,
+      "abstainOpportunities": 18,
+      "abstainOpportunitiesCovered": 0.2778,
+      "escalationRate": 0.0636,
+      "highRiskAccuracy": 0.3226,
+      "requestErrors": 37,
+      "requestErrorRate": 0.3364,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 73,
+      "responseAccuracy": 0.5616,
+      "responseAccuracyCI95": [
+        0.4476,
+        0.6695
+      ],
+      "meanLatencyMs": 3933.6,
+      "p50LatencyMs": 3634.1,
+      "p95LatencyMs": 10710.8,
+      "meanConfidence": 0.9516,
+      "calibration": [
+        {
+          "bucket": "0.0-0.2",
+          "n": 2,
+          "accuracy": 0.5
+        },
+        {
+          "bucket": "0.8-1.0",
+          "n": 60,
+          "accuracy": 0.5
+        }
+      ],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 3,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 9,
+          "accuracy": 0.6667,
+          "requestErrors": 2,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 9,
+          "accuracy": 0.5556,
+          "requestErrors": 4,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 2,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 2,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 7,
+          "accuracy": 0.1429,
+          "requestErrors": 6,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 9,
+          "accuracy": 0.5556,
+          "requestErrors": 4,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 8,
+          "accuracy": 0.125,
+          "requestErrors": 5,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 8,
+          "accuracy": 0.5,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 9,
+          "accuracy": 0.4444,
+          "requestErrors": 4,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 0.8889,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 9,
+          "accuracy": 0.7778,
+          "requestErrors": 2,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T174105Z-qwen3_1.jsonl",
+      "sourceSha256": "5617d38433f0bb8e9210bb0b28f5b1ccf56007518485caefc8a696e19a204682",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "tev1:0.8b@systemone [decision-bench-20261010T174105Z-tev1_0.jsonl]": {
+      "cases": 110,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "failed",
+      "correct": 0,
+      "accuracy": 0.0,
+      "accuracyCI95": [
+        0.0,
+        0.0337
+      ],
+      "abstainRate": 0.0,
+      "correctAbstainRate": null,
+      "abstainOpportunities": 18,
+      "abstainOpportunitiesCovered": 0.0,
+      "escalationRate": 0.0,
+      "highRiskAccuracy": 0.0,
+      "requestErrors": 110,
+      "requestErrorRate": 1.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 0,
+      "responseAccuracy": null,
+      "responseAccuracyCI95": null,
+      "meanLatencyMs": 0.1,
+      "p50LatencyMs": 0.1,
+      "p95LatencyMs": 0.2,
+      "meanConfidence": null,
+      "calibration": [],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 7,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 9,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 8,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T174105Z-tev1_0.jsonl",
+      "sourceSha256": "90307c99e1c8280598989bbf690fe322597ae6c0d9c0a8ee1c226b373085a806",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "tev1:0.8b@systemone [decision-bench-20261010T175013Z-tev1_0.jsonl]": {
+      "cases": 110,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "replayed",
+      "correct": 96,
+      "accuracy": 0.8727,
+      "accuracyCI95": [
+        0.7976,
+        0.9227
+      ],
+      "abstainRate": 0.0636,
+      "correctAbstainRate": 1.0,
+      "abstainOpportunities": 18,
+      "abstainOpportunitiesCovered": 0.3889,
+      "escalationRate": 0.1091,
+      "highRiskAccuracy": 0.8387,
+      "requestErrors": 0,
+      "requestErrorRate": 0.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 110,
+      "responseAccuracy": 0.8727,
+      "responseAccuracyCI95": [
+        0.7976,
+        0.9227
+      ],
+      "meanLatencyMs": 159.2,
+      "p50LatencyMs": 129.5,
+      "p95LatencyMs": 186.4,
+      "meanConfidence": 0.2848,
+      "calibration": [
+        {
+          "bucket": "0.0-0.2",
+          "n": 51,
+          "accuracy": 0.8627
+        },
+        {
+          "bucket": "0.2-0.4",
+          "n": 25,
+          "accuracy": 0.72
+        },
+        {
+          "bucket": "0.4-0.6",
+          "n": 21,
+          "accuracy": 1.0
+        },
+        {
+          "bucket": "0.6-0.8",
+          "n": 13,
+          "accuracy": 1.0
+        }
+      ],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 9,
+          "accuracy": 0.7778,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.5714,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T175013Z-tev1_0.jsonl",
+      "sourceSha256": "6729b75f54ae26f0cda2cf59f07f9c0de383b25add9348714f4924d4bc4a9134",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "laya@systemone [decision-bench-20261010T183752Z-laya_systemone.jsonl]": {
+      "cases": 110,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "replayed",
+      "correct": 55,
+      "accuracy": 0.5,
+      "accuracyCI95": [
+        0.4082,
+        0.5918
+      ],
+      "abstainRate": 0.0455,
+      "correctAbstainRate": 1.0,
+      "abstainOpportunities": 18,
+      "abstainOpportunitiesCovered": 0.2778,
+      "escalationRate": 0.0,
+      "highRiskAccuracy": 0.3548,
+      "requestErrors": 0,
+      "requestErrorRate": 0.0,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 110,
+      "responseAccuracy": 0.5,
+      "responseAccuracyCI95": [
+        0.4082,
+        0.5918
+      ],
+      "meanLatencyMs": 63.9,
+      "p50LatencyMs": 57.1,
+      "p95LatencyMs": 72.1,
+      "meanConfidence": 0.2816,
+      "calibration": [
+        {
+          "bucket": "0.0-0.2",
+          "n": 49,
+          "accuracy": 0.3878
+        },
+        {
+          "bucket": "0.2-0.4",
+          "n": 38,
+          "accuracy": 0.6842
+        },
+        {
+          "bucket": "0.4-0.6",
+          "n": 6,
+          "accuracy": 0.3333
+        },
+        {
+          "bucket": "0.6-0.8",
+          "n": 17,
+          "accuracy": 0.4706
+        }
+      ],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 9,
+          "accuracy": 0.1111,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 9,
+          "accuracy": 0.4444,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 8,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T183752Z-laya_systemone.jsonl",
+      "sourceSha256": "6f8dfc56a26983cd34b89f79994636bc7084f8a0895b43858cb3fd60478f7dd2",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    },
+    "tev1:4b@systemone [decision-bench-20261010T183752Z-tev1_4b_systemone.jsonl]": {
+      "cases": 110,
+      "plannedCases": null,
+      "unattemptedCases": null,
+      "status": "failed",
+      "correct": 69,
+      "accuracy": 0.6273,
+      "accuracyCI95": [
+        0.5341,
+        0.7119
+      ],
+      "abstainRate": 0.0182,
+      "correctAbstainRate": 1.0,
+      "abstainOpportunities": 18,
+      "abstainOpportunitiesCovered": 0.1111,
+      "escalationRate": 0.1455,
+      "highRiskAccuracy": 0.6452,
+      "requestErrors": 13,
+      "requestErrorRate": 0.1182,
+      "invalidResponses": 0,
+      "invalidResponseRate": 0.0,
+      "validResponses": 97,
+      "responseAccuracy": 0.7113,
+      "responseAccuracyCI95": [
+        0.6145,
+        0.7921
+      ],
+      "meanLatencyMs": 1269.2,
+      "p50LatencyMs": 936.0,
+      "p95LatencyMs": 2021.3,
+      "meanConfidence": 0.5914,
+      "calibration": [
+        {
+          "bucket": "0.0-0.2",
+          "n": 12,
+          "accuracy": 0.9167
+        },
+        {
+          "bucket": "0.2-0.4",
+          "n": 14,
+          "accuracy": 0.5
+        },
+        {
+          "bucket": "0.4-0.6",
+          "n": 24,
+          "accuracy": 0.2917
+        },
+        {
+          "bucket": "0.6-0.8",
+          "n": 16,
+          "accuracy": 0.8125
+        },
+        {
+          "bucket": "0.8-1.0",
+          "n": 31,
+          "accuracy": 1.0
+        }
+      ],
+      "byFamily": {
+        "ambiguous-underdetermined": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        },
+        "compile-error-identified": {
+          "n": 9,
+          "accuracy": 0.8889,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        },
+        "conflicting-evidence": {
+          "n": 9,
+          "accuracy": 0.2222,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "data-loss-risk": {
+          "n": 7,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "evidence-missing": {
+          "n": 9,
+          "accuracy": 0.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "injection-resistance": {
+          "n": 7,
+          "accuracy": 0.4286,
+          "requestErrors": 4,
+          "invalidResponses": 0
+        },
+        "known-fix": {
+          "n": 9,
+          "accuracy": 0.8889,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        },
+        "no-task": {
+          "n": 8,
+          "accuracy": 0.5,
+          "requestErrors": 4,
+          "invalidResponses": 0
+        },
+        "permission-risk": {
+          "n": 8,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "reproduction-first": {
+          "n": 9,
+          "accuracy": 0.8889,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verification-gating": {
+          "n": 9,
+          "accuracy": 1.0,
+          "requestErrors": 0,
+          "invalidResponses": 0
+        },
+        "verified-finish": {
+          "n": 9,
+          "accuracy": 0.8889,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        },
+        "wrong-green": {
+          "n": 8,
+          "accuracy": 0.5,
+          "requestErrors": 1,
+          "invalidResponses": 0
+        }
+      },
+      "source": "/Volumes/Harry/DEV/Tessillate/benchmarks/results/decision-bench-20261010T183752Z-tev1_4b_systemone.jsonl",
+      "sourceSha256": "6b04a60d425ffe9b1a8ddae0795faeb438a515cc323cd72b0b1020f6f42e791c",
+      "originalRunProvenance": "not recorded; corpus match checks labels, not original prompts"
+    }
+  }
+}

@@ -21,10 +21,11 @@ export interface CommandSpec {
   /** Extra parent variable names passed through under `envPolicy: "minimal"`. */
   allowEnv?: string[];
   /**
-   * Run the command in its own process group and terminate the whole group on
-   * timeout and once the command exits, so background descendants cannot
-   * outlive it. A worker that calls setsid() itself escapes this; only a real
-   * sandbox closes that gap.
+   * Also terminate the command's process group once the command exits, so
+   * background descendants cannot outlive it (on Windows, `taskkill /T` on
+   * timeout). Every POSIX command already runs in its own group and the whole
+   * group is killed on timeout. A worker that calls setsid() itself escapes
+   * this; only a real sandbox closes that gap.
    */
   killTree?: boolean;
   /** Grace period between SIGTERM and SIGKILL when a command is stopped. */
@@ -72,14 +73,18 @@ export interface CommandResult {
   stderr: string;
   durationMs: number;
   timedOut: boolean;
-  /** True when `signal` aborted the command before it finished on its own. */
-  cancelled: boolean;
+  /**
+   * True when `signal` aborted the command before it finished on its own.
+   * runCommand always sets it; results built elsewhere may omit it.
+   */
+  cancelled?: boolean;
   /** The abort reason, as text, when `cancelled`. */
   cancelReason?: string;
   outputTruncated: boolean;
-  envPolicy: EnvPolicy;
+  /** Set by runCommand; results built elsewhere may omit it. */
+  envPolicy?: EnvPolicy;
   /** Names (never values) of the variables the command received. */
-  envNames: string[];
+  envNames?: string[];
   /** True when `killTree` found descendants still running and killed them. */
   descendantsKilled?: boolean;
 }
@@ -109,11 +114,23 @@ function appendLimited(
   };
 }
 
+/**
+ * The environment commands inherit. `NODE_TEST_CONTEXT` is set by Node's own test
+ * runner; if it leaks into a child `node --test`, that child exits 0 WITHOUT running
+ * any test, so a verifier would "pass" vacuously. Commands run by Lattice are
+ * independent programs, so they never inherit the parent's test-runner context
+ * (a caller can still set it explicitly through `spec.env`).
+ */
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const { NODE_TEST_CONTEXT: _testContext, ...rest } = process.env;
+  return rest;
+}
+
 export function buildCommandEnv(
   policy: EnvPolicy,
   allow: readonly string[] = [],
   explicit: Record<string, string | undefined> = {},
-  source: NodeJS.ProcessEnv = process.env,
+  source: NodeJS.ProcessEnv = inheritedEnv(),
 ): Record<string, string> {
   const env: Record<string, string> = {};
   if (policy === "inherit") {
@@ -181,8 +198,9 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const maxOutputBytes = spec.maxOutputBytes ?? 256_000;
   const envPolicy = spec.envPolicy ?? "inherit";
   const env = buildCommandEnv(envPolicy, spec.allowEnv, spec.env);
-  const killGraceMs = spec.killGraceMs ?? 2_000;
-  const posixGroup = spec.killTree === true && process.platform !== "win32";
+  const killGraceMs = spec.killGraceMs ?? 1_000;
+  // New process group so a timeout can SIGTERM/SIGKILL the whole tree.
+  const posixGroup = process.platform !== "win32";
   const started = performance.now();
 
   if (spec.signal?.aborted) {
@@ -288,10 +306,11 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     let descendantsKilled: boolean | undefined;
     child.once("exit", () => {
       if (groupPid === undefined) return;
+      liveGroups.delete(groupPid);
+      if (!spec.killTree) return;
       // The leader has exited; anything still in its group is a descendant it
       // left behind, possibly holding our pipes open.
       descendantsKilled = signalGroup(groupPid, "SIGKILL");
-      liveGroups.delete(groupPid);
     });
 
     child.once("close", (exitCode, signal) => {
@@ -380,3 +399,16 @@ export async function collectRepositorySnapshot(
 export function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+export {
+  classifyAppType,
+  classifyPlatforms,
+  classifyTask,
+  fingerprintProject,
+  type ManifestFact,
+  type ProjectFingerprint,
+  type StackTag,
+  type TaskClass,
+} from "./fingerprint.js";
+
+export * from "./fidelity.js";
