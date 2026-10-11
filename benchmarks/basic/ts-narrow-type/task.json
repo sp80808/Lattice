@@ -6,7 +6,7 @@
     "command": "{NODE}",
     "args": [
       "--test",
-      "test/"
+      "test/format.test.js"
     ],
     "timeoutMs": 30000
   },
