@@ -20,6 +20,9 @@
       "path": "./packages/providers"
     },
     {
+      "path": "./packages/colab"
+    },
+    {
       "path": "./packages/tessera"
     },
     {
@@ -35,7 +38,13 @@
       "path": "./packages/mining"
     },
     {
+      "path": "./packages/orchestrator"
+    },
+    {
       "path": "./packages/policy"
+    },
+    {
+      "path": "./packages/tessera"
     },
     {
       "path": "./packages/service"
@@ -50,7 +59,13 @@
       "path": "./packages/sdk"
     },
     {
+      "path": "./packages/bench"
+    },
+    {
       "path": "./apps/cli"
+    },
+    {
+      "path": "./apps/tui"
     },
     {
       "path": "./apps/daemon"

@@ -94,6 +94,7 @@ export type RunEventType =
   | "tap.updated"
   | "decision.requested"
   | "decision.completed"
+  | "budget.exhausted"
   | "tool.started"
   | "tool.completed"
   | "run.completed"
@@ -143,6 +144,7 @@ export interface ProviderUsage {
 export interface ProviderIdentity {
   provider: string;
   model?: string;
+  cached?: boolean;
 }
 
 export interface DecisionRequest {
@@ -167,12 +169,26 @@ export interface GeneratorRequest {
   prompt: string;
   context?: string[];
   temperature?: number;
+  /** Maximum generated output tokens; excludes input tokens. */
+  maxTokens?: number;
+}
+
+export interface GeneratorRoutingMetadata {
+  selected: string;
+  attempted: string[];
+  eligible: string[];
+  selectionMode: "decision-model" | "sole-eligible";
+  estimatedInputTokens: number;
+  selectorIdentity?: ProviderIdentity;
+  selectorUsage?: ProviderUsage[];
 }
 
 export interface GeneratorResult {
   text: string;
   identity: ProviderIdentity;
   usage: ProviderUsage;
+  /** Optional model-pool selection evidence, persisted into run traces. */
+  routing?: GeneratorRoutingMetadata;
 }
 
 export interface DecisionProvider {

@@ -569,6 +569,16 @@ export function isVerificationRecord(value: unknown): value is TesseraVerificati
 }
 
 export function replayVerification(record: TesseraVerificationRecord): ReplayedVerification {
+  if (!isVerificationRecord(record) || typeof record.file !== "string" ||
+      !isObject(record.witness.verdict) || !OUTCOMES.has(record.witness.verdict.outcome) ||
+      typeof record.witness.verdict.verified !== "boolean" || !Array.isArray(record.cases) ||
+      record.cases.some(c => !isObject(c) || typeof c.function !== "string" ||
+        !Array.isArray(c.args) || c.args.some(arg => typeof arg !== "string") ||
+        typeof c.expect !== "string" || (c.actual !== null && typeof c.actual !== "string") ||
+        (c.exitCode !== null && !Number.isInteger(c.exitCode)) || typeof c.passed !== "boolean")) {
+    return { file: record?.file ?? "unknown", storedOutcome: "tool_error", replayedOutcome: "tool_error",
+      passed: false, consistent: false, reason: "malformed Tessera verification record" };
+  }
   const stored = record.witness.verdict;
   let replayed: WitnessVerdict;
   if (record.witness.document) {
@@ -587,13 +597,12 @@ export function replayVerification(record: TesseraVerificationRecord): ReplayedV
     replayed = { outcome: "tool_error", verified: false, reason: stored.reason };
   }
   // Re-derive each case from what `tsr run` printed; never trust the stored flag.
-  const caseMismatch = record.cases.find(
-    (c) => c.passed !== (c.actual !== null && c.actual === c.expect.trim()),
-  );
+  const casePassed = (c: RunCaseResult) => c.exitCode === 0 && c.actual !== null && c.actual === c.expect.trim();
+  const caseMismatch = record.cases.find((c) => c.passed !== casePassed(c));
   const passed =
     replayed.outcome === "pass" &&
     replayed.verified &&
-    record.cases.every((c) => c.actual !== null && c.actual === c.expect.trim());
+    record.cases.every(casePassed);
   return {
     file: record.file,
     storedOutcome: stored.outcome,
@@ -607,18 +616,20 @@ export function replayVerification(record: TesseraVerificationRecord): ReplayedV
     reason:
       replayed.reason ??
       (caseMismatch
-        ? `case ${caseMismatch.function}(${caseMismatch.args.join(",")}) stored passed=${caseMismatch.passed} but printed ${JSON.stringify(caseMismatch.actual)}, expected ${JSON.stringify(caseMismatch.expect)}`
+        ? `case ${caseMismatch.function}(${caseMismatch.args.join(",")}) stored passed=${caseMismatch.passed} but printed ${JSON.stringify(caseMismatch.actual)}, expected ${JSON.stringify(caseMismatch.expect)} (exit=${caseMismatch.exitCode})`
         : undefined),
   };
 }
 
-function collectRecords(value: unknown, out: TesseraVerificationRecord[]): void {
-  if (isVerificationRecord(value)) {
-    out.push(value);
-    return;
+export function verificationRecords(value: unknown, out: TesseraVerificationRecord[] = []): TesseraVerificationRecord[] {
+  // Keep malformed records too, so replay/rendering reports them rather than hiding missing evidence.
+  if (isObject(value) && typeof value.schema === "string" && value.schema.startsWith("lattice.tessera-verification/")) {
+    out.push(value as unknown as TesseraVerificationRecord);
+    return out;
   }
-  if (Array.isArray(value)) for (const item of value) collectRecords(item, out);
-  else if (isObject(value)) for (const item of Object.values(value)) collectRecords(item, out);
+  if (Array.isArray(value)) for (const item of value) verificationRecords(item, out);
+  else if (isObject(value)) for (const item of Object.values(value)) verificationRecords(item, out);
+  return out;
 }
 
 /** Every Tessera verification stored in a Lattice run log (`.lattice/runs/<id>.jsonl`), replayed. */
@@ -627,7 +638,7 @@ export async function replayRunLog(path: string): Promise<ReplayedVerification[]
   for (const line of (await readFile(path, "utf8")).split("\n")) {
     if (!line.trim()) continue;
     const event = JSON.parse(line) as { type?: string; payload?: unknown };
-    if (event.type === "tool.completed") collectRecords(event.payload, records);
+    if (event.type === "tool.completed") verificationRecords(event.payload, records);
   }
   return records.map(replayVerification);
 }

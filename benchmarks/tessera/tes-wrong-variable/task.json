@@ -1,0 +1,72 @@
+{
+  "id": "tes-wrong-variable",
+  "description": "mix() reuses b instead of adding c",
+  "task": "make `mix 1 2 3` evaluate to 6",
+  "requires": [
+    "tsr"
+  ],
+  "verify": {
+    "command": "{TSR}",
+    "args": [
+      "run",
+      "--overflow=wrapping",
+      "prog.tes",
+      "mix",
+      "1",
+      "2",
+      "3"
+    ],
+    "expectStdout": "6",
+    "timeoutMs": 30000
+  },
+  "candidates": [
+    {
+      "id": "wrap-in-parens",
+      "label": "Reparenthesise the sum",
+      "action": "add redundant parentheses",
+      "expectedEvidence": "same value, different spelling",
+      "estimatedCost": "low",
+      "patch": {
+        "file": "prog.tes",
+        "find": "a+b+b",
+        "replace": "(a+b)+b"
+      }
+    },
+    {
+      "id": "drop-c",
+      "label": "Drop the unused parameter c",
+      "action": "remove c from the signature",
+      "expectedEvidence": "program still type checks",
+      "estimatedCost": "medium",
+      "patch": {
+        "file": "prog.tes",
+        "find": ",c:i64",
+        "replace": ""
+      }
+    },
+    {
+      "id": "read-tokens",
+      "label": "Dump the token stream",
+      "action": "tsr tokens prog.tes",
+      "expectedEvidence": "token-level view",
+      "estimatedCost": "low"
+    },
+    {
+      "id": "use-c",
+      "label": "Use c in place of the repeated b",
+      "action": "replace the last b with c",
+      "expectedEvidence": "mix 1 2 3 == 6",
+      "estimatedCost": "high",
+      "patch": {
+        "file": "prog.tes",
+        "find": "a+b+b",
+        "replace": "a+b+c"
+      },
+      "solves": true
+    }
+  ],
+  "metadata": {
+    "category": "languages",
+    "difficulty": "hard"
+  }
+}

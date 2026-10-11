@@ -69,3 +69,12 @@ scraping terminal text:
 - `replayRunLog(path)` re-parses every stored document, recomputes `result_id`
   and re-derives the verdict without running `tsr`, so a log can be audited
   later or on another machine.
+- CLI `show` and TUI `/show` display the latest five compiler checks; live
+  events and CLI `--events`/`--follow` display each recorded check. They reuse
+  offline replay before showing the phase, compiler identity, outcome,
+  behavioural coverage and up to three diagnostics with actionable help.
+- A compiler pass with no cases says behaviour was **not checked**. Recorded
+  cases pass only when their process exited successfully and stdout matches
+  the expected value. Malformed records and inconsistent saved verdicts show
+  **Untrusted saved evidence**, regardless of outer success flags. Replay
+  checks internal consistency; it does not authenticate the origin of a log.

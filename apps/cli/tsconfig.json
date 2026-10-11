@@ -31,6 +31,18 @@
     },
     {
       "path": "../../packages/policy"
+    },
+    {
+      "path": "../../packages/bench"
+    },
+    {
+      "path": "../../packages/orchestrator"
+    },
+    {
+      "path": "../tui"
+    },
+    {
+      "path": "../../packages/tessera"
     }
   ],
   "include": [

@@ -24,10 +24,14 @@ export interface CommandResult {
   durationMs: number;
   timedOut: boolean;
   outputTruncated: boolean;
-  /** sha256 of the complete stdout stream, including any truncated tail. */
-  stdoutSha256: string;
-  /** sha256 of the complete stderr stream, including any truncated tail. */
-  stderrSha256: string;
+  /**
+   * sha256 of the complete stdout stream, including any truncated tail. Set by
+   * runCommand; results built elsewhere may omit it, and identity then hashes
+   * the captured text.
+   */
+  stdoutSha256?: string;
+  /** sha256 of the complete stderr stream; see stdoutSha256. */
+  stderrSha256?: string;
 }
 
 export interface RepositorySnapshot {
@@ -55,6 +59,38 @@ function appendLimited(
   };
 }
 
+function killProcessTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  // Kill the whole process group when we spawned detached, so grandchildren
+  // (e.g. `sleep` under a bash wrapper) cannot outlive the timeout.
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall through if the group is already gone or not detachable.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // already exited
+  }
+}
+
+/**
+ * The environment commands inherit. `NODE_TEST_CONTEXT` is set by Node's own test
+ * runner; if it leaks into a child `node --test`, that child exits 0 WITHOUT running
+ * any test, so a verifier would "pass" vacuously. Commands run by Lattice are
+ * independent programs, so they never inherit the parent's test-runner context
+ * (a caller can still set it explicitly through `spec.env`).
+ */
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const { NODE_TEST_CONTEXT: _testContext, ...rest } = process.env;
+  return rest;
+}
+
 export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const cwd = resolve(spec.cwd ?? process.cwd());
   const args = spec.args ?? [];
@@ -66,8 +102,10 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     const child = spawn(spec.command, args, {
       cwd,
       shell: false,
+      // New session/process group so timeout can SIGTERM/SIGKILL the tree.
+      detached: process.platform !== "win32",
       stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      env: { ...process.env, ...spec.env },
+      env: { ...inheritedEnv(), ...spec.env },
     });
 
     if (spec.stdin !== undefined) {
@@ -80,6 +118,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     const stderrHash = createHash("sha256");
     let outputTruncated = false;
     let timedOut = false;
+    let killEscalation: NodeJS.Timeout | undefined;
 
     child.stdout?.on("data", (chunk: Buffer) => {
       stdoutHash.update(chunk);
@@ -99,11 +138,15 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killProcessTree(child, "SIGTERM");
+      killEscalation = setTimeout(() => {
+        killProcessTree(child, "SIGKILL");
+      }, 1_000);
     }, timeoutMs);
 
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
+      if (killEscalation) clearTimeout(killEscalation);
       resolvePromise({
         command: spec.command,
         args,
@@ -215,8 +258,8 @@ export function commandEvidenceIdentity(
       signal: result.signal,
       timedOut: result.timedOut,
       outputTruncated: result.outputTruncated,
-      stdout: result.stdoutSha256,
-      stderr: result.stderrSha256,
+      stdout: result.stdoutSha256 ?? digest(result.stdout),
+      stderr: result.stderrSha256 ?? digest(result.stderr),
     }),
   );
   return evidenceIdentityV1("command", { revision, request, result: outcome });
@@ -243,3 +286,16 @@ export function evidenceIdentityV1(
   const id = `ev1:${digest(canonicalJson({ kind, ...identity })).slice(0, 24)}`;
   return { id, identity };
 }
+
+export {
+  classifyAppType,
+  classifyPlatforms,
+  classifyTask,
+  fingerprintProject,
+  type ManifestFact,
+  type ProjectFingerprint,
+  type StackTag,
+  type TaskClass,
+} from "./fingerprint.js";
+
+export * from "./fidelity.js";
