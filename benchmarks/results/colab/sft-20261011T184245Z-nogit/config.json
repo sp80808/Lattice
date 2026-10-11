@@ -1,0 +1,16 @@
+{
+  "job": "sft",
+  "bases": [
+    "Qwen/Qwen3-4B-Instruct-2507",
+    "Qwen/Qwen3.5-4B"
+  ],
+  "epochs": 8,
+  "lr": 0.0002,
+  "batch": 4,
+  "loraR": 16,
+  "loraAlpha": 32,
+  "maxLen": 512,
+  "seed": 0,
+  "gpu": "Tesla T4",
+  "torch": "2.11.0+cu130"
+}

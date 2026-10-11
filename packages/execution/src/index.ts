@@ -51,6 +51,38 @@ function appendLimited(
   };
 }
 
+function killProcessTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  // Kill the whole process group when we spawned detached, so grandchildren
+  // (e.g. `sleep` under a bash wrapper) cannot outlive the timeout.
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall through if the group is already gone or not detachable.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // already exited
+  }
+}
+
+/**
+ * The environment commands inherit. `NODE_TEST_CONTEXT` is set by Node's own test
+ * runner; if it leaks into a child `node --test`, that child exits 0 WITHOUT running
+ * any test, so a verifier would "pass" vacuously. Commands run by Lattice are
+ * independent programs, so they never inherit the parent's test-runner context
+ * (a caller can still set it explicitly through `spec.env`).
+ */
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const { NODE_TEST_CONTEXT: _testContext, ...rest } = process.env;
+  return rest;
+}
+
 export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const cwd = resolve(spec.cwd ?? process.cwd());
   const args = spec.args ?? [];
@@ -62,8 +94,10 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     const child = spawn(spec.command, args, {
       cwd,
       shell: false,
+      // New session/process group so timeout can SIGTERM/SIGKILL the tree.
+      detached: process.platform !== "win32",
       stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      env: { ...process.env, ...spec.env },
+      env: { ...inheritedEnv(), ...spec.env },
     });
 
     if (spec.stdin !== undefined) {
@@ -74,6 +108,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
     let stderr = "";
     let outputTruncated = false;
     let timedOut = false;
+    let killEscalation: NodeJS.Timeout | undefined;
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const appended = appendLimited(stdout, chunk, maxOutputBytes);
@@ -91,11 +126,15 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killProcessTree(child, "SIGTERM");
+      killEscalation = setTimeout(() => {
+        killProcessTree(child, "SIGKILL");
+      }, 1_000);
     }, timeoutMs);
 
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
+      if (killEscalation) clearTimeout(killEscalation);
       resolvePromise({
         command: spec.command,
         args,
@@ -173,3 +212,16 @@ export async function collectRepositorySnapshot(
 export function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+export {
+  classifyAppType,
+  classifyPlatforms,
+  classifyTask,
+  fingerprintProject,
+  type ManifestFact,
+  type ProjectFingerprint,
+  type StackTag,
+  type TaskClass,
+} from "./fingerprint.js";
+
+export * from "./fidelity.js";

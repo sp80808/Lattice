@@ -32,6 +32,13 @@ export async function createAutoModeFixture(): Promise<{ cwd: string; closeModel
   );
 
   const model = createServer(async (req, res) => {
+    // The readiness preflight probes `/models` before any chat call; answer it
+    // so the probe does not consume the planner's single generation request.
+    if (req.url?.endsWith("/models")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "fake" }] }));
+      return;
+    }
     let body = "";
     for await (const chunk of req) body += chunk;
     const text = JSON.stringify(JSON.parse(body).messages);

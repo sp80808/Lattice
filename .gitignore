@@ -11,3 +11,11 @@ dist/
 .beads/proxieddb/
 .tessera/
 __pycache__/
+.cursor/
+.agents/
+
+# Runtime output from scripts/recover-colab-artifacts.mjs
+.colab-artifacts/
+.colab-logs/
+
+scripts/beat-sonnet-eval.mjs

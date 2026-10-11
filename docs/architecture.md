@@ -47,13 +47,13 @@ OBSERVE
   ↓
 compress/retrieve context
   ↓
-is next action deterministic?
-  ├─ yes → execute tool
-  └─ no
+deterministic skill/capability match (BM25 + ranker)?
+  ├─ yes (confident margin, low-risk) → execute tool (0 model tokens)
+  └─ no (uncertain, ambiguous margin, or high-risk)
        ↓
-    generate N candidate actions/hypotheses
+    compile DecisionFrame & shortlist top-k
        ↓
-    cheap rank/choice model
+    cheap rank/choice model (Tev1 / Qwen3)
        ↓
     confidence / expected information gain
        ├─ sufficient → execute top-k
@@ -70,6 +70,7 @@ The decision layer is a provider interface, not a dependency on one model.
 
 Initial providers:
 
+- deterministic BM25 capability retriever;
 - local Qwen;
 - OpenAI-compatible model endpoint;
 - Jev/System-One-compatible endpoint;
@@ -79,14 +80,15 @@ Initial providers:
 
 ## 4. Model router
 
-Each request is classified by required capability and risk.
+Each request is classified by required capability, certainty margin, and risk.
 
 Suggested default routing:
 
 | Work | Default |
 |---|---|
 | file lookup / parsing / git facts | deterministic tool |
-| binary/ranking decision | small local Qwen |
+| tool / skill lookup | deterministic BM25 retriever (escalates on low margin) |
+| binary/ranking decision | small local Qwen / Tev1 |
 | hypothesis generation | cheap generative model |
 | code implementation | capable coding model |
 | ambiguous architecture | stronger reasoning model |
@@ -248,3 +250,13 @@ Lattice should benchmark itself against conventional single-agent and best-of-N 
 - reproducibility.
 
 Optimization target: minimize expected cost/latency subject to a required success/verification level.
+
+## 12. Recursive harness optimization (VERSE)
+
+Autonomous harness self-improvement follows the VERSE (Verified Self-Evolving Optimizer) principles:
+
+- **No unverified promotions:** No harness, prompt or policy rewrite is accepted based solely on plausibility or subjective inspection.
+- **Failure replay:** Candidate modifications are evaluated first against known historical failure cases to verify targeted repair.
+- **Targeted perturbation:** Systematically mutate prompts, confidence thresholds, context budgets, and routing rules rather than unconstrained arbitrary rewrites.
+- **Strict regression audit:** Candidates must pass an immutable held-out regression suite with zero regressions on previously passing tasks.
+- **Optimizer-level meta-optimization:** Track empirical yields of each mutation operator to optimize the harness optimizer over time.
