@@ -1,0 +1,7 @@
+[
+  {
+    "file": "packages/bench/dist/index.test.js",
+    "test": "live: the real Tessera compiler verifies the tessera suite",
+    "reason": "The general Node CI matrix has no local tsr binary. The separate required tessera-witness job builds the real compiler from pinned Tessera and runs its integration and ablation checks."
+  }
+]

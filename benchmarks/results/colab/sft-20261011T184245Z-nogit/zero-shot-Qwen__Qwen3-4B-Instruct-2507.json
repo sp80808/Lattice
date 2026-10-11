@@ -1,0 +1,73 @@
+{
+  "cases": 110,
+  "correct": 99,
+  "accuracy": 0.9,
+  "abstainRate": 0.1364,
+  "highRiskAccuracy": 1.0,
+  "invalidRate": 0.0,
+  "byFamily": {
+    "ambiguous-underdetermined": {
+      "n": 9,
+      "accuracy": 0.6667
+    },
+    "compile-error-identified": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "conflicting-evidence": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "data-loss-risk": {
+      "n": 7,
+      "accuracy": 1.0
+    },
+    "evidence-missing": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "injection-resistance": {
+      "n": 7,
+      "accuracy": 1.0
+    },
+    "known-fix": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "no-task": {
+      "n": 8,
+      "accuracy": 1.0
+    },
+    "permission-risk": {
+      "n": 8,
+      "accuracy": 1.0
+    },
+    "reproduction-first": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "verification-gating": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "verified-finish": {
+      "n": 9,
+      "accuracy": 1.0
+    },
+    "wrong-green": {
+      "n": 8,
+      "accuracy": 0.0
+    }
+  },
+  "calibration": {
+    "0.8-1.0": {
+      "n": 110,
+      "accuracy": 0.9
+    }
+  },
+  "latencyMs": {
+    "p50": 2300.2,
+    "p95": 3197.3,
+    "mean": 2382.2
+  }
+}

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -81,8 +81,8 @@ test("minimal env policy hides unrelated parent secrets", async () => {
     assert.equal(result.exitCode, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { s: null, k: "granted", x: "yes" });
     assert.equal(result.envPolicy, "minimal");
-    assert.ok(result.envNames.includes("LATTICE_TEST_PROVIDER_KEY"));
-    assert.ok(!result.envNames.includes("LATTICE_TEST_UNRELATED_SECRET"));
+    assert.ok(result.envNames?.includes("LATTICE_TEST_PROVIDER_KEY"));
+    assert.ok(!result.envNames?.includes("LATTICE_TEST_UNRELATED_SECRET"));
     assert.ok(!JSON.stringify(result.envNames).includes("granted"));
   } finally {
     delete process.env.LATTICE_TEST_UNRELATED_SECRET;
@@ -136,4 +136,41 @@ test("killTree timeout kills descendants holding the output pipe", { skip: !posi
   assert.ok(Date.now() - started < 5_000, "timeout was not bounded");
   const pid = Number(await readFile(pidFile, "utf8"));
   assert.ok(await waitFor(() => !alive(pid)), `descendant ${pid} survived`);
+});
+
+test("runCommand times out a hanging script without waiting it out", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "lattice-exec-timeout-"));
+  const script = join(cwd, "hang.sh");
+  await writeFile(script, "#!/bin/bash\nsleep 30\n");
+  await chmod(script, 0o755);
+
+  const started = performance.now();
+  const result = await runCommand({ command: script, timeoutMs: 200 });
+  assert.equal(result.timedOut, true);
+  assert.ok(performance.now() - started < 5_000, "must not wait out the fake sleep");
+});
+
+test("a nested `node --test` is not neutralised by the parent test runner's environment", async () => {
+  // This suite itself runs under `node --test`, which sets NODE_TEST_CONTEXT. If that leaked
+  // into the child, a *failing* test file would exit 0 without running: a vacuous pass.
+  const dir = await mkdtemp(join(tmpdir(), "lattice-nested-"));
+  await writeFile(join(dir, "failing.test.js"), 'import test from "node:test";\ntest("fails", () => { throw new Error("boom"); });\n');
+  await writeFile(join(dir, "package.json"), '{"type":"module"}');
+
+  const result = await runCommand({ command: process.execPath, args: ["--test", "failing.test.js"], cwd: dir });
+  assert.notEqual(result.exitCode, 0, "a failing nested test must fail");
+  assert.match(result.stdout, /fail 1/);
+
+  // Explicit opt-in still works for callers that really want the context.
+  const inherited = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write(String(process.env.NODE_TEST_CONTEXT))"],
+    env: { NODE_TEST_CONTEXT: "explicit" },
+  });
+  assert.equal(inherited.stdout, "explicit");
+  const cleared = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.stdout.write(String(process.env.NODE_TEST_CONTEXT))"],
+  });
+  assert.equal(cleared.stdout, "undefined");
 });

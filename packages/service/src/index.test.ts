@@ -8,20 +8,27 @@ import {
   decide,
   detectVerifyCommand,
   executeTask,
+  executeWorkflow,
+  getRunChanges,
   findExecutable,
   followRunEvents,
   getRun,
   getRunEvents,
+  isModelListed,
+  listAvailableModels,
   LatticeServiceError,
   listRuns,
   parseCommandLine,
   parseDecisionRequest,
+  planTask,
   resolveRunId,
   ReviewBroker,
   runDoctor,
+  selectPreferredModel,
   startTask,
   writeConfig,
 } from "./index.js";
+import { createAutoModeFixture } from "./testing.js";
 
 async function tempProject(config?: unknown): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), "lattice-service-"));
@@ -36,6 +43,32 @@ const verifyOk = {
   command: process.execPath,
   args: ["-e", "process.stdout.write('ok')"],
 };
+
+test("planning resolves only the generator and does not run configured agents or verification", async (t) => {
+  const cwd = await tempProject({
+    mode: "auto",
+    models: { generator: { baseUrl: "http://fixture.invalid/v1", model: "planner" } },
+    agent: { preset: "qwen-code", command: "never-run-agent" },
+    verify: { command: "never-run-verifier" },
+  });
+  const latticeDir = await mkdtemp(join(tmpdir(), "lattice-service-plan-"));
+  await writeFile(join(cwd, "islands.ts"), "export const count = 3;");
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    calls++;
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.model, "planner");
+    assert.equal(body.max_tokens, 4096);
+    assert.match(body.messages[1].content, /islands.ts/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "Review save compatibility before adding islands." } }] }));
+  });
+  const result = await planTask("Plan islands", { cwd, files: ["islands.ts"], latticeDir });
+  // One readiness probe (`/models`) plus exactly one planner generation.
+  assert.equal(calls, 2);
+  assert.deepEqual(result.tap.verification, []);
+  assert.equal(result.tap.evidence.filter(item => item.kind === "model")[0]?.verified, false);
+  assert.ok(result.eventLogPath.startsWith(latticeDir));
+});
 
 test("executeTask without config records evidence-only runs that list and resolve", async () => {
   const cwd = await tempProject();
@@ -156,6 +189,75 @@ test("init builds validated configs and falls back to observe without a verifier
   });
   assert.equal(hosted.config.model?.apiKeyEnv, "LATTICE_API_KEY");
   assert.equal(hosted.config.agent?.preset, "opencode");
+});
+
+test("init replaces an unavailable preset default with a listed model", () => {
+  const available = ["qwen3:1.7b", "glm-5.3-flash:coder", "nomic-embed-text"];
+  assert.equal(isModelListed(available, "qwen3-coder"), false);
+  assert.equal(isModelListed(available, "qwen3"), true);
+  assert.equal(selectPreferredModel(available), "glm-5.3-flash:coder");
+  assert.equal(selectPreferredModel([]), undefined);
+
+  const auto = buildInitConfig({
+    preset: "ollama",
+    verify: parseCommandLine("npm test"),
+    availableModels: available,
+  });
+  assert.equal(auto.config.model?.model, "glm-5.3-flash:coder");
+  assert.equal(auto.config.mode, "auto");
+  assert.match(auto.warnings.join("\n"), /qwen3-coder is not installed/);
+
+  const explicit = buildInitConfig({
+    preset: "ollama",
+    model: "qwen3-coder",
+    verify: parseCommandLine("npm test"),
+    availableModels: available,
+  });
+  assert.equal(explicit.config.model?.model, "qwen3-coder");
+  assert.match(explicit.warnings.join("\n"), /does not list model qwen3-coder/);
+
+  const listed = buildInitConfig({
+    preset: "ollama",
+    verify: parseCommandLine("npm test"),
+    availableModels: ["qwen3-coder:30b"],
+  });
+  assert.equal(listed.config.model?.model, "qwen3-coder");
+  assert.deepEqual(listed.warnings, []);
+});
+
+test("init builds tandem preset with generator and Tev SystemOne decision router", () => {
+  const tandem = buildInitConfig({
+    preset: "tandem",
+    verify: parseCommandLine("npm test"),
+  });
+  assert.equal(tandem.config.models?.generator?.model, "glm-5.3-flash");
+  assert.equal(tandem.config.models?.generator?.baseUrl, "http://127.0.0.1:8000/v1");
+  const decision = tandem.config.models?.decision;
+  assert.ok(decision && "model" in decision);
+  assert.equal(decision.model, "tev1:0.8b");
+  assert.equal(decision.baseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(decision.provider, "systemone");
+  assert.equal(tandem.config.mode, "auto");
+});
+
+test("listAvailableModels parses ids and degrades to empty on failure", async () => {
+  const ok = await listAvailableModels("http://models.test/v1/", {
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ data: [{ id: "a" }, { id: 5 }, {}] }), { status: 200 }),
+  });
+  assert.deepEqual(ok, ["a"]);
+
+  const unauthorized = await listAvailableModels("http://models.test/v1", {
+    fetchImpl: async () => new Response("nope", { status: 401 }),
+  });
+  assert.deepEqual(unauthorized, []);
+
+  const unreachable = await listAvailableModels("http://models.test/v1", {
+    fetchImpl: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+  assert.deepEqual(unreachable, []);
 });
 
 test("detectVerifyCommand and writeConfig", async () => {
@@ -361,4 +463,48 @@ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => 
   );
   assert.equal(await findExecutable("qwen.CMD", dir, { platform: "win32", pathExt: ".EXE" }), join(dir, "qwen.CMD"));
   assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
+});
+
+test("interactive coding blocks missing config and observe mode instead of collecting false success", async () => {
+  const cwd = await tempProject();
+  for (const workflow of ["plan", "build", "auto"] as const) {
+    await assert.rejects(executeWorkflow("edit a file", { cwd, workflow }), LatticeServiceError);
+  }
+  assert.deepEqual(await listRuns({ cwd }), []);
+  const observe = await tempProject({ mode: "observe", verify: verifyOk });
+  await assert.rejects(executeWorkflow("edit a file", { cwd: observe, workflow: "build" }), /observe mode/);
+});
+
+test("PLAN selects grounded sources, streams events, and never invokes agents or verifier", async t => {
+  const cwd = await tempProject({ models: { generator: { baseUrl: "http://fixture.invalid/v1", model: "planner" } }, agent: { preset: "qwen-code", command: "never-run" }, verify: { command: "never-run" } });
+  await writeFile(join(cwd, "source.ts"), "export const value = 1;\n");
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ choices: [{ message: { content: "Change source.ts:1; test value." } }] })));
+  const events: string[] = [];
+  const result = await executeWorkflow("plan source", { cwd, workflow: "plan", onEvent: event => events.push(event.type) });
+  assert.match(result.summary, /Draft plan/);
+  assert.equal(result.search, undefined);
+  assert.deepEqual(result.tap.verification, []);
+  assert.equal(await readFile(join(cwd, "source.ts"), "utf8"), "export const value = 1;\n");
+  assert.ok(events.includes("run.started") && events.includes("tool.completed"));
+});
+
+test("BUILD reviews decisions; AUTO runs the configured isolated agent and records a verified patch", async () => {
+  for (const workflow of ["build", "auto"] as const) {
+    const fixture = await createAutoModeFixture();
+    try {
+      const path = join(fixture.cwd, ".lattice", "config.json");
+      const config = JSON.parse(await readFile(path, "utf8"));
+      config.autonomy.minConfidence = 1;
+      await writeFile(path, JSON.stringify(config));
+      let reviews = 0;
+      const events: string[] = [];
+      const result = await executeWorkflow("fix add", { cwd: fixture.cwd, workflow, reviewer: async () => { reviews++; return { action: "replace", selected: ["fix-add"] }; }, onEvent: event => events.push(event.type) });
+      assert.equal(result.search?.status, "solved");
+      assert.equal(reviews > 0, workflow === "build");
+      assert.equal(await readFile(join(fixture.cwd, "src", "calc.js"), "utf8"), "export const add = (a, b) => a - b;\n");
+      const changes = await getRunChanges(result.runId, fixture.cwd);
+      assert.ok(changes.some(change => change.changedFiles.includes("src/calc.js") && change.diff.includes("a + b")));
+      assert.ok(events.includes("decision.completed") && events.includes("tool.completed"));
+    } finally { await fixture.closeModel(); }
+  }
 });
