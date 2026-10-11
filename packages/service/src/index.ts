@@ -3,10 +3,11 @@ import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { buildStatsReport, type StatsReport } from "@lattice/analytics";
 import { runTask } from "@lattice/core";
-import { runCommand } from "@lattice/execution";
-import { RandomDecisionProvider } from "@lattice/providers";
+import { collectRepositorySnapshot, runCommand } from "@lattice/execution";
+import { discoverOllamaModels, RandomDecisionProvider } from "@lattice/providers";
 import {
   createDecisionProvider,
+  createGeneratorProvider,
   describeVerify,
   verifyExecutable,
   createRunTaskOptions,
@@ -21,7 +22,8 @@ import {
   type LoadedLatticeConfig,
   type ModelEndpointConfig,
 } from "@lattice/runtime";
-export { describeVerify } from "@lattice/runtime";
+export { describeVerify, parseLatticeConfig } from "@lattice/runtime";
+export { runCommand } from "@lattice/execution";
 import type { DecisionReviewer } from "@lattice/search";
 import { UNKNOWN_CHOICE_ID } from "@lattice/protocol";
 import type {
@@ -92,6 +94,9 @@ export interface ExecuteTaskOptions {
   reviewer?: DecisionReviewer;
   /** Observe events as they are appended to the run log. */
   onEvent?: (event: RunEvent) => void;
+  signal?: AbortSignal;
+  /** Explicit interactive workflow; requires a configured coding runtime. */
+  workflow?: "build" | "auto";
 }
 
 export interface ExecuteTaskResult {
@@ -115,15 +120,34 @@ export async function executeTask(
   if (mode !== "observe" && mode !== "configured") {
     invalid("mode must be 'observe' or 'configured'");
   }
+  if (options.workflow !== undefined && options.workflow !== "build" && options.workflow !== "auto") invalid("coding workflow must be build or auto");
 
   const loaded = await loadConfigOrThrow(cwd, options.configPath);
   if (!loaded) {
-    const result = await runTask(task, { cwd, onEvent: options.onEvent });
+    if (options.workflow) throw new LatticeServiceError("config_error", "No configuration found. Select the target Git project with /project <path>, then run lattice init there and /doctor.");
+    const result = await runTask(task, { cwd, onEvent: options.onEvent, signal: options.signal });
     return { result, mode, runtimeMode: "evidence-only" };
   }
 
-  const config: LatticeConfig =
+  let config: LatticeConfig =
     mode === "observe" ? { ...loaded.config, mode: "observe" } : loaded.config;
+  if (options.workflow) {
+    if (mode === "observe" || config.mode === "observe") {
+      throw new LatticeServiceError("config_error", "Coding is disabled by observe mode. Configure mode=auto, an agent and a verifier; use /doctor.");
+    }
+    config = { ...config, autonomy: { ...config.autonomy, mode: options.workflow === "build" ? "supervised" : "autopilot" } };
+    const report = await runDoctor({ cwd, configPath: loaded.path, network: false });
+    let blockers = report.checks.filter(check => check.status === "fail" || (check.id === "git" && check.status !== "ok"));
+    // Doctor only warns about a model the endpoint does not list; coding cannot
+    // start without one, so treat that as a blocker with actionable guidance.
+    const models = await checkModelReadiness(loaded.config);
+    if (!models.ok) {
+      blockers = [...blockers, ...models.roles.filter(role => role.status !== "ok")].map(() => ({
+        id: "model.readiness", status: "fail" as const, message: models.blockers.join("\n"), hint: "run /models or /doctor",
+      }));
+    }
+    if (blockers.length) throw new LatticeServiceError("config_error", blockers.map(check => `${check.message}${check.hint ? `; ${check.hint}` : ""}`).join("\n"));
+  }
 
   let runId: string | undefined;
   const cassette =
@@ -143,6 +167,7 @@ export async function executeTask(
     ...runOptions,
     cwd,
     lineage: options.lineage,
+    signal: options.signal,
     onEvent: (event) => {
       runId ??= event.runId;
       options.onEvent?.(event);
@@ -163,6 +188,68 @@ export interface StartedTask {
   startedAt: string;
   /** Settles when the run ends. Failures after start are also recorded as `run.failed`. */
   done: Promise<ExecuteTaskResult>;
+}
+
+/** Plan with explicit source selections; never uses configured agents or verify commands. */
+export async function planTask(
+  task: string,
+  options: { cwd?: string; configPath?: string; files: string[]; latticeDir?: string; onEvent?: (event: RunEvent) => void; signal?: AbortSignal },
+): Promise<RunResult> {
+  if (typeof task !== "string" || !task.trim()) invalid("task must be a non-empty string");
+  if (!Array.isArray(options.files) || !options.files.length) invalid("planning requires source files");
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const loaded = await loadConfigOrThrow(cwd, options.configPath);
+  if (!loaded) throw new LatticeServiceError("config_error", "Planning requires a configured generator. Select /project <path>, run lattice init there, then /doctor.");
+  // Fail before the search loop with an actionable line instead of a raw 404.
+  await assertModelsReady(loaded.config, { workflow: "plan" });
+  let generator;
+  try {
+    generator = loaded && createGeneratorProvider(loaded.config);
+    if (!generator) throw new Error("Planning requires model or models.generator configuration; use --config");
+  } catch (error) {
+    throw new LatticeServiceError("config_error", errorMessage(error));
+  }
+  return runTask(task, { cwd, latticeDir: options.latticeDir, onEvent: options.onEvent, signal: options.signal, plan: { generator, files: options.files } });
+}
+
+export type WorkflowMode = "plan" | "build" | "auto";
+
+/** Interactive workflows reuse the same planner and coding loop as headless runs. */
+export async function executeWorkflow(task: string, options: Omit<ExecuteTaskOptions, "workflow"> & { workflow: WorkflowMode; files?: string[] }): Promise<RunResult> {
+  if (typeof task !== "string" || !task.trim()) invalid("task must be a non-empty string");
+  if (!["plan", "build", "auto"].includes(options.workflow)) invalid("workflow must be plan, build or auto");
+  if (options.workflow !== "plan") return (await executeTask(task, { ...options, workflow: options.workflow })).result;
+  const cwd = resolve(options.cwd ?? process.cwd());
+  if (!await loadConfig(cwd, options.configPath)) throw new LatticeServiceError("config_error", "Planning requires a configured generator. Select /project <path>, run lattice init there, then /doctor.");
+  let files = options.files;
+  if (!files?.length) {
+    const snapshot = await collectRepositorySnapshot(cwd);
+    const words = task.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? [];
+    const candidates = snapshot.trackedFiles.filter(file =>
+      !file.split(/[\\/]/).some(part => part.startsWith(".") || /^(credentials|id_rsa|id_ed25519)/i.test(part)) &&
+      /\.(md|tsx?|jsx?|rs|py|json|toml)$/i.test(file));
+    const score = (file: string) => words.filter(word => file.toLowerCase().includes(word)).length;
+    candidates.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+    // shortcut: four bounded sources, use /plan --file path:start-end for large or ambiguous tasks.
+    files = candidates.slice(0, 4);
+  }
+  return planTask(task, { ...options, cwd, files });
+}
+
+/** Read recorded patches without depending on retained worktree files. */
+export async function getRunChanges(id = "latest", cwd = process.cwd()) {
+  const events = await getRunEvents(id, cwd);
+  const changes: Array<{ diff: string; changedFiles: string[]; workspace: string; retained: boolean }> = [];
+  for (const event of events) {
+    if (event.type !== "tool.completed" || !isObject(event.payload)) continue;
+    const outcome = event.payload.outcome;
+    if (!isObject(outcome) || !isObject(outcome.changes)) continue;
+    const patch = outcome.changes;
+    if (typeof patch.diff !== "string" || !Array.isArray(patch.changedFiles) ||
+        !patch.changedFiles.every(file => typeof file === "string") || typeof patch.workspace !== "string" || typeof patch.retained !== "boolean") continue;
+    changes.push({ diff: patch.diff, changedFiles: patch.changedFiles, workspace: patch.workspace, retained: patch.retained });
+  }
+  return changes;
 }
 
 /**
@@ -855,6 +942,181 @@ async function probeModel(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Model readiness (preflight)
+
+export type ModelReadinessStatus = "ok" | "missing" | "unreachable" | "unknown" | "incompatible";
+
+export interface ModelRoleReadiness {
+  /** `decision` or `generator`; `default` when a single config serves both. */
+  role: string;
+  modelId: string;
+  baseUrl: string;
+  status: ModelReadinessStatus;
+  /** Concise, human-actionable one-liner. Never raw provider JSON. */
+  message: string;
+  /** Exact ids the endpoint listed, in the order it reported them. */
+  available: string[];
+  /** Ollama-declared capabilities for the requested id, when discovered. */
+  capabilities?: string[];
+}
+
+export interface ModelReadinessReport {
+  ok: boolean;
+  roles: ModelRoleReadiness[];
+  /** Actionable blocker lines; empty when every required model is usable. */
+  blockers: string[];
+}
+
+export interface ModelReadinessOptions {
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+/** Ollama exposes `/api/tags`; strip a trailing `/v1` so the native route resolves. */
+function ollamaBase(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+}
+
+const looksLikeOllama = (baseUrl: string): boolean => /127\.0\.0\.1:11434|localhost:11434/.test(baseUrl);
+
+/**
+ * Verify the exact model ids a config asks for are actually served, before any
+ * task runs. The 404 this prevents used to surface as raw provider JSON after
+ * minutes of search; now it is one actionable line before execution.
+ */
+export async function checkModelReadiness(
+  config: LatticeConfig,
+  options: ModelReadinessOptions = {},
+): Promise<ModelReadinessReport> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 4_000;
+  const decisionConfig = config.models?.decision ?? config.model;
+  const generatorModel = config.models?.generator ?? config.model;
+  // A `random` decision baseline is deterministic and needs no endpoint at all.
+  const decisionModel: ModelEndpointConfig | undefined =
+    decisionConfig && decisionConfig.provider !== "random" ? decisionConfig : undefined;
+  const shared = Boolean(decisionModel && generatorModel && decisionModel === generatorModel);
+
+  const specs: Array<{ role: string; model: ModelEndpointConfig | undefined }> = [
+    { role: shared ? "default" : "decision", model: decisionModel },
+    { role: "generator", model: generatorModel },
+  ];
+  const seen = new Set<string>();
+  const roles: ModelRoleReadiness[] = [];
+  /** Endpoint model id -> declared capabilities, for suggesting alternatives. */
+  const discoveredCapabilities = new Map<string, string[]>();
+  for (const { role, model } of specs) {
+    if (!model) continue;
+    const key = `${model.baseUrl}\0${model.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let available: string[] = [];
+    let capabilities: string[] | undefined;
+    let unreachable = false;
+    try {
+      if (looksLikeOllama(model.baseUrl)) {
+        const discovered = await discoverOllamaModels(ollamaBase(model.baseUrl), fetchImpl, timeoutMs);
+        available = discovered.map((entry) => entry.name).filter(Boolean);
+        capabilities = discovered.find((entry) => entry.name === model.model)?.capabilities;
+        for (const entry of discovered) discoveredCapabilities.set(entry.name, entry.capabilities);
+      }
+      if (!available.length) available = await listAvailableModels(model.baseUrl, { fetchImpl, timeoutMs });
+    } catch {
+      unreachable = true;
+    }
+
+    if (unreachable) {
+      roles.push({
+        role, modelId: model.model, baseUrl: model.baseUrl, status: "unreachable", available,
+        message: `cannot reach ${model.baseUrl} — start the model server (e.g. \`ollama serve\`)`,
+      });
+      continue;
+    }
+    // An empty list means "this endpoint will not tell us", not "no models exist".
+    if (!available.length) {
+      roles.push({
+        role, modelId: model.model, baseUrl: model.baseUrl, status: "unknown", available,
+        message: `${model.baseUrl} does not publish a model list; ${model.model} will be attempted unverified`,
+      });
+      continue;
+    }
+    if (!available.some((id) => id === model.model || id.startsWith(`${model.model}:`))) {
+      const alternatives = available.filter((id) => !/embed|rerank|whisper|tts/i.test(id)).slice(0, 6);
+      roles.push({
+        role, modelId: model.model, baseUrl: model.baseUrl, status: "missing", available,
+        capabilities,
+        message:
+          `model '${model.model}' is not installed at ${model.baseUrl} — ` +
+          `available: ${alternatives.join(", ") || "none"}` +
+          `\n  fix: lattice init --model <id>  ·  or, for Ollama: ollama pull ${model.model}`,
+      });
+      continue;
+    }
+    // The model exists. Now prove it can actually carry this role: an
+    // OpenAI-compatible chat route cannot carry a typed-choice decision, and a
+    // decision-only model cannot generate code. Skipping this check is what
+    // produced 100% invalid-response benchmark runs.
+    if (capabilities?.length) {
+      const required = ROLE_CAPABILITIES[role === "generator" ? "generator" : "decision"];
+      const supported = required.some((capability) => capabilities.includes(capability));
+      if (!supported) {
+        const alternatives = available
+          .filter((id) => id !== model.model && !/embed|rerank|whisper|tts/i.test(id))
+          .filter((id) => {
+            const other = discoveredCapabilities.get(id);
+            return !other?.length || required.some((capability) => other.includes(capability));
+          })
+          .slice(0, 6);
+        roles.push({
+          role, modelId: model.model, baseUrl: model.baseUrl, status: "incompatible", available,
+          capabilities,
+          message:
+            `model '${model.model}' cannot serve the ${role} role — it declares ` +
+            `[${capabilities.join(", ")}] and Lattice needs one of [${required.join(", ")}]` +
+            (alternatives.length ? `\n  fix: use one of ${alternatives.join(", ")}` : "") +
+            `\n  fix: lattice init --model <id>`,
+        });
+        continue;
+      }
+    }
+    roles.push({
+      role, modelId: model.model, baseUrl: model.baseUrl, status: "ok", available, capabilities,
+      message: `${model.model} @ ${model.baseUrl}`,
+    });
+  }
+
+  const blockers = roles
+    .filter((role) => role.status === "missing" || role.status === "unreachable" || role.status === "incompatible")
+    .map((role) => role.message);
+  return { ok: blockers.length === 0, roles, blockers };
+}
+
+/**
+ * Minimum capability vocabulary a model must declare to serve a role.
+ * Mirrors the transport matrix in `@lattice/providers`.
+ */
+const ROLE_CAPABILITIES: Record<"decision" | "generator", string[]> = {
+  decision: ["decision", "choice", "rerank"],
+  generator: ["completion", "tools", "insert", "thinking", "code", "chat"],
+};
+
+/** Fail closed before a run when a required model cannot possibly succeed. */
+export async function assertModelsReady(
+  config: LatticeConfig,
+  options: ModelReadinessOptions & { workflow?: WorkflowMode } = {},
+): Promise<ModelReadinessReport> {
+  const report = await checkModelReadiness(config, options);
+  if (!report.ok) {
+    throw new LatticeServiceError(
+      "config_error",
+      `Models are not ready for ${options.workflow ?? "this run"}:\n${report.blockers.map((line) => `  - ${line}`).join("\n")}\nRun /doctor or /models to inspect.`,
+    );
+  }
+  return report;
+}
+
 /** Environment and configuration health checks. Never throws for bad config. */
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const cwd = resolve(options.cwd ?? process.cwd());
@@ -990,12 +1252,13 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 // ---------------------------------------------------------------------------
 // Init
 
-export type InitPreset = "ollama" | "vllm" | "openai-compatible" | "observe";
+export type InitPreset = "ollama" | "vllm" | "openai-compatible" | "tandem" | "observe";
 
 export const INIT_PRESETS: readonly InitPreset[] = [
   "ollama",
   "vllm",
   "openai-compatible",
+  "tandem",
   "observe",
 ];
 
@@ -1003,7 +1266,64 @@ const PRESET_DEFAULTS: Record<Exclude<InitPreset, "observe">, { baseUrl?: string
   ollama: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen3-coder" },
   vllm: { baseUrl: "http://127.0.0.1:8000/v1" },
   "openai-compatible": {},
+  tandem: { baseUrl: "http://127.0.0.1:8000/v1", model: "glm-5.3-flash" },
 };
+
+export const INIT_PRESET_DEFAULTS = PRESET_DEFAULTS;
+
+/** True when `ids` lists `model`, tolerating Ollama-style `name:tag` suffixes. */
+export function isModelListed(ids: readonly string[], model: string): boolean {
+  return ids.some((id) => id === model || id.startsWith(`${model}:`));
+}
+
+const SIZE_SUFFIX = /([\d.]+)\s*b\b/i;
+
+/** Prefer coding models, then instruct/chat models, and smaller sizes on small hosts. */
+export function selectPreferredModel(ids: readonly string[]): string | undefined {
+  const usable = ids.filter((id) => id && !/embed|rerank|whisper|tts|diffusion/i.test(id));
+  if (!usable.length) return undefined;
+  const scored = usable.map((id) => {
+    const base = /coder/i.test(id) ? 100 : /instruct|chat|it\b/i.test(id) ? 80 : 10;
+    const billions = Number(SIZE_SUFFIX.exec(id)?.[1] ?? 7);
+    return { id, score: base - billions };
+  });
+  scored.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  return scored[0]!.id;
+}
+
+export interface ListModelsOptions {
+  timeoutMs?: number;
+  apiKeyEnv?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Query an OpenAI-compatible `/models` endpoint.
+ * Returns `[]` when the endpoint is unreachable or unreadable; callers treat
+ * that as "unknown availability" and keep the configured model.
+ */
+export async function listAvailableModels(baseUrl: string, options: ListModelsOptions = {}): Promise<string[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const headers: Record<string, string> = {};
+  const key = options.apiKeyEnv ? process.env[options.apiKeyEnv] : undefined;
+  if (key) headers.authorization = `Bearer ${key}`;
+  try {
+    const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/models`, {
+      headers,
+      signal: AbortSignal.timeout(options.timeoutMs ?? 3_000),
+    });
+    if (!response.ok) return [];
+    const body = (await response.json().catch(() => undefined)) as
+      | { data?: Array<{ id?: unknown }> }
+      | undefined;
+    if (!Array.isArray(body?.data)) return [];
+    return body.data
+      .map((item) => item?.id)
+      .filter((value): value is string => typeof value === "string");
+  } catch {
+    return [];
+  }
+}
 
 export interface VerifyCommand {
   command: string;
@@ -1014,10 +1334,15 @@ export interface InitOptions {
   preset?: InitPreset;
   baseUrl?: string;
   model?: string;
+  decisionModel?: string;
+  decisionBaseUrl?: string;
+  decisionProvider?: "openai-compatible" | "systemone";
   apiKeyEnv?: string;
   agent?: "qwen-code" | "opencode";
   verify?: VerifyCommand;
   autonomy?: "autopilot" | "supervised" | "manual";
+  /** Model ids reported by `${baseUrl}/models`; when absent the default is trusted. */
+  availableModels?: readonly string[];
 }
 
 export interface InitPlan {
@@ -1048,13 +1373,32 @@ export function buildInitConfig(options: InitOptions = {}): InitPlan {
 
   const defaults = PRESET_DEFAULTS[preset];
   const baseUrl = options.baseUrl ?? defaults.baseUrl;
-  const model = options.model ?? defaults.model;
+  const requested = options.model ?? defaults.model;
   if (!baseUrl) invalid(`preset ${preset} requires a base URL`);
-  if (!model) invalid(`preset ${preset} requires a model name`);
+  if (!requested) invalid(`preset ${preset} requires a model name`);
 
   const apiKeyEnv =
     options.apiKeyEnv ?? (preset === "openai-compatible" ? "LATTICE_API_KEY" : undefined);
   const agent = options.agent ?? "qwen-code";
+
+  let model = requested;
+  const available = options.availableModels;
+  if (available?.length && !isModelListed(available, requested)) {
+    const preferred = selectPreferredModel(available);
+    const listed = available.slice(0, 8).join(", ");
+    if (options.model) {
+      warnings.push(
+        `${baseUrl} does not list model ${requested}; available: ${listed}. Every model call fails until the model is installed or --model names an installed one`,
+      );
+    } else if (preferred) {
+      model = preferred;
+      warnings.push(
+        `preset default ${requested} is not installed at ${baseUrl}; selected ${preferred} instead (available: ${listed})`,
+      );
+    } else {
+      warnings.push(`${baseUrl} lists no usable model (available: ${listed}); model calls will fail`);
+    }
+  }
 
   let mode: "auto" | "observe" = "auto";
   if (!verify) {
@@ -1064,15 +1408,44 @@ export function buildInitConfig(options: InitOptions = {}): InitPlan {
     );
   }
 
+  const isTandem = preset === "tandem" || options.decisionModel !== undefined;
+  const decisionModelId = options.decisionModel ?? (preset === "tandem" ? "tev1:0.8b" : undefined);
+  const decisionBaseUrl = options.decisionBaseUrl ?? (preset === "tandem" ? "http://127.0.0.1:11434/v1" : baseUrl);
+  const decisionProvider = options.decisionProvider ?? (
+    decisionModelId?.toLowerCase().startsWith("tev") || preset === "tandem"
+      ? "systemone"
+      : "openai-compatible"
+  );
+
+  const modelPayload = isTandem && decisionModelId
+    ? {
+        models: {
+          generator: {
+            provider: "openai-compatible" as const,
+            baseUrl,
+            model,
+            ...(apiKeyEnv ? { apiKeyEnv } : {}),
+          },
+          decision: {
+            provider: decisionProvider,
+            baseUrl: decisionBaseUrl,
+            model: decisionModelId,
+          },
+        },
+      }
+    : {
+        model: {
+          provider: "openai-compatible" as const,
+          baseUrl,
+          model,
+          ...(apiKeyEnv ? { apiKeyEnv } : {}),
+        },
+      };
+
   const config = parseLatticeConfig({
     mode,
     autonomy: { mode: options.autonomy ?? "supervised" },
-    model: {
-      provider: "openai-compatible",
-      baseUrl,
-      model,
-      ...(apiKeyEnv ? { apiKeyEnv } : {}),
-    },
+    ...modelPayload,
     agent:
       agent === "qwen-code"
         ? { preset: "qwen-code", approvalMode: "auto-edit", outputFormat: "json" }

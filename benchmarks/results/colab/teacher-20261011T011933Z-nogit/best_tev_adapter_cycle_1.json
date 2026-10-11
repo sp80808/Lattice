@@ -1,0 +1,43 @@
+{
+  "cycle": 1,
+  "accuracy": 0.874,
+  "student_base": "Qwen/Qwen2.5-Coder-1.5B",
+  "generator": "Quantised GLM 5.3 Flash",
+  "decision_model": "SystemOne Tev (tev1:0.8b)",
+  "promoted_at": "2026-10-11T01:45:44.573723+00:00",
+  "scorecard": {
+    "cycle": 1,
+    "timestamp": "2026-10-11T01:45:44.569948+00:00",
+    "models": {
+      "generator": "Quantised GLM 5.3 Flash",
+      "decision_router": "SystemOne Tev (tev1:0.8b)",
+      "harness": "Lattice Verified Harness"
+    },
+    "benchmarks": {
+      "swe_bench_verified": {
+        "source": "https://github.com/swe-bench/SWE-bench",
+        "sonnet5_pass": 0.648,
+        "lattice_pass": 0.843,
+        "advantage_pct": 19.5,
+        "cost_reduction_x": 21.2,
+        "invalid_edits": 0.0,
+        "regressions": 0.0,
+        "beats_sonnet5": true
+      },
+      "terminal_bench_2": {
+        "source": "https://github.com/harbor-framework/terminal-bench",
+        "sonnet5_pass": 0.612,
+        "lattice_pass": 0.858,
+        "advantage_pct": 24.6,
+        "cost_reduction_x": 21.3,
+        "invalid_edits": 0.0,
+        "regressions": 0.0,
+        "beats_sonnet5": true
+      }
+    },
+    "summary": {
+      "all_benchmarks_beat_sonnet5": true,
+      "avg_cost_reduction_x": 21.3
+    }
+  }
+}
