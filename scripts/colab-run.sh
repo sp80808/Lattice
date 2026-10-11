@@ -53,6 +53,7 @@ JOB="${1:-}"; shift || true
 [ -z "$JOB" ] && { usage; exit 1; }
 
 case "$JOB" in
+  -h|--help) usage; exit 0 ;;
   teacher) SCRIPT="scripts/colab_teacher_label.py" ;;
   zero-shot) SCRIPT="scripts/colab_zero_shot.py" ;;
   sft) SCRIPT="scripts/colab_train_router_v2.py" ;;
@@ -106,6 +107,12 @@ fi
 if ! colab upload -s "$SESSION" "$ROOT_DIR/benchmarks/decisions/corpus.jsonl" /content/corpus.jsonl; then
   echo "ERROR: failed to upload corpus.jsonl" >&2
   exit 1
+fi
+
+TEACHER_LABELS="$(find "$RESULTS" -name "teacher-labels.jsonl" 2>/dev/null | tail -1 || true)"
+if [ -n "$TEACHER_LABELS" ] && [ -f "$TEACHER_LABELS" ]; then
+  echo "== uploading teacher rationales from $TEACHER_LABELS"
+  colab upload -s "$SESSION" "$TEACHER_LABELS" /content/teacher-labels.jsonl 2>/dev/null || true
 fi
 
 # --- 3. resume run id from the previous log --------------------------------

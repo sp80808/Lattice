@@ -423,6 +423,18 @@ def main():
     rows = [json.loads(l) for l in CORPUS.read_text().splitlines() if l.strip()]
     train_cases = [r for r in rows if r['split'] == 'train']
     holdout = [r for r in rows if r['split'] == 'holdout']
+
+    teacher_file = Path('/content/teacher-labels.jsonl')
+    if teacher_file.exists():
+        try:
+            t_rows = [json.loads(l) for l in teacher_file.read_text().splitlines() if l.strip()]
+            t_syn = [r for r in t_rows if r.get('split') == 'synthetic' or r.get('kind') == 'synthetic']
+            if t_syn:
+                train_cases.extend(t_syn)
+                print(f'loaded {len(t_syn)} teacher rationale / synthetic cases into training', flush=True)
+        except Exception as e:
+            print(f'warning: failed to parse teacher labels: {e}', flush=True)
+
     examples = build_train_examples(train_cases)
     print(f'corpus: {len(train_cases)} train / {len(holdout)} holdout -> {len(examples)} examples', flush=True)
 
