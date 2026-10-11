@@ -6,7 +6,7 @@
     "command": "{NODE}",
     "args": [
       "--test",
-      "test/"
+      "test/greet.test.js"
     ],
     "timeoutMs": 60000
   },

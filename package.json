@@ -30,6 +30,14 @@
     "benchmark:report": "node ../scripts/benchmark-lab.mjs report"
   },
   "devDependencies": {
+    "@lattice/core": "0.0.1",
+    "@lattice/execution": "0.0.1",
+    "@lattice/providers": "0.0.1",
+    "@lattice/runtime": "0.0.1",
+    "@lattice/sdk": "0.0.1",
+    "@lattice/server": "0.0.1",
+    "@lattice/service": "0.0.1",
+    "@lattice/tessera": "0.0.1",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   },

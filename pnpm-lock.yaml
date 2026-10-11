@@ -8,6 +8,30 @@ importers:
 
   .:
     devDependencies:
+      '@lattice/providers':
+        specifier: 0.0.1
+        version: link:packages/providers
+      '@lattice/tessera':
+        specifier: 0.0.1
+        version: link:packages/tessera
+      '@lattice/core':
+        specifier: 0.0.1
+        version: link:packages/core
+      '@lattice/execution':
+        specifier: 0.0.1
+        version: link:packages/execution
+      '@lattice/runtime':
+        specifier: 0.0.1
+        version: link:packages/runtime
+      '@lattice/sdk':
+        specifier: 0.0.1
+        version: link:packages/sdk
+      '@lattice/server':
+        specifier: 0.0.1
+        version: link:packages/server
+      '@lattice/service':
+        specifier: 0.0.1
+        version: link:packages/service
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.1
@@ -17,6 +41,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@lattice/core':
+        specifier: 0.0.1
+        version: link:../../packages/core
       '@lattice/analytics':
         specifier: 0.0.1
         version: link:../../packages/analytics
@@ -208,6 +235,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@lattice/search':
+        specifier: 0.0.1
+        version: link:../search
       '@lattice/agents':
         specifier: 0.0.1
         version: link:../agents
@@ -226,6 +256,9 @@ importers:
 
   packages/sdk:
     dependencies:
+      '@lattice/analytics':
+        specifier: 0.0.1
+        version: link:../analytics
       '@lattice/protocol':
         specifier: 0.0.1
         version: link:../protocol
