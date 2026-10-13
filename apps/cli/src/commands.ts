@@ -38,6 +38,7 @@ import {
   INIT_PRESET_DEFAULTS,
   listAvailableModels,
   listRuns,
+  replayRun,
   loadConfig,
   parseCommandLine,
   planTask,
@@ -89,6 +90,7 @@ export async function runCommand(args: string[]): Promise<number> {
   const { values, positionals } = parse(args, {
     config: { type: "string" },
     observe: { type: "boolean" },
+    record: { type: "boolean" },
   });
   const task = positionals.join(" ").trim();
   if (!task) throw new UsageError("run requires a task");
@@ -99,6 +101,7 @@ export async function runCommand(args: string[]): Promise<number> {
       cwd: cwdOf(values),
       configPath: values.config,
       mode: values.observe ? "observe" : "configured",
+      record: values.record,
       reviewer: cliReviewer,
     });
   } catch (error) {
@@ -296,6 +299,30 @@ function runRow(run: RunSummary): string {
     `ev=${run.evidence} dec=${run.decisions} exp=${run.experiments}`.padEnd(20),
     truncate(run.task, 60),
   ].join("  ");
+}
+
+export async function replayCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parse(args, { config: { type: "string" } });
+  const report = await replayRun(positionals[0] ?? "latest", {
+    cwd: cwdOf(values),
+    configPath: values.config,
+  });
+  if (values.json) {
+    printJson(report);
+  } else {
+    console.log(`replayed: ${report.original.runId} (${report.calls} recorded call(s))`);
+    if (report.replay) console.log(`as run:   ${report.replay.runId}`);
+    if (report.divergence) {
+      console.log(`diverged: ${report.divergence.message}`);
+    } else {
+      console.log(`result:   ${report.consistent ? "consistent" : "different outcome"}`);
+      if (!report.consistent) {
+        console.log(`  original: ${report.original.status} ${report.original.summary ?? ""}`);
+        console.log(`  replay:   ${report.replay?.status} ${report.replay?.summary ?? ""}`);
+      }
+    }
+  }
+  return report.consistent ? 0 : 1;
 }
 
 export async function runsCommand(args: string[]): Promise<number> {

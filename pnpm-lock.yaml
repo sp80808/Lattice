@@ -244,6 +244,9 @@ importers:
       '@lattice/core':
         specifier: 0.0.1
         version: link:../core
+      '@lattice/execution':
+        specifier: 0.0.1
+        version: link:../execution
       '@lattice/protocol':
         specifier: 0.0.1
         version: link:../protocol

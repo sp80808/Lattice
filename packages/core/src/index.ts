@@ -39,6 +39,10 @@ export interface RunTaskOptions {
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
+  /** Where this run came from, recorded on `run.started` (e.g. the run it replays). */
+  lineage?: { replayOf?: string };
+  /** Runs `verifyCommand`; defaults to `runCommand`. Replay swaps in recorded results. */
+  commandRunner?: (spec: CommandSpec) => Promise<CommandResult>;
   /** Structured verifier (e.g. `tsr witness`); its record is stored in the run log. */
   verifier?: Verifier;
   /** Aborting stops the search between rounds; the run is logged as failed. */
@@ -170,7 +174,7 @@ class RunLeaseHolder {
  * analysis found missing executables are the most common command failure, and a
  * harness must treat them as evidence, not exceptions.
  */
-async function runVerifier(spec: CommandSpec): Promise<CommandResult> {
+export async function runVerifier(spec: CommandSpec): Promise<CommandResult> {
   try {
     return await runCommand(spec);
   } catch (error) {
@@ -265,8 +269,11 @@ export async function runTask(
       options.leaseTtlMs ?? RUN_LEASE_TTL_MS,
     ),
   );
-
-  await log.append("run.started", { task: trimmed, cwd });
+  await log.append("run.started", {
+    task: trimmed,
+    cwd,
+    ...(options.lineage ? { lineage: options.lineage } : {}),
+  });
 
   try {
     await log.append("tool.started", {
@@ -335,7 +342,7 @@ export async function runTask(
         args: command.args ?? [],
       });
 
-      const result = await runVerifier(command);
+      const result = await (options.commandRunner ?? runVerifier)(command);
       await log.append("tool.completed", {
         tool: "command",
         result,
