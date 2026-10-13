@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { promisify } from "node:util";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,12 +26,15 @@ import {
   planTask,
   resolveRunId,
   ReviewBroker,
+  replayRun,
   runDoctor,
   selectPreferredModel,
   startTask,
   writeConfig,
 } from "./index.js";
 import { createAutoModeFixture } from "./testing.js";
+
+const runGit = (cwd: string, args: string[]) => promisify(execFile)("git", args, { cwd });
 
 async function tempProject(config?: unknown): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), "lattice-service-"));
@@ -463,6 +469,125 @@ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => 
   );
   assert.equal(await findExecutable("qwen.CMD", dir, { platform: "win32", pathExt: ".EXE" }), join(dir, "qwen.CMD"));
   assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
+});
+
+test("a run whose process was killed reads as interrupted, a live one as running", async () => {
+  const cwd = await tempProject();
+  const core = new URL("../../core/dist/index.js", import.meta.url).href;
+  // A separate process starts a run that never finishes, then is SIGKILLed.
+  const script = `
+    const { runTask } = await import(${JSON.stringify(core)});
+    runTask("crashes mid-run", {
+      cwd: ${JSON.stringify(cwd)},
+      verifyCommand: { command: process.execPath, args: ["-e", "setTimeout(()=>{},5000)"], timeoutMs: 600000 },
+      onEvent: (event) => { if (event.type === "tool.started") process.stdout.write("started\\n"); },
+    });
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  await new Promise<void>((ready) => child.stdout!.once("data", () => ready()));
+
+  const [live] = await listRuns({ cwd });
+  assert.equal(live?.status, "incomplete");
+  assert.equal(live?.liveness, "running");
+
+  child.kill("SIGKILL");
+  await new Promise((done) => child.once("exit", done));
+
+  const [dead] = await listRuns({ cwd });
+  assert.equal(dead?.status, "incomplete");
+  assert.equal(dead?.liveness, "interrupted");
+  assert.equal((await getRun(dead!.runId, cwd)).liveness, "interrupted");
+});
+
+
+test("a recorded auto run replays from its cassette with no live calls", { skip: process.platform === "win32" }, async () => {
+  let generatorCalls = 0;
+  const server = createServer((req, res) => {
+    generatorCalls++;
+    req.resume();
+    req.on("end", () => {
+      const candidates = {
+        candidates: [
+          { id: "a", label: "edit file", action: "append a line", expectedEvidence: "verify passes", estimatedCost: "low" },
+          { id: "b", label: "inspect", action: "read the file", expectedEvidence: "content", estimatedCost: "low" },
+        ],
+      };
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(candidates) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 20 },
+      }));
+    });
+  });
+  await new Promise<void>((ready) => server.listen(0, "127.0.0.1", () => ready()));
+  const port = (server.address() as { port: number }).port;
+
+  try {
+    const cwd = await tempProject();
+    const git = (...args: string[]) =>
+      runGit(cwd, ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args]);
+    await writeFile(join(cwd, "file.txt"), "base\n");
+    await writeFile(join(cwd, ".gitignore"), ".lattice/\n");
+    await git("init", "-q");
+    await git("add", ".");
+    await git("commit", "-qm", "init");
+    const agent = join(cwd, "..", `agent-${Date.now()}.sh`);
+    await writeFile(agent, "#!/bin/sh\necho edited >> file.txt\n");
+    await chmod(agent, 0o755);
+    await mkdir(join(cwd, ".lattice"));
+    await writeFile(
+      join(cwd, ".lattice", "config.json"),
+      JSON.stringify({
+        mode: "auto",
+        models: {
+          generator: { baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" },
+          decision: { provider: "random", seed: 7 },
+        },
+        agent: { preset: "qwen-code", command: agent },
+        verify: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+        search: { maxRounds: 1, candidatesPerRound: 2 },
+      }),
+    );
+
+    const recorded = await executeTask("make the edit", { cwd, record: true });
+    assert.equal(generatorCalls, 1);
+    const callsAfterRecord = generatorCalls;
+
+    // Stop the fake model: any live generator call during replay would fail.
+    await new Promise((done) => server.close(done));
+    const report = await replayRun(recorded.result.runId, { cwd });
+    assert.equal(generatorCalls, callsAfterRecord);
+    assert.equal(report.divergence, undefined, report.divergence?.message);
+    assert.equal(report.consistent, true);
+    assert.ok(report.calls >= 3, `expected generator, decision and experiment calls, got ${report.calls}`);
+    const started = (await getRunEvents(report.replay!.runId, cwd))[0]!;
+    assert.deepEqual((started.payload as { lineage?: unknown }).lineage, {
+      replayOf: recorded.result.runId,
+    });
+
+    // A changed config shows up as a localized divergence, not a different result.
+    const config = JSON.parse(await readFile(join(cwd, ".lattice", "config.json"), "utf8"));
+    config.verify.args = ["-e", "process.exit(0) /* changed */"];
+    await writeFile(join(cwd, ".lattice", "config.json"), JSON.stringify(config));
+    const diverged = await replayRun(recorded.result.runId, { cwd });
+    assert.equal(diverged.consistent, false);
+    assert.equal(diverged.divergence?.seq, 1);
+    assert.equal(diverged.divergence?.kind, "command");
+    assert.deepEqual(diverged.divergence?.changedFields, ["args"]);
+  } finally {
+    server.close();
+  }
+});
+
+test("replayRun refuses runs that were not recorded", async () => {
+  const cwd = await tempProject();
+  const { result } = await executeTask("plain", { cwd });
+  await assert.rejects(
+    replayRun(result.runId, { cwd }),
+    (error: unknown) => error instanceof LatticeServiceError && error.code === "not_found",
+  );
 });
 
 test("interactive coding blocks missing config and observe mode instead of collecting false success", async () => {

@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { buildStatsReport, type StatsReport } from "@lattice/analytics";
-import { runTask } from "@lattice/core";
+import { leaseLiveness, readRunLease, runLeasePath, runTask } from "@lattice/core";
 import { collectRepositorySnapshot, runCommand } from "@lattice/execution";
 import { discoverOllamaModels, RandomDecisionProvider } from "@lattice/providers";
 import {
@@ -11,7 +11,12 @@ import {
   describeVerify,
   verifyExecutable,
   createRunTaskOptions,
+  loadCassette,
   loadLatticeConfig,
+  recordCassette,
+  replayCassette,
+  ReplayDivergenceError,
+  type CassetteIo,
   parseLatticeConfig,
   type LatticeConfig,
   type LoadedLatticeConfig,
@@ -77,6 +82,15 @@ export interface ExecuteTaskOptions {
   cwd?: string;
   configPath?: string;
   mode?: TaskExecutionMode;
+  /**
+   * Record every model, command, verifier and experiment call to
+   * `.lattice/runs/<runId>.cassette.jsonl` so the run can be replayed.
+   */
+  record?: boolean;
+  /** Internal: serve calls from a cassette instead (see `replayRun`). */
+  cassette?: CassetteIo;
+  /** Internal: lineage recorded on run.started. */
+  lineage?: { replayOf?: string };
   reviewer?: DecisionReviewer;
   /** Observe events as they are appended to the run log. */
   onEvent?: (event: RunEvent) => void;
@@ -135,14 +149,32 @@ export async function executeTask(
     if (blockers.length) throw new LatticeServiceError("config_error", blockers.map(check => `${check.message}${check.hint ? `; ${check.hint}` : ""}`).join("\n"));
   }
 
+  let runId: string | undefined;
+  const cassette =
+    options.cassette ??
+    (options.record
+      ? recordCassette(() => join(runsDirectory(cwd), `${runId}.cassette.jsonl`))
+      : undefined);
+
   let runOptions;
   try {
-    runOptions = createRunTaskOptions(config, { reviewer: options.reviewer });
+    runOptions = createRunTaskOptions(config, { reviewer: options.reviewer, cassette });
   } catch (error) {
     throw new LatticeServiceError("config_error", errorMessage(error));
   }
 
-  const result = await runTask(task, { ...runOptions, cwd, onEvent: options.onEvent, signal: options.signal });
+  const result = await runTask(task, {
+    ...runOptions,
+    cwd,
+    lineage: options.lineage,
+    signal: options.signal,
+    onEvent: (event) => {
+      runId ??= event.runId;
+      options.onEvent?.(event);
+    },
+  });
+  // A replay that made fewer calls than the recording also diverged.
+  options.cassette?.assertConsumed();
   return {
     result,
     mode,
@@ -406,6 +438,97 @@ export function parseReviewAnswer(value: unknown, review: PendingReview): Review
 }
 
 // ---------------------------------------------------------------------------
+// Strict replay
+
+export interface ReplayReport {
+  /** The recorded run that was replayed. */
+  original: { runId: string; status: string; summary?: string };
+  /** The new run produced from recorded I/O; absent when replay diverged before it ended. */
+  replay?: { runId: string; status: string; summary?: string };
+  /** True when no call diverged and the outcome summary matches. */
+  consistent: boolean;
+  /** The first divergence, localized to one call. */
+  divergence?: {
+    seq: number;
+    kind: string;
+    reason: string;
+    changedFields: string[];
+    message: string;
+  };
+  calls: number;
+}
+
+/**
+ * Re-run a recorded run with no live model, command, verifier or agent call:
+ * every call is served from its cassette and must match the recorded request.
+ * The replay is a new run whose `run.started` names the original.
+ */
+export async function replayRun(
+  reference: string,
+  options: { cwd?: string; configPath?: string; onEvent?: (event: RunEvent) => void } = {},
+): Promise<ReplayReport> {
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const original = await getRun(reference, cwd);
+  if (!original.task) invalid(`run ${original.runId} has no recorded task`);
+  const cassettePath = join(runsDirectory(cwd), `${original.runId}.cassette.jsonl`);
+  let entries;
+  try {
+    entries = await loadCassette(cassettePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new LatticeServiceError(
+        "not_found",
+        `run ${original.runId} was not recorded; run it with --record first`,
+      );
+    }
+    throw error;
+  }
+
+  const report: ReplayReport = {
+    original: { runId: original.runId, status: original.status, summary: original.summary },
+    consistent: false,
+    calls: entries.length,
+  };
+  let replayRunId: string | undefined;
+  try {
+    const outcome = await executeTask(original.task!, {
+      cwd: original.cwd ?? cwd,
+      configPath: options.configPath,
+      cassette: replayCassette(entries),
+      lineage: { replayOf: original.runId },
+      onEvent: (event) => {
+        replayRunId ??= event.runId;
+        options.onEvent?.(event);
+      },
+    });
+    report.replay = {
+      runId: outcome.result.runId,
+      status: outcome.result.status,
+      summary: outcome.result.summary,
+    };
+    report.consistent =
+      outcome.result.status === original.status && outcome.result.summary === original.summary;
+  } catch (error) {
+    if (error instanceof ReplayDivergenceError) {
+      report.divergence = {
+        seq: error.seq,
+        kind: error.kind,
+        reason: error.reason,
+        changedFields: error.changedFields,
+        message: error.message,
+      };
+      if (replayRunId) report.replay = { runId: replayRunId, status: "failed" };
+      return report;
+    }
+    // A recorded failure that replays to the same failure is consistent.
+    if (!replayRunId) throw error;
+    report.replay = { runId: replayRunId, status: "failed", summary: errorMessage(error) };
+    report.consistent = original.status === "failed" && original.error === errorMessage(error);
+  }
+  return report;
+}
+
+// ---------------------------------------------------------------------------
 // Runs (read side of the append-only event log)
 
 const RUN_ID = /^[0-9a-f][0-9a-f-]{0,35}$/i;
@@ -479,6 +602,31 @@ export function summarizeRunEvents(
   return detail;
 }
 
+/** Read a run's log and, when it has not ended, check its lease for liveness. */
+async function readRunDetail(path: string): Promise<RunDetail> {
+  const detail = summarizeRunEvents(await readEvents(path), path);
+  if (detail.status === "incomplete") {
+    const leaseFile = runLeasePath(dirname(path), basename(path, ".jsonl"));
+    if (await fileExists(leaseFile)) {
+      // A crash leaves the lease behind; a malformed one fails closed.
+      detail.liveness = leaseLiveness(await readRunLease(leaseFile));
+    } else {
+      // Runs logged before leases existed carry no lease at all.
+      detail.liveness = "unknown";
+    }
+  }
+  return detail;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function stripTap(detail: RunDetail): RunSummary {
   const { tap: _tap, ...summary } = detail;
   return summary;
@@ -509,7 +657,7 @@ export async function listRuns(options: ListRunsOptions = {}): Promise<RunSummar
   const summaries = await Promise.all(
     (await runFiles(cwd)).map(async (name) => {
       const path = join(dir, name);
-      return stripTap(summarizeRunEvents(await readEvents(path), path));
+      return stripTap(await readRunDetail(path));
     }),
   );
   return summaries
@@ -549,7 +697,7 @@ export async function getRun(
 ): Promise<RunDetail> {
   const runId = await resolveRunId(reference, cwd);
   const path = join(runsDirectory(cwd), `${runId}.jsonl`);
-  return summarizeRunEvents(await readEvents(path), path);
+  return readRunDetail(path);
 }
 
 export async function getRunEvents(
