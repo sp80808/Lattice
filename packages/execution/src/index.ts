@@ -71,6 +71,18 @@ function killProcessTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals
   }
 }
 
+/**
+ * The environment commands inherit. `NODE_TEST_CONTEXT` is set by Node's own test
+ * runner; if it leaks into a child `node --test`, that child exits 0 WITHOUT running
+ * any test, so a verifier would "pass" vacuously. Commands run by Lattice are
+ * independent programs, so they never inherit the parent's test-runner context
+ * (a caller can still set it explicitly through `spec.env`).
+ */
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const { NODE_TEST_CONTEXT: _testContext, ...rest } = process.env;
+  return rest;
+}
+
 export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
   const cwd = resolve(spec.cwd ?? process.cwd());
   const args = spec.args ?? [];
@@ -85,7 +97,7 @@ export async function runCommand(spec: CommandSpec): Promise<CommandResult> {
       // New session/process group so timeout can SIGTERM/SIGKILL the tree.
       detached: process.platform !== "win32",
       stdio: [spec.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      env: { ...process.env, ...spec.env },
+      env: { ...inheritedEnv(), ...spec.env },
     });
 
     if (spec.stdin !== undefined) {
@@ -200,3 +212,16 @@ export async function collectRepositorySnapshot(
 export function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+export {
+  classifyAppType,
+  classifyPlatforms,
+  classifyTask,
+  fingerprintProject,
+  type ManifestFact,
+  type ProjectFingerprint,
+  type StackTag,
+  type TaskClass,
+} from "./fingerprint.js";
+
+export * from "./fidelity.js";

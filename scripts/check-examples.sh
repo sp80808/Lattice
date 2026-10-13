@@ -20,6 +20,9 @@ node --input-type=module -e '
 info "examples/embedded/offline-search-loop.mjs"
 node examples/embedded/offline-search-loop.mjs >/dev/null; ok "search solved by test evidence"
 
+info "examples/planning/plan-with-codex.mjs --self-test"
+node examples/planning/plan-with-codex.mjs --self-test
+
 info "examples/sdk/typescript/run-and-inspect.mjs"
 env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null; ok "TypeScript SDK round-trip"
 

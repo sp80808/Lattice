@@ -17,6 +17,7 @@ import type {
 } from "@lattice/protocol";
 import {
   resolveTsr,
+  replayVerification,
   type TesseraVerificationRecord,
   type WitnessDiagnostic,
   type WitnessDocument,
@@ -50,19 +51,23 @@ function help(d: WitnessDiagnostic): string | undefined {
  * rest are usually parser cascades and only counted.
  */
 export function renderDiagnostics(
-  source: string,
+  source: string | undefined,
   diagnostics: WitnessDiagnostic[],
   max = 3,
 ): string {
-  const lines = source.split("\n");
+  const lines = source?.split("\n") ?? [];
   const out: string[] = [];
   for (const d of diagnostics.slice(0, max)) {
     const at = d.line != null && d.col != null ? `${d.line}:${d.col}` : "-";
     out.push(`${d.severity}[${d.code}] ${at}: ${d.message}`);
     const text = d.line != null ? lines[d.line - 1] : undefined;
     if (text !== undefined && d.col != null && d.span) {
-      const width = Math.max(1, Math.min(d.span.end - d.span.start, text.length - d.col + 1));
-      out.push(`  | ${text}`, `  | ${" ".repeat(Math.max(0, d.col - 1))}${"^".repeat(width)}`);
+      const bytes = Buffer.from(text);
+      const start = Math.max(0, d.col - 1);
+      const prefix = bytes.subarray(0, start).toString();
+      // shortcut: caret widths count code points; use terminal cell widths if TC gains wide identifiers.
+      const width = Math.max(1, Array.from(bytes.subarray(start, start + d.span.end - d.span.start).toString()).length);
+      out.push(`  | ${text}`, `  | ${prefix.replace(/[^\t]/gu, " ")}${"^".repeat(width)}`);
     }
     const h = help(d);
     if (h) out.push(`  help: ${h}`);
@@ -72,7 +77,7 @@ export function renderDiagnostics(
 }
 
 /** What `tsr` said about one verification, for the model. */
-export function renderVerdict(source: string, record: TesseraVerificationRecord): string {
+export function renderVerdict(source: string | undefined, record: TesseraVerificationRecord): string {
   const { verdict, document } = record.witness;
   if (verdict.outcome === "fail" && document) {
     return renderDiagnostics(source, document.diagnostics);
@@ -81,16 +86,47 @@ export function renderVerdict(source: string, record: TesseraVerificationRecord)
     return `tsr witness: ${verdict.outcome}${verdict.reason ? ` (${verdict.reason})` : ""}`;
   }
   const failed = record.cases.filter((c) => !c.passed);
-  if (!failed.length) return "tsr witness: pass; every case matches";
+  if (!failed.length) return record.cases.length
+    ? "tsr witness: pass; every recorded case matches"
+    : "tsr witness: pass; no behavioural cases recorded";
   return [
     "compiles, but behaviour is wrong:",
-    ...failed.map((c) => {
+    ...failed.slice(0, 3).map((c) => {
       const call = `${c.function}(${c.args.join(", ")})`;
-      return c.actual === null
-        ? `  ${call} did not return${c.stderr ? `: ${c.stderr.slice(0, 160)}` : ""}`
+      return c.actual === null || c.exitCode !== 0
+        ? `  ${call} did not return (exit ${c.exitCode})${c.stderr ? `: ${c.stderr.slice(0, 160)}` : ""}`
         : `  ${call} returned ${c.actual}, expected ${c.expect}`;
     }),
+    ...(failed.length > 3 ? [`  (${failed.length - 3} more failed cases)`] : []),
   ].join("\n");
+}
+
+/** Bounded public compiler feedback, rechecked from the stored evidence without running tsr. */
+export function renderVerification(record: TesseraVerificationRecord): string {
+  let text: string;
+  try {
+    const replayed = replayVerification(record);
+    if (!replayed.consistent) {
+      text = `Tessera · ${record.file}\nUntrusted saved evidence: ${replayed.reason ?? `stored ${replayed.storedOutcome}, replayed ${replayed.replayedOutcome}`}`;
+    } else {
+      const doc = record.witness.document;
+      const failed = record.cases.filter(c => !c.passed).length;
+      text = [
+        `Tessera · ${record.file} · phase=${doc?.invocation.phase ?? "unknown"}${record.cached ? " · cached" : ""}`,
+        `Witness: ${replayed.replayedOutcome}`,
+        replayed.replayedOutcome === "pass"
+          ? `Behaviour: ${record.cases.length ? `${record.cases.length - failed}/${record.cases.length} recorded cases passed` : "not checked (no cases recorded)"}`
+          : "Behaviour: not verified",
+        replayed.replayedOutcome !== "tool_error" && doc
+          ? `Compiler: ${doc.tool.version}@${doc.tool.commit.slice(0, 12)}${doc.tool.dirty ? "+dirty" : ""}`
+          : undefined,
+        replayed.replayedOutcome !== "pass" || failed ? renderVerdict(undefined, record) : undefined,
+      ].filter(Boolean).join("\n");
+    }
+  } catch (error) {
+    text = `Tessera · untrusted saved evidence: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 
 export interface Attempt {
