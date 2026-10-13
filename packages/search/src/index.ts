@@ -64,6 +64,10 @@ export interface QuestionAuditFinding {
 export interface DecisionFrame {
   id: string;
   class: DecisionClass;
+  /** Internal provider operation; not a user-facing CLI command. */
+  mode?: "choice" | "rank";
+  /** Why this question was chosen for this TAP state. */
+  routingReason?: ContextualQuestionRoute["reason"];
   objective: string;
   question: string;
   criteria: string[];
@@ -433,9 +437,11 @@ function frameId(
   question: string,
   state: string,
   choices: DecisionChoice[],
+  mode: "choice" | "rank" = "choice",
 ): string {
   const canonical = JSON.stringify({
     decisionClass,
+    mode,
     question,
     state,
     choices: choices.map((choice) => ({
@@ -447,10 +453,78 @@ function frameId(
   return createHash("sha256").update(canonical).digest("hex").slice(0, 20);
 }
 
+/**
+ * Small, deterministic first slice of contextual question routing.
+ * Only adjusts question framing, not permissions, authorization, or verification.
+ * Textual intent signals from model-proposed actions are advisory.
+ */
+export interface ContextualQuestionRoute {
+  class: DecisionClass;
+  mode: "choice" | "rank";
+  reason: "missing-evidence" | "investigation" | "patch-selection" | "mixed-actions";
+  question: string;
+  criteria: string[];
+}
+
+function actionFamily(action: string): "probe" | "edit" | "mixed" {
+  const probe = /\b(inspect|reproduce|run|trace|read|search|test|measure|profile|benchmark|check|verify|locate|diagnose|investigate)\b/i.test(action);
+  const edit = /\b(fix|patch|implement|edit|change|modify|replace|refactor|rewrite|update|write|add|remove)\b/i.test(action);
+  return probe && !edit ? "probe" : edit && !probe ? "edit" : "mixed";
+}
+
+export function routeContextualQuestion(
+  tap: TapPacket,
+  candidates: CandidateAction[],
+  topK = 1,
+): ContextualQuestionRoute {
+  const mode = topK > 1 ? "rank" : "choice";
+  const grounded = tap.evidence.some((item) => item.verified);
+  const families = candidates.map((candidate) => actionFamily(candidate.action));
+  const allProbes = families.length > 0 && families.every((family) => family === "probe");
+  const allEdits = families.length > 0 && families.every((family) => family === "edit");
+  const suffix = "Use only the supplied evidence; select insufficient evidence / none if no candidate is justified.";
+
+  if (!grounded) {
+    return {
+      class: allProbes ? "experiment" : "next-action",
+      mode,
+      reason: "missing-evidence",
+      question: "Which proposed step best establishes reliable facts about the task before implementation? " + suffix,
+      criteria: ["verified information gain", "likelihood of resolving the uncertainty", "execution cost", "reversibility"],
+    };
+  }
+  if (allProbes) {
+    return {
+      class: "experiment",
+      mode,
+      reason: "investigation",
+      question: "Which investigation should be attempted first to reduce the outstanding uncertainty? " + suffix,
+      criteria: ["expected information gain", "existing verified facts", "execution cost", "reversibility"],
+    };
+  }
+  if (allEdits) {
+    return {
+      class: "patch-selection",
+      mode,
+      reason: "patch-selection",
+      question: "Which proposed patch should undergo independent verification first against the task constraints and current evidence? Model preference does not establish correctness. " + suffix,
+      criteria: ["verified evidence", "task constraints", "risk of regression", "cost to verify", "reversibility"],
+    };
+  }
+  return {
+    class: "next-action",
+    mode,
+    reason: "mixed-actions",
+    question: "Which next action best advances the task, balancing evidence collection against verified implementation progress? " + suffix,
+    criteria: ["verified progress", "information gain", "execution cost", "risk", "reversibility"],
+  };
+}
+
 export function compileDecisionFrame(
   tap: TapPacket,
   candidates: CandidateAction[],
   decisionClass: DecisionClass = "next-action",
+  contextual?: ContextualQuestionRoute,
 ): DecisionFrame {
   const allowUnknown = true;
   const choices: DecisionChoice[] = candidates.map((candidate) => ({
@@ -473,6 +547,7 @@ export function compileDecisionFrame(
   });
 
   const question =
+    contextual?.question ??
     "Select the best candidate action or experiment to advance the objective using only the supplied evidence, prioritizing low-cost discriminating probes and validated repairs.";
 
   const state = compactState(tap);
@@ -528,16 +603,18 @@ export function compileDecisionFrame(
     audit.push({
       severity: "warning",
       code: "state-too-large",
-      message: "Decision state exceeds 16k characters and should be compressed.",
+      message: "Decision state exceeds 16k characters; preserve mandatory evidence and retrieve originals before lossy compacting.",
     });
   }
 
   return {
-    id: frameId(decisionClass, question, state, choices),
+    id: frameId(decisionClass, question, state, choices, contextual?.mode),
     class: decisionClass,
+    mode: contextual?.mode ?? "choice",
+    routingReason: contextual?.reason,
     objective: tap.task,
     question,
-    criteria: [
+    criteria: contextual?.criteria ?? [
       "expected verified progress",
       "information gain",
       "execution cost",
@@ -720,7 +797,8 @@ export async function runSearchLoop(
       routing: generated.routing,
     });
 
-    const frame = compileDecisionFrame(tap, candidates, "next-action");
+    const route = routeContextualQuestion(tap, candidates, topK);
+    const frame = compileDecisionFrame(tap, candidates, route.class, route);
     await options.onTrace?.({
       type: "decision.framed",
       round,
@@ -746,7 +824,7 @@ export async function runSearchLoop(
         `EVIDENCE_HANDLES:${frame.evidenceIds.join(",") || "none"}`,
       ].join("\n"),
       question: frame.question,
-      mode: topK > 1 ? "rank" : "choice",
+      mode: frame.mode,
       allowUnknown: frame.allowUnknown,
       choices: frame.choices.filter((choice) => choice.id !== UNKNOWN_CHOICE_ID),
     });

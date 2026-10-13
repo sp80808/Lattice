@@ -6,7 +6,15 @@ import {
   createQwenCodeAdapter,
   type CleanupPolicy,
 } from "@lattice/agents";
-import type { RunTaskOptions } from "@lattice/core";
+import { runVerifier, type RunTaskOptions } from "@lattice/core";
+import {
+  cassetteCommandRunner,
+  cassetteDecision,
+  cassetteExecutor,
+  cassetteGenerator,
+  cassetteVerifier,
+  type CassetteIo,
+} from "./cassette.js";
 import {
   TASK_INTENTS,
   type DecisionProvider,
@@ -511,9 +519,38 @@ export function effectivePermissions(
   };
 }
 
+export * from "./cassette.js";
+
 export function createRunTaskOptions(
   config: LatticeConfig,
-  hooks: { reviewer?: DecisionReviewer; intent?: TaskIntent } = {},
+  hooks: { reviewer?: DecisionReviewer; intent?: TaskIntent; cassette?: CassetteIo } = {},
+): RunTaskOptions {
+  const options = buildRunTaskOptions(config, hooks);
+  return hooks.cassette ? withCassette(options, hooks.cassette) : options;
+}
+
+/** Route every non-deterministic call of a run through a cassette. */
+function withCassette(options: RunTaskOptions, io: CassetteIo): RunTaskOptions {
+  return {
+    ...options,
+    commandRunner: cassetteCommandRunner(io, options.commandRunner ?? runVerifier),
+    ...(options.verifier ? { verifier: cassetteVerifier(io, options.verifier) } : {}),
+    ...(options.search
+      ? {
+          search: {
+            ...options.search,
+            generator: cassetteGenerator(io, options.search.generator),
+            decision: cassetteDecision(io, options.search.decision),
+            executor: cassetteExecutor(io, options.search.executor),
+          },
+        }
+      : {}),
+  };
+}
+
+function buildRunTaskOptions(
+  config: LatticeConfig,
+  hooks: { reviewer?: DecisionReviewer; intent?: TaskIntent },
 ): RunTaskOptions {
   const intent = hooks.intent ?? "auto";
   const permissions = effectivePermissions(config, intent);

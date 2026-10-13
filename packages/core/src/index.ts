@@ -1,5 +1,6 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { PLAN_SYSTEM, readPlanSources } from "./planning.js";
 import {
@@ -25,6 +26,8 @@ import {
   type DecisionProvider,
   type GeneratorProvider,
   type PermissionOutcome,
+  type RunLease,
+  type RunLiveness,
   type TapPacket,
   type TaskIntent,
   type ToolCapability,
@@ -34,6 +37,8 @@ import {
 export interface RunTaskOptions {
   cwd?: string;
   latticeDir?: string;
+  /** Lease lifetime without a heartbeat before readers treat the run as interrupted. */
+  leaseTtlMs?: number;
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
@@ -41,6 +46,10 @@ export interface RunTaskOptions {
   intent?: TaskIntent;
   /** Effective per-capability grants; recorded on `run.started` for replay. */
   permissions?: Record<ToolCapability, PermissionOutcome>;
+  /** Where this run came from, recorded on `run.started` (e.g. the run it replays). */
+  lineage?: { replayOf?: string };
+  /** Runs `verifyCommand`; defaults to `runCommand`. Replay swaps in recorded results. */
+  commandRunner?: (spec: CommandSpec) => Promise<CommandResult>;
   /** Structured verifier (e.g. `tsr witness`); its record is stored in the run log. */
   verifier?: Verifier;
   /** Aborting stops the search between rounds; the run is logged as failed. */
@@ -63,6 +72,108 @@ export interface RunTaskOptions {
   };
 }
 
+
+export const RUN_LEASE_TTL_MS = 30_000;
+
+export function runLeasePath(runsDir: string, runId: string): string {
+  return join(runsDir, `${runId}.lease.json`);
+}
+
+async function writeLease(path: string, lease: RunLease): Promise<void> {
+  // Write-then-rename so a reader never sees a half-written lease.
+  const temp = `${path}.${process.pid}.tmp`;
+  await writeFile(temp, JSON.stringify(lease) + "\n", "utf8");
+  await rename(temp, path);
+}
+
+/** Reads a lease; undefined when absent or malformed (fails closed to "not live"). */
+export async function readRunLease(path: string): Promise<RunLease | undefined> {
+  try {
+    const value = JSON.parse(await readFile(path, "utf8")) as Partial<RunLease>;
+    if (
+      value.schema !== "lattice.run-lease/v1" ||
+      typeof value.pid !== "number" ||
+      typeof value.host !== "string" ||
+      typeof value.heartbeatAt !== "string" ||
+      typeof value.ttlMs !== "number"
+    ) {
+      return undefined;
+    }
+    return value as RunLease;
+  } catch {
+    return undefined;
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the pid exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Liveness of an unfinished run. A lease is trusted only while fresh; on this
+ * host a dead pid ends it at once, elsewhere expiry does. A missing or
+ * malformed lease means the holder cannot be shown alive.
+ */
+export function leaseLiveness(
+  lease: RunLease | undefined,
+  now = Date.now(),
+  thisHost = hostname(),
+): Exclude<RunLiveness, "unknown"> {
+  if (!lease) return "interrupted";
+  const heartbeat = Date.parse(lease.heartbeatAt);
+  if (!Number.isFinite(heartbeat) || heartbeat + lease.ttlMs < now) return "interrupted";
+  if (lease.host === thisHost && !processAlive(lease.pid)) return "interrupted";
+  return "running";
+}
+
+/** Holds a run's lease from just before `run.started` until its terminal event. */
+class RunLeaseHolder {
+  private timer?: NodeJS.Timeout;
+  private renewing: Promise<void> = Promise.resolve();
+  private readonly acquiredAt = new Date().toISOString();
+
+  constructor(
+    private readonly runId: string,
+    private readonly path: string,
+    private readonly ttlMs: number,
+  ) {}
+
+  private lease(): RunLease {
+    return {
+      schema: "lattice.run-lease/v1",
+      runId: this.runId,
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: this.acquiredAt,
+      heartbeatAt: new Date().toISOString(),
+      ttlMs: this.ttlMs,
+    };
+  }
+
+  async acquire(): Promise<void> {
+    await writeLease(this.path, this.lease());
+    this.timer = setInterval(() => {
+      this.renewing = this.renewing
+        .then(() => writeLease(this.path, this.lease()))
+        .catch(() => undefined);
+    }, Math.max(50, Math.floor(this.ttlMs / 3)));
+    this.timer.unref();
+  }
+
+  async release(): Promise<void> {
+    clearInterval(this.timer);
+    // Let an in-flight renewal land first, or it could recreate the lease.
+    await this.renewing;
+    await rm(this.path, { force: true });
+  }
+}
+
 /**
  * Run the grounding verifier. A verifier whose binary does not exist (or fails to
  * spawn) is recorded as a failed command — exit 127, the POSIX convention for
@@ -70,7 +181,7 @@ export interface RunTaskOptions {
  * analysis found missing executables are the most common command failure, and a
  * harness must treat them as evidence, not exceptions.
  */
-async function runVerifier(spec: CommandSpec): Promise<CommandResult> {
+export async function runVerifier(spec: CommandSpec): Promise<CommandResult> {
   try {
     return await runCommand(spec);
   } catch (error) {
@@ -96,6 +207,7 @@ class JsonlEventLog {
     private readonly runId: string,
     readonly path: string,
     private readonly onEvent?: (event: RunEvent) => void,
+    private readonly lease?: RunLeaseHolder,
   ) {}
 
   async append<T>(type: RunEvent<T>["type"], payload: T): Promise<void> {
@@ -106,7 +218,14 @@ class JsonlEventLog {
       type,
       payload,
     };
-    await appendFile(this.path, JSON.stringify(event) + "\n", "utf8");
+    // The lease exists before run.started, so no reader sees a started run
+    // without one, and it is released only after the terminal event is down.
+    if (type === "run.started") await this.lease?.acquire();
+    try {
+      await appendFile(this.path, JSON.stringify(event) + "\n", "utf8");
+    } finally {
+      if (type === "run.completed" || type === "run.failed") await this.lease?.release();
+    }
     try {
       this.onEvent?.(event);
     } catch {
@@ -151,12 +270,18 @@ export async function runTask(
     runId,
     join(runsDir, `${runId}.jsonl`),
     options.onEvent,
+    new RunLeaseHolder(
+      runId,
+      runLeasePath(runsDir, runId),
+      options.leaseTtlMs ?? RUN_LEASE_TTL_MS,
+    ),
   );
   await log.append("run.started", {
     task: trimmed,
     cwd,
     ...(options.intent ? { intent: options.intent } : {}),
     ...(options.permissions ? { permissions: options.permissions } : {}),
+    ...(options.lineage ? { lineage: options.lineage } : {}),
   });
 
   try {
@@ -226,7 +351,7 @@ export async function runTask(
         args: command.args ?? [],
       });
 
-      const result = await runVerifier(command);
+      const result = await (options.commandRunner ?? runVerifier)(command);
       await log.append("tool.completed", {
         tool: "command",
         result,

@@ -36,6 +36,27 @@ run's `run.started` event records the intent and the resulting
 `read`/`verify`/`search`/`agent` grants. The daemon (`POST /v1/tasks`), SDKs
 and the `lattice_run` MCP tool take the same `intent` field.
 
+### `lattice replay [id|latest] [--json]`
+
+Re-runs a run made with `lattice run --record` using only its recorded I/O.
+`--record` writes `.lattice/runs/<id>.cassette.jsonl`: one line per model,
+verify command, structured verifier and experiment call, holding the
+canonical request and its response (or error). Cassettes contain prompts,
+model replies and command output; they stay on disk next to the run log.
+
+Replay builds the run from the current config exactly as before, but every
+one of those calls is served from the cassette and none reaches a model, a
+command or a coding agent. Calls must arrive in the recorded order with the
+recorded request; the first that does not is reported as the divergence, with
+its call number, kind and the request fields that changed (for example
+`call 1 (command): request changed in args` after editing `verify`). A replay
+that makes fewer or more calls than the recording also diverges. The replay is
+a new run whose `run.started` event carries `lineage.replayOf`. Exit status is
+0 only when nothing diverged and the outcome matches the recording.
+
+Forking a run at an event and refreshing selected calls live are not
+implemented yet (#51).
+
 ### `lattice plan <task...> --file <path[:start-end]>`
 
 Creates a Markdown implementation plan from an explicit, bounded source set.
@@ -78,8 +99,17 @@ For a replayable Blockbound trial with an existing Codex login, see
 ### `lattice runs [-n N] [--json]`
 
 Recorded runs in `.lattice/runs/`, newest first, with status (`completed`,
-`failed`, or `incomplete` for a run that is still going or crashed) and
-evidence/decision/experiment counts.
+`failed`, `running`, or `interrupted`) and evidence/decision/experiment
+counts.
+
+While a run is going, the process executing it holds
+`.lattice/runs/<id>.lease.json` and renews it every 10 seconds; the lease is
+removed once the run ends. A run with no terminal event is `running` while its
+lease is fresh and `interrupted` once it is not: on the same machine as soon
+as the holder's pid is gone, elsewhere once 30 seconds pass without a
+heartbeat. JSON output keeps `status: "incomplete"` for both and adds
+`liveness` (`running`, `interrupted`, or `unknown` for runs logged before
+leases existed). Resuming an interrupted run is not implemented yet (#67).
 
 ### `lattice show [id|latest] [--events] [--json]`
 

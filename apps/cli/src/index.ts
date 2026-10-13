@@ -9,6 +9,7 @@ import {
   mcpCommand,
   mineCommand,
   policySimCommand,
+  replayCommand,
   planCommand,
   runCommand,
   runsCommand,
@@ -25,7 +26,8 @@ Usage:
   lattice <command> [options]
 
 Tasks:
-  run <task...>        run a task          [--config path] [--observe] [--intent plan|act|debug|review] [--json]
+  run <task...>        run a task          [--config path] [--observe] [--intent plan|act|debug|review] [--record] [--json]
+  replay [id|latest]   re-run a --record run from recorded I/O only [--config path] [--json]
   adaptive <task...>   adaptive one-shot coding workflow with capability routing
                          [--autonomy supervised|auto|observe] [--json]
   plan <task...>       create a source-grounded implementation plan
@@ -69,6 +71,7 @@ Docs: docs/cli.md`;
 
 const COMMANDS: Record<string, (args: string[]) => Promise<number>> = {
   run: runCommand,
+  replay: replayCommand,
   adaptive: adaptiveCommand,
   plan: planCommand,
   bench: benchCommand,
