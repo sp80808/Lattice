@@ -26,7 +26,7 @@ Usage:
   lattice <command> [options]
 
 Tasks:
-  run <task...>        run a task          [--config path] [--observe] [--record] [--json]
+  run <task...>        run a task          [--config path] [--observe] [--intent plan|act|debug|review] [--record] [--json]
   replay [id|latest]   re-run a --record run from recorded I/O only [--config path] [--json]
   adaptive <task...>   adaptive one-shot coding workflow with capability routing
                          [--autonomy supervised|auto|observe] [--json]

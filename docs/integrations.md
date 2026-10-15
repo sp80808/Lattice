@@ -106,3 +106,39 @@ a detached git worktree (see [agents.md](agents.md)):
 
 `lattice doctor` and `scripts/setup-agents.sh` both report whether the configured
 worker is on PATH. The scripts never install workers for you.
+
+## MCP tool discovery (`ToolRegistry`)
+
+`@lattice/search` exports a registry for agents that consume MCP tools, so a
+model never has to see every server's schemas at once (#66). It is a
+registry and retrieval layer; calls still go through the MCP transport.
+
+1. `registry.ingest(server, toolsListResult.tools, { trust, tags })` loads a
+   server's `tools/list`. Tool IDs are `<server>/<tool>`. Malformed tools
+   (bad name, `inputSchema` that is not an object schema) and names a server
+   lists twice are rejected individually and reported. Re-ingesting replaces
+   the server's tools; `registry.disconnect(server)` hides them until then.
+2. `registry.search(query, grant)` returns at most 8 one-line candidates
+   (ID, summary, schema version, BM25 score), never schemas. Ordering is
+   deterministic: score, then ID, independent of listing order. The result
+   is a JSON record with the registry version, how many tools were in scope,
+   and `promptChars` next to `eagerChars` (what every in-scope schema would
+   have cost), so it can go in the run log.
+3. `registry.inspect(id, grant)` returns one tool's exact schema;
+   `registry.authorize(id, schemaVersion, grant)` refuses a call that is out
+   of scope, on a disconnected server, or against a schema that changed since
+   it was inspected.
+
+A `ToolGrant` is configured by the operator: tool IDs or `<server>/*`,
+capability tags, and a trust ceiling (default `local`, so `third_party` and
+`untrusted` servers need an explicit `maxTrust`). Tags come from the ingest
+options, never from tool descriptions. Descriptions are untrusted server
+text: they are flattened to one line of at most 200 characters, stripped of
+control and bidi characters, quoted as data by `renderToolCandidates`, and
+only ever affect ranking. Ranking runs over the in-scope tools alone, so an
+out-of-scope description cannot surface a tool or shift in-scope scores.
+`compareToolDiscovery(record, registry, grant)` re-runs a recorded search and
+names the first candidate that changed, for replay.
+
+Not yet: wiring the registry into a run's TAP and budget, an MCP client that
+feeds it live, and semantic retrieval (only if it measurably beats BM25).
