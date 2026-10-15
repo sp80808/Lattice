@@ -8,13 +8,18 @@
   "task_statement": "Main CI and the example/demo verification path are reporting success incorrectly when underlying example commands fail. Make intentionally broken examples return non-zero, ensure the example checker cannot print overall success after a failed example, and make relevant Node/Python/example suites pass. Cancelled or skipped verification must not be silently accepted unless explicitly allow-listed.",
   "allowed_tools": ["shell", "read", "edit", "git_worktree"],
   "acceptance": {
+    "setup": [
+      "npm ci --no-audit --no-fund",
+      "npm run build"
+    ],
     "commands": [
       "bash scripts/check-examples.sh",
-      "npm test"
+      "npm test",
+      "f=examples/embedded/offline-search-loop.mjs; echo 'process.exit(1)' > \"$f\"; out=$(bash scripts/check-examples.sh 2>&1); rc=$?; git checkout -q -- \"$f\"; echo \"$out\" | tail -5; [ \"$rc\" -ne 0 ] && ! grep -q 'All examples passed' <<<\"$out\""
     ],
     "must_fail_on_broken_base": true,
     "must_pass_on_fixed_sha": true,
-    "notes": "At broken base, check-examples (or equivalent) must be red for an intentionally failing example and must not print a global success banner after that failure. At gold fix, the same commands are green."
+    "notes": "At broken base, check-examples (or equivalent) must be red for an intentionally failing example and must not print a global success banner after that failure. At gold fix, the same commands are green. The third command is the held-out check: it swaps in an example that exits 1 and requires check-examples to fail without printing the success banner, so making npm test green alone does not solve the case."
   },
   "reference": {
     "gold_fix_sha": "12bcae4a7def658b9266aa8136be59e076e9f448",
