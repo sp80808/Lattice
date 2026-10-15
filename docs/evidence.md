@@ -19,6 +19,27 @@ A model statement such as “the tests pass” is not verification.
 
 A command evidence record containing the invoked executable, arguments, exit status and captured output can satisfy a verification requirement.
 
+## Evidence identity
+
+Evidence IDs come in two schemes, and the prefix says which:
+
+- `ev1:` (deterministic, `identity.scheme = "lattice.evidence/v1"`): the ID is
+  a hash of `identity` only, which holds the repository revision the
+  observation depends on (`<sha>+dirty` for a dirty tree), a `request` digest
+  (tool, command and args, inputs) and a `result` digest. Duration,
+  timestamps, `cwd`, run IDs and the display `summary` never enter it, so two
+  equivalent runs share an ID and a changed revision or output gets a new one.
+  Command results hash the **complete** stdout/stderr streams
+  (`stdoutSha256`/`stderrSha256` on `CommandResult`), not the capped text.
+  For `tsr witness` the result is the witness's own `result_id`, verbatim.
+- `ev:` (legacy): a hash of kind, source and summary. Older logs, model
+  claims and agent records still use it. The prefixes keep the two schemes
+  from ever colliding, so analytics cannot dedupe one against the other.
+
+`verdict` (`pass`, `fail`, `tool_error`, `informational`) says what the
+observation found; `verified` still says whether the observation itself is
+trustworthy. A failing test is verified evidence with verdict `fail`.
+
 ## Output limits
 
 Command output is capped before it reaches run history or model context. Large logs should later be summarized through deterministic extraction first, then model compression only when necessary.
