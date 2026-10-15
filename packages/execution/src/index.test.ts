@@ -9,6 +9,7 @@ import {
   collectRepositorySnapshot,
   commandEvidenceIdentity,
   digest,
+  MINIMAL_ENV_BASE,
   runCommand,
 } from "./index.js";
 
@@ -138,6 +139,83 @@ test("killTree timeout kills descendants holding the output pipe", { skip: !posi
   assert.ok(Date.now() - started < 5_000, "timeout was not bounded");
   const pid = Number(await readFile(pidFile, "utf8"));
   assert.ok(await waitFor(() => !alive(pid)), `descendant ${pid} survived`);
+});
+
+// Red-team: real credential names a developer shell commonly exports.
+const CREDENTIAL_NAMES = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GEMINI_API_KEY",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "NPM_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "SSH_AUTH_SOCK",
+];
+
+test("minimal env withholds host credentials from the child and its descendants", async () => {
+  const sentinel = "lattice-redteam-sentinel";
+  const saved = new Map(CREDENTIAL_NAMES.map((name) => [name, process.env[name]]));
+  for (const name of CREDENTIAL_NAMES) process.env[name] = `${sentinel}-${name}`;
+  try {
+    // The grandchild inherits the child's environment, so it sees exactly
+    // what the policy let through.
+    const grandchild = `process.stdout.write(JSON.stringify(Object.entries(process.env).filter(([,v])=>String(v).includes(${JSON.stringify(sentinel)})).map(([k])=>k)))`;
+    const result = await runCommand({
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.stdout.write(require('child_process').execFileSync(process.execPath,['-e',${JSON.stringify(grandchild)}]))`,
+      ],
+      envPolicy: "minimal",
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), []);
+    for (const name of CREDENTIAL_NAMES) assert.ok(!result.envNames?.includes(name), name);
+
+    // Only an explicit allowlist entry lets one through, by name.
+    const granted = await runCommand({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(process.env.OPENROUTER_API_KEY ?? '')"],
+      envPolicy: "minimal",
+      allowEnv: ["OPENROUTER_API_KEY"],
+    });
+    assert.equal(granted.stdout, `${sentinel}-OPENROUTER_API_KEY`);
+    assert.ok(!JSON.stringify(granted).replace(granted.stdout, "").includes(sentinel));
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("the minimal base allowlist names no credential-like variable", () => {
+  for (const name of MINIMAL_ENV_BASE) {
+    assert.doesNotMatch(name, /KEY|TOKEN|SECRET|PASS|AUTH|CRED|SESSION|COOKIE|BASE_URL/i, name);
+  }
+});
+
+test("a timed-out tree leaves no orphan writes behind", { skip: !posix }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-orphan-"));
+  const late = join(dir, "late-write");
+  // The grandchild would write after the timeout; it must die with the group.
+  const result = await runCommand({
+    command: process.execPath,
+    args: [
+      "-e",
+      `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(`setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(late)},'x'),1500)`)}],{stdio:'ignore'});setInterval(()=>{},1000);`,
+    ],
+    killTree: true,
+    timeoutMs: 300,
+    killGraceMs: 100,
+  });
+  assert.equal(result.timedOut, true);
+  await new Promise((r) => setTimeout(r, 2_500));
+  await assert.rejects(readFile(late), /ENOENT/);
 });
 
 test("command identity ignores timing and cwd but not full output or revision", async () => {

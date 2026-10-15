@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { runTask } from "@lattice/core";
 import {
   cassetteDecision,
   cassetteGenerator,
@@ -171,6 +172,49 @@ test("intents narrow the config and never widen it", () => {
     agent: "deny",
   });
   assert.throws(() => effectivePermissions(auto, "yolo" as never), /unknown intent/);
+});
+
+test("each intent logs its permissions and only the evidence it was allowed to gather", async () => {
+  const config = parseLatticeConfig({
+    mode: "observe",
+    verify: { command: process.execPath, args: ["-e", "process.stdout.write('ok')"] },
+  });
+  for (const intent of ["plan", "debug", "act"] as const) {
+    const cwd = await mkdtemp(join(tmpdir(), `lattice-intent-${intent}-`));
+    const result = await runTask("check the build", {
+      ...createRunTaskOptions(config, { intent }),
+      cwd,
+    });
+    const events = (await readFile(result.eventLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; payload: Record<string, any> });
+
+    const started = events.find((event) => event.type === "run.started")!;
+    assert.equal(started.payload.intent, intent);
+    assert.deepEqual(started.payload.permissions, effectivePermissions(config, intent));
+    // observe never grants search or agents, whatever the intent asks for.
+    assert.ok(!events.some((event) => event.type.startsWith("decision.")), intent);
+
+    const commands = events.filter(
+      (event) => event.type === "tool.completed" && event.payload.tool === "command",
+    );
+    const commandEvidence = result.tap.evidence.filter((ref) => ref.kind === "command");
+    if (intent === "plan") {
+      assert.equal(commands.length, 0, "plan ran the verifier");
+      assert.equal(commandEvidence.length, 0);
+      continue;
+    }
+    assert.equal(commands.length, 1, intent);
+    const logged = commands[0]!.payload.result;
+    assert.equal(logged.exitCode, 0);
+    // The log records which env policy the command ran under, by name only.
+    assert.equal(typeof logged.envPolicy, "string");
+    assert.ok(Array.isArray(logged.envNames) && logged.envNames.includes("PATH"));
+    assert.equal(commandEvidence.length, 1);
+    assert.equal(commandEvidence[0]!.verdict, "pass");
+    assert.deepEqual(result.tap.verification, [commandEvidence[0]!.id]);
+  }
 });
 
 test("cassette replays recorded calls without touching live providers", async () => {
