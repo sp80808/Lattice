@@ -17,6 +17,26 @@ export interface EvidenceRef {
   source: string;
   summary: string;
   createdAt: string;
+  /**
+   * Present on deterministic (v1) evidence, whose `id` starts with `ev1:` and
+   * is derived only from these fields. Records without it are legacy: their
+   * `ev:` IDs hash display text and must not be deduped against v1 IDs.
+   */
+  identity?: EvidenceIdentity;
+  /** What the observation says, separate from whether it is trustworthy (`verified`). */
+  verdict?: EvidenceVerdict;
+}
+
+export type EvidenceVerdict = "pass" | "fail" | "tool_error" | "informational";
+
+export interface EvidenceIdentity {
+  scheme: "lattice.evidence/v1";
+  /** Repository revision the observation depends on, for stale-evidence checks. */
+  revision?: string;
+  /** sha256 of the canonical request (tool, command and args, inputs). */
+  request: string;
+  /** sha256 of the canonical result, or the tool's own native result ID. */
+  result: string;
 }
 
 /**
