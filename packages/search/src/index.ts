@@ -1052,3 +1052,4 @@ export async function runSearchLoop(
 
 export * from "./retrieval.js";
 export * from "./capabilities.js";
+export * from "./tools.js";
