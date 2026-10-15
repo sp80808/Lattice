@@ -1,0 +1,169 @@
+diff --git a/examples/README.md b/examples/README.md
+index b96d3f1..8a4fe37 100644
+--- a/examples/README.md
++++ b/examples/README.md
+@@ -2,6 +2,8 @@
+ 
+ Everything here runs offline after `npm run build` unless noted. `scripts/check-examples.sh`
+ runs all of them (CI does too).
++A failed example fails the check. So does a skipped one, unless it is named in
++`CHECK_EXAMPLES_ALLOW_SKIP` (for example `CHECK_EXAMPLES_ALLOW_SKIP=py-sdk`).
+ 
+ | Example | What it shows | Run |
+ |---|---|---|
+diff --git a/examples/demo-repo/package.json b/examples/demo-repo/package.json
+index bfa9241..c9cd0ec 100644
+--- a/examples/demo-repo/package.json
++++ b/examples/demo-repo/package.json
+@@ -3,6 +3,6 @@
+   "private": true,
+   "type": "module",
+   "scripts": {
+-    "test": "node --test test/"
++    "test": "node --test"
+   }
+ }
+diff --git a/examples/demo/run-demo.sh b/examples/demo/run-demo.sh
+old mode 100644
+new mode 100755
+index 62ab28e..4b2aef1
+--- a/examples/demo/run-demo.sh
++++ b/examples/demo/run-demo.sh
+@@ -42,10 +42,10 @@ git -C "$PROJECT" add .lattice
+ git -C "$PROJECT" -c user.name=lattice-demo -c user.email=demo@lattice.invalid commit -qm "lattice: add config"
+ 
+ info "lattice doctor"
+-lattice -C "$PROJECT" doctor --offline || warn "doctor found problems; an auto-mode run may fail"
++lattice -C "$PROJECT" doctor --offline
+ 
+ info "lattice \"fix the failing add test\""
+-lattice -C "$PROJECT" "fix the failing add test" || warn "run failed (see hint above)"
++lattice -C "$PROJECT" "fix the failing add test"
+ 
+ info "lattice runs"
+ lattice -C "$PROJECT" runs
+diff --git a/packages/service/src/index.ts b/packages/service/src/index.ts
+index 26b5b9f..426aeea 100644
+--- a/packages/service/src/index.ts
++++ b/packages/service/src/index.ts
+@@ -219,7 +219,6 @@ export class ReviewBroker {
+           this.pending.delete(id);
+           resolveReview({ action: "stop", note: `no remote review within ${timeoutMs}ms` });
+         }, timeoutMs);
+-        timer.unref?.();
+ 
+         this.pending.set(id, {
+           review: {
+diff --git a/packages/service/src/testing.ts b/packages/service/src/testing.ts
+index d742943..89d1f19 100644
+--- a/packages/service/src/testing.ts
++++ b/packages/service/src/testing.ts
+@@ -57,7 +57,7 @@ export async function createAutoModeFixture(): Promise<{ cwd: string; closeModel
+       autonomy: { mode: "manual" },
+       model: { baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" },
+       agent: { preset: "qwen-code", command: worker },
+-      verify: { command: process.execPath, args: ["--test", "test/"], timeoutMs: 60000 },
++      verify: { command: process.execPath, args: ["--test", "test/calc.test.js"], timeoutMs: 60000 },
+       search: { maxRounds: 2, candidatesPerRound: 2 },
+       workspace: { cleanup: "always" },
+     }),
+diff --git a/scripts/check-examples.sh b/scripts/check-examples.sh
+old mode 100644
+new mode 100755
+index 3da19b8..a00394a
+--- a/scripts/check-examples.sh
++++ b/scripts/check-examples.sh
+@@ -1,14 +1,52 @@
+ #!/usr/bin/env bash
+ # Run every offline example and validate every example config. Used by CI.
++#
++# Exits non-zero if any example fails, and never prints the overall success
++# line after a failure. A skipped example is also a failure unless it is named
++# in CHECK_EXAMPLES_ALLOW_SKIP (comma-separated, e.g. "sdk-python").
+ set -euo pipefail
+ . "$(dirname "$0")/lib.sh"
+ 
++ALLOW_SKIP=",${CHECK_EXAMPLES_ALLOW_SKIP:-},"
++LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lattice-examples.XXXXXX")"
++trap 'rm -rf "$LOG_DIR"' EXIT
++
++PASSED=0 FAILED=() SKIPPED=()
++
++# Run one example. Its output goes to a log that is shown only on failure.
++example() {
++  local name="$1" label="$2" status=0
++  shift 2
++  info "$name"
++  "$@" >"$LOG_DIR/$name.log" 2>&1 || status=$?
++  if [ "$status" = 0 ]; then
++    ok "$label"
++    PASSED=$((PASSED + 1))
++  else
++    tail -n 40 "$LOG_DIR/$name.log" >&2
++    warn "$name exited with status $status"
++    FAILED+=("$name")
++  fi
++}
++
++# Record a skipped example. Only an allow-listed skip is accepted.
++skip() {
++  local name="$1" reason="$2"
++  if [[ "$ALLOW_SKIP" == *",$name,"* ]]; then
++    warn "$name skipped: $reason (allow-listed via CHECK_EXAMPLES_ALLOW_SKIP)"
++    SKIPPED+=("$name")
++  else
++    warn "$name skipped: $reason"
++    FAILED+=("$name (skipped: $reason; allow-list it in CHECK_EXAMPLES_ALLOW_SKIP to accept)")
++  fi
++}
++
+ require_node
+ require_built_cli
+ cd "$LATTICE_ROOT"
+ 
+ info "Validating examples/configs/*.json"
+-node --input-type=module -e '
++example configs "every config parses" node --input-type=module -e '
+   import { readdirSync, readFileSync } from "node:fs";
+   import { parseLatticeConfig } from "@lattice/runtime";
+   for (const name of readdirSync("examples/configs").filter((f) => f.endsWith(".json") && !f.startsWith("."))) {
+@@ -17,26 +55,21 @@ node --input-type=module -e '
+   }
+ '
+ 
+-info "examples/embedded/offline-search-loop.mjs"
+-node examples/embedded/offline-search-loop.mjs >/dev/null && ok "search solved by test evidence"
+-
+-info "examples/sdk/typescript/run-and-inspect.mjs"
+-env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null && ok "TypeScript SDK round-trip"
+-
+-info "examples/review/remote-reviewer.mjs"
+-node examples/review/remote-reviewer.mjs >/dev/null && ok "remote review of an auto-mode run"
+-
+-info "examples/mcp/raw-session.mjs"
+-node examples/mcp/raw-session.mjs >/dev/null && ok "MCP stdio session"
+-
+-info "examples/demo/run-demo.sh"
+-examples/demo/run-demo.sh >/dev/null && ok "CLI walkthrough"
++example embedded-search "search solved by test evidence" node examples/embedded/offline-search-loop.mjs
++example ts-sdk "TypeScript SDK round-trip" env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs
++example remote-review "remote review of an auto-mode run" node examples/review/remote-reviewer.mjs
++example mcp-stdio "MCP stdio session" node examples/mcp/raw-session.mjs
++example cli-demo "CLI walkthrough" examples/demo/run-demo.sh
+ 
+ if has python3; then
+-  info "examples/sdk/python/run_and_inspect.py"
+-  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null && ok "Python SDK round-trip"
++  example py-sdk "Python SDK round-trip" env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py
+ else
+-  warn "python3 not found; skipping the Python SDK example"
++  skip py-sdk "python3 not found"
++fi
++
++if [ "${#FAILED[@]}" -gt 0 ]; then
++  printf '\033[31merror:\033[0m %d example(s) failed: %s\n' "${#FAILED[@]}" "$(printf '%s; ' "${FAILED[@]}")" >&2
++  exit 1
+ fi
+ 
+-info "All examples passed"
++info "All examples passed ($PASSED passed, ${#SKIPPED[@]} allow-listed skip(s))"

@@ -1,0 +1,142 @@
+diff --git a/examples/demo-repo/package.json b/examples/demo-repo/package.json
+index bfa9241..c9cd0ec 100644
+--- a/examples/demo-repo/package.json
++++ b/examples/demo-repo/package.json
+@@ -3,6 +3,6 @@
+   "private": true,
+   "type": "module",
+   "scripts": {
+-    "test": "node --test test/"
++    "test": "node --test"
+   }
+ }
+diff --git a/examples/demo/run-demo.sh b/examples/demo/run-demo.sh
+old mode 100644
+new mode 100755
+index 62ab28e..2a9982a
+--- a/examples/demo/run-demo.sh
++++ b/examples/demo/run-demo.sh
+@@ -42,10 +42,10 @@ git -C "$PROJECT" add .lattice
+ git -C "$PROJECT" -c user.name=lattice-demo -c user.email=demo@lattice.invalid commit -qm "lattice: add config"
+ 
+ info "lattice doctor"
+-lattice -C "$PROJECT" doctor --offline || warn "doctor found problems; an auto-mode run may fail"
++lattice -C "$PROJECT" doctor --offline || die "lattice doctor found problems"
+ 
+ info "lattice \"fix the failing add test\""
+-lattice -C "$PROJECT" "fix the failing add test" || warn "run failed (see hint above)"
++lattice -C "$PROJECT" "fix the failing add test" || die "lattice run failed (see hint above)"
+ 
+ info "lattice runs"
+ lattice -C "$PROJECT" runs
+diff --git a/examples/mcp/raw-session.mjs b/examples/mcp/raw-session.mjs
+index b30b70d..af38626 100644
+--- a/examples/mcp/raw-session.mjs
++++ b/examples/mcp/raw-session.mjs
+@@ -54,4 +54,8 @@ const failed = await call("tools/call", { name: "lattice_show_run", arguments: {
+ console.log(`← tool error (isError=${failed.result.isError}): ${failed.result.content[0].text}`);
+ 
+ server.stdin.end();
+-await new Promise((resolve) => server.on("close", resolve));
++const exitCode = await new Promise((resolve) => server.on("close", resolve));
++if (exitCode !== 0 || !payload.runId || failed.result.isError !== true) {
++  console.error(`MCP session check failed (server exit code ${exitCode})`);
++  process.exitCode = 1;
++}
+diff --git a/package.json b/package.json
+index 4796a2e..8efb04b 100644
+--- a/package.json
++++ b/package.json
+@@ -16,7 +16,7 @@
+     "test": "npm run build && node --test packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js packages/agents/dist/index.test.js packages/runtime/dist/index.test.js packages/ledger/dist/index.test.js packages/analytics/dist/index.test.js packages/mining/dist/index.test.js packages/policy/dist/index.test.js packages/service/dist/index.test.js packages/server/dist/index.test.js packages/mcp/dist/index.test.js apps/cli/dist/index.test.js",
+     "lattice": "node apps/cli/dist/index.js",
+     "test:python": "python3 -m unittest discover -s sdks/python/tests",
+-    "test:examples": "scripts/check-examples.sh",
++    "test:examples": "bash scripts/check-examples.sh",
+     "bootstrap": "scripts/bootstrap.sh"
+   },
+   "devDependencies": {
+diff --git a/packages/service/src/index.ts b/packages/service/src/index.ts
+index 26b5b9f..426aeea 100644
+--- a/packages/service/src/index.ts
++++ b/packages/service/src/index.ts
+@@ -219,7 +219,6 @@ export class ReviewBroker {
+           this.pending.delete(id);
+           resolveReview({ action: "stop", note: `no remote review within ${timeoutMs}ms` });
+         }, timeoutMs);
+-        timer.unref?.();
+ 
+         this.pending.set(id, {
+           review: {
+diff --git a/packages/service/src/testing.ts b/packages/service/src/testing.ts
+index d742943..13f4b67 100644
+--- a/packages/service/src/testing.ts
++++ b/packages/service/src/testing.ts
+@@ -57,7 +57,7 @@ export async function createAutoModeFixture(): Promise<{ cwd: string; closeModel
+       autonomy: { mode: "manual" },
+       model: { baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" },
+       agent: { preset: "qwen-code", command: worker },
+-      verify: { command: process.execPath, args: ["--test", "test/"], timeoutMs: 60000 },
++      verify: { command: process.execPath, args: ["--test"], timeoutMs: 60000 },
+       search: { maxRounds: 2, candidatesPerRound: 2 },
+       workspace: { cleanup: "always" },
+     }),
+diff --git a/scripts/bootstrap.sh b/scripts/bootstrap.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/check-examples.sh b/scripts/check-examples.sh
+old mode 100644
+new mode 100755
+index 3da19b8..bd9ba5a
+--- a/scripts/check-examples.sh
++++ b/scripts/check-examples.sh
+@@ -18,25 +18,33 @@ node --input-type=module -e '
+ '
+ 
+ info "examples/embedded/offline-search-loop.mjs"
+-node examples/embedded/offline-search-loop.mjs >/dev/null && ok "search solved by test evidence"
++node examples/embedded/offline-search-loop.mjs >/dev/null
++ok "search solved by test evidence"
+ 
+ info "examples/sdk/typescript/run-and-inspect.mjs"
+-env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null && ok "TypeScript SDK round-trip"
++env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null
++ok "TypeScript SDK round-trip"
+ 
+ info "examples/review/remote-reviewer.mjs"
+-node examples/review/remote-reviewer.mjs >/dev/null && ok "remote review of an auto-mode run"
++node examples/review/remote-reviewer.mjs >/dev/null
++ok "remote review of an auto-mode run"
+ 
+ info "examples/mcp/raw-session.mjs"
+-node examples/mcp/raw-session.mjs >/dev/null && ok "MCP stdio session"
++node examples/mcp/raw-session.mjs >/dev/null
++ok "MCP stdio session"
+ 
+ info "examples/demo/run-demo.sh"
+-examples/demo/run-demo.sh >/dev/null && ok "CLI walkthrough"
++examples/demo/run-demo.sh >/dev/null
++ok "CLI walkthrough"
+ 
+ if has python3; then
+   info "examples/sdk/python/run_and_inspect.py"
+-  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null && ok "Python SDK round-trip"
++  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null
++ok "Python SDK round-trip"
++elif [ "${ALLOW_SKIP_PYTHON_EXAMPLE:-0}" = 1 ]; then
++  warn "python3 not found; skipping the Python SDK example (ALLOW_SKIP_PYTHON_EXAMPLE=1)"
+ else
+-  warn "python3 not found; skipping the Python SDK example"
++  die "python3 not found; install it or set ALLOW_SKIP_PYTHON_EXAMPLE=1 to skip the Python SDK example"
+ fi
+ 
+ info "All examples passed"
+diff --git a/scripts/lib.sh b/scripts/lib.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/setup-agents.sh b/scripts/setup-agents.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/setup-provider.sh b/scripts/setup-provider.sh
+old mode 100644
+new mode 100755

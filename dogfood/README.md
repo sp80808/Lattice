@@ -40,11 +40,17 @@ Each workspace is a history-less snapshot of one commit (`git archive` into a fr
 
 Results are written as a run log (`.lattice/runs/dogfood-*.jsonl`, or `--out`) that `@lattice/ledger` reads: one `tool.completed` experiment per phase with `command` evidence for each acceptance command. Exit code 0 means verified/discriminating, 1 failed/not discriminating, 2 inconclusive.
 
+## Benchmark
+
+`npm run dogfood:bench` runs the pinned suite in `bench/v1.json`: every agent, every discriminating case, a fixed number of attempts, one run at a time. It recalibrates each case first and refuses to score agents on one that does not tell base from gold. Runs append to `runs.jsonl` and a rerun resumes, so an interrupted run or a usage limit loses nothing. A run is solved only when acceptance passes and the transcript shows no sign of the source clone, the gold SHA or PR, or the case manifests. Each agent's diff is kept for audit. The report (`REPORT.md`) lists solve rate, turns, tokens, cost, the pinned inputs and the rerun command.
+
+First full run: [`benchmarks/results/dogfood-bench-v1`](../benchmarks/results/dogfood-bench-v1/README.md). Haiku, Sonnet and Opus 5.5 each solved 6/6 and the no-op control 0/6, so v1 needs harder cases before it can rank models.
+
 ## Calibration (2026-10-11)
 
 | Case | Verdict | Discriminating command |
 | --- | --- | --- |
-| `lattice-false-green` | discriminating | `npm test` (`check-examples.sh` passes at base too: the false green itself) |
+| `lattice-false-green` | discriminating | `npm test`, and (since 2026-10-15) the held-out check that a failing example makes `check-examples.sh` fail without its success banner |
 | `tessera-tcap-binder` | discriminating, with `tests/derive.rs` held out from the gold fix | `cargo test -p tessera-tcap` |
 | `tessera-mir-asymptotic` | **not discriminating** | none: the gold fix adds no test, so a scaling check has to be written |
 
