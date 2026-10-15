@@ -471,6 +471,62 @@ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => 
   assert.equal(await findExecutable("qwen", dir, { platform: "win32", pathExt: ".EXE" }), undefined);
 });
 
+test("intent plan reads only; debug verifies; neither starts search", async () => {
+  const marker = join(await mkdtemp(join(tmpdir(), "lattice-intent-")), "verified");
+  const cwd = await tempProject({
+    mode: "auto",
+    model: { baseUrl: "http://127.0.0.1:9/v1", model: "unused" },
+    agent: { preset: "qwen-code" },
+    verify: {
+      command: process.execPath,
+      args: ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)},'x')`],
+    },
+  });
+
+  const plan = await executeTask("plan the fix", { cwd, intent: "plan" });
+  assert.equal(plan.intent, "plan");
+  assert.equal(plan.runtimeMode, "observe");
+  await assert.rejects(readFile(marker));
+  const started = (await getRunEvents(plan.result.runId, cwd))[0]!;
+  assert.equal(started.type, "run.started");
+  assert.deepEqual((started.payload as { permissions: unknown }).permissions, {
+    read: "allow",
+    verify: "deny",
+    search: "deny",
+    agent: "deny",
+  });
+
+  const debug = await executeTask("why does it fail", { cwd, intent: "debug" });
+  assert.equal(debug.runtimeMode, "observe");
+  assert.equal(await readFile(marker, "utf8"), "x");
+
+  await assert.rejects(
+    executeTask("bad", { cwd, intent: "yolo" as never }),
+    (error: unknown) =>
+      error instanceof LatticeServiceError && error.code === "invalid_request",
+  );
+  await assert.rejects(
+    executeTask("edit", { cwd, intent: "plan", workflow: "build" }),
+    (error: unknown) =>
+      error instanceof LatticeServiceError && error.code === "invalid_request",
+  );
+});
+
+test("a recorded run replays under its recorded intent", async () => {
+  const cwd = await tempProject({
+    mode: "auto",
+    model: { baseUrl: "http://127.0.0.1:9/v1", model: "unused" },
+    agent: { preset: "qwen-code" },
+    verify: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+  });
+  const recorded = await executeTask("why does it fail", { cwd, intent: "debug", record: true });
+  const report = await replayRun(recorded.result.runId, { cwd });
+  assert.equal(report.divergence, undefined, report.divergence?.message);
+  assert.equal(report.consistent, true);
+  const started = (await getRunEvents(report.replay!.runId, cwd))[0]!;
+  assert.equal((started.payload as { intent?: string }).intent, "debug");
+});
+
 test("a run whose process was killed reads as interrupted, a live one as running", async () => {
   const cwd = await tempProject();
   const core = new URL("../../core/dist/index.js", import.meta.url).href;

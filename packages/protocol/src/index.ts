@@ -17,6 +17,26 @@ export interface EvidenceRef {
   source: string;
   summary: string;
   createdAt: string;
+  /**
+   * Present on deterministic (v1) evidence, whose `id` starts with `ev1:` and
+   * is derived only from these fields. Records without it are legacy: their
+   * `ev:` IDs hash display text and must not be deduped against v1 IDs.
+   */
+  identity?: EvidenceIdentity;
+  /** What the observation says, separate from whether it is trustworthy (`verified`). */
+  verdict?: EvidenceVerdict;
+}
+
+export type EvidenceVerdict = "pass" | "fail" | "tool_error" | "informational";
+
+export interface EvidenceIdentity {
+  scheme: "lattice.evidence/v1";
+  /** Repository revision the observation depends on, for stale-evidence checks. */
+  revision?: string;
+  /** sha256 of the canonical request (tool, command and args, inputs). */
+  request: string;
+  /** sha256 of the canonical result, or the tool's own native result ID. */
+  result: string;
 }
 
 /**
@@ -189,10 +209,29 @@ export interface GeneratorProvider {
  */
 export type TaskExecutionMode = "observe" | "configured";
 
+/**
+ * What the user wants a run to do. Enforced by what the runtime constructs,
+ * not by prompts, and it can only narrow what the config grants.
+ * - `auto` (default): whatever the config grants.
+ * - `plan` / `review`: read the repository only; no verifier, model search or agents.
+ * - `debug`: also run the verifier for diagnostics; no source mutation or agents.
+ * - `act`: model search and coding agents in worktrees, if the config grants them.
+ */
+export type TaskIntent = "auto" | "plan" | "act" | "debug" | "review";
+
+export const TASK_INTENTS: readonly TaskIntent[] = ["auto", "plan", "act", "debug", "review"];
+
+/** Capability classes a task intent grants or denies. */
+export type ToolCapability = "read" | "verify" | "search" | "agent";
+
+export type PermissionOutcome = "allow" | "deny";
+
 export interface TaskSubmission {
   task: string;
   cwd?: string;
   mode?: TaskExecutionMode;
+  /** Narrows what the run may do; see {@link TaskIntent}. Default `auto`. */
+  intent?: TaskIntent;
   configPath?: string;
   /** `false` returns 202 + runId as soon as the run starts (default `true`). */
   wait?: boolean;

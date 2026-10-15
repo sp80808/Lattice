@@ -93,6 +93,14 @@ test("calibrate reports discriminating acceptance and writes a ledger-readable r
   assert.equal(goldRun.evidence[0].kind, "command");
   assert.equal(goldRun.evidence[0].verified, true);
   assert.equal(baseRun.evidence[0].verified, false);
+  // Canonical v1 identity (#83): same tree, command and outputs give the same ID.
+  assert.match(goldRun.evidence[0].id, /^ev1:/);
+  assert.equal(goldRun.evidence[0].identity.scheme, "lattice.evidence/v1");
+  assert.equal(goldRun.evidence[0].verdict, "pass");
+  assert.equal(baseRun.evidence[0].verdict, "fail");
+  const again = await runCase({ caseRef: f.manifestFor(), source: f.repo, outDir: join(f.dir, "runs") });
+  assert.equal(again.phases[1].evidence[0].id, goldRun.evidence[0].id);
+  assert.notEqual(baseRun.evidence[0].id, goldRun.evidence[0].id);
 
   const [run] = await loadLedger([result.logPath]);
   assert.equal(run.repoRevision, f.base);

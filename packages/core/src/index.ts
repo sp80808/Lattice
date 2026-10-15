@@ -4,8 +4,11 @@ import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { PLAN_SYSTEM, readPlanSources } from "./planning.js";
 import {
+  canonicalJson,
   collectRepositorySnapshot,
+  commandEvidenceIdentity,
   digest,
+  evidenceIdentityV1,
   runCommand,
   type CommandResult,
   type CommandSpec,
@@ -25,9 +28,12 @@ import {
   type RunResult,
   type DecisionProvider,
   type GeneratorProvider,
+  type PermissionOutcome,
   type RunLease,
   type RunLiveness,
   type TapPacket,
+  type TaskIntent,
+  type ToolCapability,
   type Verifier,
 } from "@lattice/protocol";
 
@@ -39,6 +45,10 @@ export interface RunTaskOptions {
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
+  /** The user's task intent; recorded on `run.started` for replay. */
+  intent?: TaskIntent;
+  /** Effective per-capability grants; recorded on `run.started` for replay. */
+  permissions?: Record<ToolCapability, PermissionOutcome>;
   /** Where this run came from, recorded on `run.started` (e.g. the run it replays). */
   lineage?: { replayOf?: string };
   /** Runs `verifyCommand`; defaults to `runCommand`. Replay swaps in recorded results. */
@@ -272,6 +282,8 @@ export async function runTask(
   await log.append("run.started", {
     task: trimmed,
     cwd,
+    ...(options.intent ? { intent: options.intent } : {}),
+    ...(options.permissions ? { permissions: options.permissions } : {}),
     ...(options.lineage ? { lineage: options.lineage } : {}),
   });
 
@@ -295,11 +307,31 @@ export async function runTask(
       .filter(Boolean)
       .join(" ");
 
-    const repositoryEvidence = evidence(
-      "repository",
-      snapshot.source === "git" ? "git" : "filesystem",
-      repoSummary,
-    );
+    // A dirty tree is not identified by its revision alone; mark it so its
+    // observations never share identity with the clean revision's.
+    const subjectRevision = snapshot.revision
+      ? `${snapshot.revision}${snapshot.dirty ? "+dirty" : ""}`
+      : undefined;
+    const repositoryIdentity = evidenceIdentityV1("repository", {
+      revision: subjectRevision,
+      request: digest(canonicalJson({ tool: "repository.snapshot", source: snapshot.source })),
+      result: digest(
+        canonicalJson({
+          revision: snapshot.revision ?? null,
+          dirty: snapshot.dirty ?? null,
+          trackedFiles: snapshot.trackedFiles,
+        }),
+      ),
+    });
+    const repositoryEvidence: EvidenceRef = {
+      ...evidence(
+        "repository",
+        snapshot.source === "git" ? "git" : "filesystem",
+        repoSummary,
+      ),
+      ...repositoryIdentity,
+      verdict: "informational",
+    };
 
     let tap: TapPacket = {
       version: TAP_VERSION,
@@ -368,7 +400,11 @@ export async function runTask(
       // normalized): the verifier never actually ran, so its result is not
       // objective evidence even though it looks like a completed command.
       const ran = result.exitCode !== null && !result.timedOut && result.exitCode !== 127;
-      const commandEvidence = evidence("command", source, summary, ran);
+      const commandEvidence: EvidenceRef = {
+        ...evidence("command", source, summary, ran),
+        ...commandEvidenceIdentity(result, subjectRevision),
+        verdict: !ran ? "tool_error" : result.exitCode === 0 ? "pass" : "fail",
+      };
       tap.evidence.push(commandEvidence);
       tap.verification.push(commandEvidence.id);
     }

@@ -51,6 +51,10 @@ class DaemonIntegrationTest(unittest.TestCase):
         run = self.client.run_task("inspect from python")
         self.assertEqual(run["mode"], "observe")
         self.assertEqual(run["tap"]["task"], "inspect from python")
+        self.assertEqual(run["intent"], "auto")
+
+        planned = self.client.run_task("plan from python", intent="plan")
+        self.assertEqual(planned["intent"], "plan")
 
         runs = self.client.list_runs(limit=5)
         self.assertIn(run["runId"], [item["runId"] for item in runs])

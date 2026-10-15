@@ -32,6 +32,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { commandEvidenceIdentity } from "../packages/execution/dist/index.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTPUT_TAIL = 4096;
@@ -133,9 +134,18 @@ export function runCommand(command, cwd, { timeoutMs = DEFAULT_TIMEOUT_MS, input
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    // Only a tail is kept for display; the hashes cover the complete streams.
+    const stdoutHash = createHash("sha256");
+    const stderrHash = createHash("sha256");
     const keep = (text, chunk) => (text + chunk).slice(-OUTPUT_TAIL);
-    child.stdout.on("data", (chunk) => (stdout = keep(stdout, chunk)));
-    child.stderr.on("data", (chunk) => (stderr = keep(stderr, chunk)));
+    child.stdout.on("data", (chunk) => {
+      stdoutHash.update(chunk);
+      stdout = keep(stdout, chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrHash.update(chunk);
+      stderr = keep(stderr, chunk);
+    });
     child.stdin.on("error", () => {});
     child.stdin.end(input ?? "");
     const timer = setTimeout(() => {
@@ -155,23 +165,39 @@ export function runCommand(command, cwd, { timeoutMs = DEFAULT_TIMEOUT_MS, input
         durationMs: Date.now() - started,
         stdoutTail: stdout,
         stderrTail: stderr,
+        stdoutSha256: stdoutHash.digest("hex"),
+        stderrSha256: stderrHash.digest("hex"),
       });
     });
   });
 }
 
-function evidenceId(parts) {
-  return `ev_${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16)}`;
-}
-
-function commandEvidence(manifest, phase, sha, result) {
+// Canonical lattice.evidence/v1 identity (#83): what ran, against which tree, and
+// its complete outputs. Duration and display text never enter the ID. A changed
+// workspace is identified by the base commit plus the hash of the change.
+function commandEvidence(phase, revision, result) {
   const status = result.timedOut ? "timed out" : `exit ${result.exitCode ?? result.signal}`;
+  const { id, identity } = commandEvidenceIdentity(
+    {
+      command: "bash",
+      args: ["-c", result.command],
+      exitCode: result.exitCode,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      outputTruncated: false,
+      stdoutSha256: result.stdoutSha256,
+      stderrSha256: result.stderrSha256,
+    },
+    revision,
+  );
   return {
-    id: evidenceId([manifest.id, manifest.version, phase, sha, result.command]),
+    id,
+    identity,
     kind: "command",
     verified: result.passed,
+    verdict: result.passed ? "pass" : "fail",
     source: result.command,
-    summary: `${phase} @ ${sha.slice(0, 12)}: ${status} in ${result.durationMs}ms`,
+    summary: `${phase} @ ${revision.slice(0, 12)}: ${status} in ${result.durationMs}ms`,
     createdAt: new Date().toISOString(),
   };
 }
@@ -219,10 +245,11 @@ async function runPhase(phase, sha, ctx, change) {
     phaseResult.setup.push(result);
     if (!result.passed) return finish("inconclusive", `setup failed: ${command}`);
   }
+  const revision = phaseResult.patchSha256 ? `${sha}+${phaseResult.patchSha256}` : sha;
   for (const command of manifest.acceptance.commands) {
     const result = await runCommand(command, ws.dir, { timeoutMs });
     phaseResult.acceptance.push(result);
-    phaseResult.evidence.push(commandEvidence(manifest, phase, sha, result));
+    phaseResult.evidence.push(commandEvidence(phase, revision, result));
   }
   const failed = phaseResult.acceptance.filter((result) => !result.passed);
   return failed.length
