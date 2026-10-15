@@ -16,7 +16,8 @@
 //   --report-only                  rebuild REPORT.md from runs.jsonl without running
 //
 // Runs are appended to <out>/runs.jsonl as they finish, and a rerun skips every
-// (agent, case, attempt) already there, so an interrupted benchmark resumes.
+// (agent, case, attempt) already there, so an interrupted benchmark resumes. A run
+// that hits a rate or usage limit stops the benchmark without recording the attempt.
 // Each run goes through scripts/dogfood-run.mjs in --agent mode: a history-less
 // snapshot of the base commit, the agent, then setup and acceptance with the gold
 // fix's held-out tests copied in afterwards.
@@ -87,6 +88,7 @@ export function summarizeTranscript(text) {
     finished: true,
     subtype: result.subtype,
     isError: Boolean(result.is_error),
+    ...(result.is_error ? { apiErrorStatus: result.api_error_status, error: String(result.result ?? "").slice(0, 300) } : {}),
     turns: result.num_turns,
     costUsd: result.total_cost_usd,
     inputTokens: result.usage?.input_tokens,
@@ -94,6 +96,24 @@ export function summarizeTranscript(text) {
     cacheReadTokens: result.usage?.cache_read_input_tokens,
     modelsSeen: [...modelsSeen],
   };
+}
+
+// Rate and usage limits say nothing about the agent; the attempt is retried on the next run.
+const PROVIDER_LIMIT_STATUSES = new Set([429, 529]);
+
+export function hitProviderLimit(stats) {
+  return Boolean(stats?.isError && PROVIDER_LIMIT_STATUSES.has(stats.apiErrorStatus));
+}
+
+/**
+ * The scored verdict for one attempt. An agent that errored out without a passing
+ * change is inconclusive, not a failure: the model never got to try.
+ */
+export function scoreAttempt(result, stats) {
+  if (result.verdict === "verified" || !stats) return { verdict: result.verdict, reason: result.reason };
+  if (stats.isError) return { verdict: "inconclusive", reason: `agent errored: ${stats.error || stats.subtype}` };
+  if (!stats.finished) return { verdict: "inconclusive", reason: `agent transcript has no result (${result.reason})` };
+  return { verdict: result.verdict, reason: result.reason };
 }
 
 /**
@@ -310,6 +330,11 @@ export async function main(argv = process.argv.slice(2)) {
           });
           const phase = result.phases[0] ?? {};
           const transcript = readFileSync(transcriptPath, "utf8");
+          const agentStats = agent.kind === "claude-code" ? summarizeTranscript(transcript) : undefined;
+          if (hitProviderLimit(agentStats)) {
+            throw new Error(`${agent.id} hit a provider limit (${agentStats.apiErrorStatus}: ${agentStats.error}). This attempt was not recorded; rerun the same command once the limit resets to resume.`);
+          }
+          const scored = scoreAttempt(result, agentStats);
           // Keep the agent's diff so a "solved" run can be audited for gamed tests.
           const patchPath = join(out, "patches", `${agent.id}--${manifest.id}--${attempt}.patch`);
           mkdirSync(dirname(patchPath), { recursive: true });
@@ -321,14 +346,14 @@ export async function main(argv = process.argv.slice(2)) {
             case: manifest.id,
             caseVersion: manifest.version,
             attempt,
-            verdict: result.verdict,
-            reason: result.reason,
+            verdict: scored.verdict,
+            reason: scored.reason,
             acceptance: (phase.acceptance ?? []).map(({ command, exitCode, timedOut, passed, durationMs }) => ({ command, exitCode, timedOut, passed, durationMs })),
             changedFiles: phase.changedFiles ?? [],
             patchSha256: phase.patchSha256,
             agentExitCode: phase.agent?.exitCode,
             agentDurationMs: phase.agent?.durationMs,
-            agentStats: agent.kind === "claude-code" ? summarizeTranscript(transcript) : undefined,
+            agentStats,
             contamination: findContamination([transcript, phase.agent?.stdoutTail, phase.agent?.stderrTail].join("\n"), contaminationMarkers(manifest, sourcePaths)),
             claudeVersion: agent.kind === "claude-code" ? version : undefined,
             runLog: result.logPath,

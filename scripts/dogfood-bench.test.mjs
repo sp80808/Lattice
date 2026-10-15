@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { agentCommand, main, summarizeTranscript } from "./dogfood-bench.mjs";
+import { agentCommand, hitProviderLimit, main, scoreAttempt, summarizeTranscript } from "./dogfood-bench.mjs";
 
 function git(cwd, ...args) {
   const result = spawnSync("git", args, {
@@ -144,4 +144,20 @@ test("transcript summary reads turns, cost and the models that answered", () => 
     modelsSeen: ["claude-sonnet-5-5-20260901"],
   });
   assert.deepEqual(summarizeTranscript(""), { finished: false, modelsSeen: [] });
+});
+
+test("a usage limit stops the bench and an agent error is inconclusive, never a model failure", () => {
+  const limited = summarizeTranscript(
+    JSON.stringify({ type: "result", subtype: "success", is_error: true, api_error_status: 429, num_turns: 1, total_cost_usd: 0, result: "You've hit your session limit" }),
+  );
+  assert.equal(hitProviderLimit(limited), true);
+  assert.equal(limited.error, "You've hit your session limit");
+  const crashed = { finished: true, isError: true, apiErrorStatus: 500, error: "boom" };
+  assert.equal(hitProviderLimit(crashed), false);
+  const failed = { verdict: "failed", reason: "1/2 acceptance commands failed" };
+  assert.deepEqual(scoreAttempt(failed, crashed), { verdict: "inconclusive", reason: "agent errored: boom" });
+  assert.equal(scoreAttempt(failed, { finished: false }).verdict, "inconclusive");
+  assert.deepEqual(scoreAttempt(failed, { finished: true, isError: false }), failed);
+  assert.deepEqual(scoreAttempt(failed, undefined), failed);
+  assert.equal(scoreAttempt({ verdict: "verified", reason: "ok" }, crashed).verdict, "verified");
 });
