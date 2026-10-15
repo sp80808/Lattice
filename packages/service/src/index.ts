@@ -11,6 +11,7 @@ import {
   describeVerify,
   verifyExecutable,
   createRunTaskOptions,
+  isTaskIntent,
   loadCassette,
   loadLatticeConfig,
   recordCassette,
@@ -25,7 +26,7 @@ import {
 export { describeVerify, parseLatticeConfig } from "@lattice/runtime";
 export { runCommand } from "@lattice/execution";
 import type { DecisionReviewer } from "@lattice/search";
-import { UNKNOWN_CHOICE_ID } from "@lattice/protocol";
+import { TASK_INTENTS, UNKNOWN_CHOICE_ID } from "@lattice/protocol";
 import type {
   DecisionRequest,
   DecisionResult,
@@ -39,6 +40,7 @@ import type {
   RunSummary,
   TapPacket,
   TaskExecutionMode,
+  TaskIntent,
 } from "@lattice/protocol";
 
 export const LATTICE_VERSION = "0.0.1";
@@ -82,6 +84,8 @@ export interface ExecuteTaskOptions {
   cwd?: string;
   configPath?: string;
   mode?: TaskExecutionMode;
+  /** Narrows what the run may do; it can never widen the config. */
+  intent?: TaskIntent;
   /**
    * Record every model, command, verifier and experiment call to
    * `.lattice/runs/<runId>.cassette.jsonl` so the run can be replayed.
@@ -102,6 +106,7 @@ export interface ExecuteTaskOptions {
 export interface ExecuteTaskResult {
   result: RunResult;
   mode: TaskExecutionMode;
+  intent: TaskIntent;
   configPath?: string;
   runtimeMode: "auto" | "observe" | "evidence-only";
 }
@@ -120,13 +125,25 @@ export async function executeTask(
   if (mode !== "observe" && mode !== "configured") {
     invalid("mode must be 'observe' or 'configured'");
   }
+  const intent = options.intent ?? "auto";
+  if (!isTaskIntent(intent)) {
+    invalid(`intent must be one of ${TASK_INTENTS.join(", ")}`);
+  }
   if (options.workflow !== undefined && options.workflow !== "build" && options.workflow !== "auto") invalid("coding workflow must be build or auto");
+  // A coding workflow edits files; only act (or auto) intent may run one.
+  if (options.workflow && intent !== "auto" && intent !== "act") invalid(`intent ${intent} cannot run a coding workflow`);
 
   const loaded = await loadConfigOrThrow(cwd, options.configPath);
   if (!loaded) {
     if (options.workflow) throw new LatticeServiceError("config_error", "No configuration found. Select the target Git project with /project <path>, then run lattice init there and /doctor.");
-    const result = await runTask(task, { cwd, onEvent: options.onEvent, signal: options.signal });
-    return { result, mode, runtimeMode: "evidence-only" };
+    const result = await runTask(task, {
+      cwd,
+      onEvent: options.onEvent,
+      signal: options.signal,
+      intent,
+      permissions: { read: "allow", verify: "deny", search: "deny", agent: "deny" },
+    });
+    return { result, mode, intent, runtimeMode: "evidence-only" };
   }
 
   let config: LatticeConfig =
@@ -158,7 +175,7 @@ export async function executeTask(
 
   let runOptions;
   try {
-    runOptions = createRunTaskOptions(config, { reviewer: options.reviewer, cassette });
+    runOptions = createRunTaskOptions(config, { reviewer: options.reviewer, intent, cassette });
   } catch (error) {
     throw new LatticeServiceError("config_error", errorMessage(error));
   }
@@ -178,8 +195,10 @@ export async function executeTask(
   return {
     result,
     mode,
+    intent,
     configPath: loaded.path,
-    runtimeMode: config.mode ?? "auto",
+    // Report what actually ran: an intent that denies search runs like observe.
+    runtimeMode: runOptions.search ? "auto" : "observe",
   };
 }
 
@@ -489,11 +508,15 @@ export async function replayRun(
     consistent: false,
     calls: entries.length,
   };
+  // Replay under the recorded intent, or a narrowed run would diverge at once.
+  const [started] = await getRunEvents(original.runId, cwd);
+  const recordedIntent = (started?.payload as { intent?: unknown } | undefined)?.intent;
   let replayRunId: string | undefined;
   try {
     const outcome = await executeTask(original.task!, {
       cwd: original.cwd ?? cwd,
       configPath: options.configPath,
+      ...(isTaskIntent(recordedIntent) ? { intent: recordedIntent } : {}),
       cassette: replayCassette(entries),
       lineage: { replayOf: original.runId },
       onEvent: (event) => {
