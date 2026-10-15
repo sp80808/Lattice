@@ -7,7 +7,12 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { runCommand, type CommandResult } from "@lattice/execution";
+import {
+  digest,
+  evidenceIdentityV1,
+  runCommand,
+  type CommandResult,
+} from "@lattice/execution";
 import type {
   EvidenceRef,
   VerificationRecord,
@@ -424,6 +429,7 @@ export function verificationEvidence(record: TesseraVerificationRecord): Evidenc
     .filter(Boolean)
     .join(" ");
 
+  const sourceSha = doc?.source?.sha256;
   const records: EvidenceRef[] = [
     {
       id: evidenceId(["tessera.witness", record.file, doc?.result_id ?? summary]),
@@ -432,6 +438,25 @@ export function verificationEvidence(record: TesseraVerificationRecord): Evidenc
       source,
       summary,
       createdAt,
+      // The native result_id is the result identity, kept verbatim. Without a
+      // witness document there is nothing stable to identify, so the record
+      // stays legacy.
+      ...(doc
+        ? evidenceIdentityV1("build", {
+            request: digest(
+              canonicalJson({
+                tool: "tessera.witness",
+                tsr: `${doc.tool.version}@${doc.tool.commit}${doc.tool.dirty ? "+dirty" : ""}`,
+                phase: doc.invocation.phase,
+                overflow: doc.invocation.overflow,
+                input: doc.invocation.input,
+                source: sourceSha ?? null,
+              }),
+            ),
+            result: doc.result_id,
+          })
+        : {}),
+      verdict: witness.verdict.outcome === "pass" ? "pass" : witness.verdict.verified ? "fail" : "tool_error",
     },
   ];
 
@@ -441,6 +466,15 @@ export function verificationEvidence(record: TesseraVerificationRecord): Evidenc
       id: evidenceId(["tessera.run", record.file, doc?.source?.sha256 ?? "", call, String(c.actual)]),
       kind: "test",
       verified: c.actual !== null || c.exitCode !== null,
+      ...(sourceSha
+        ? evidenceIdentityV1("test", {
+            request: digest(
+              canonicalJson({ tool: "tessera.run", source: sourceSha, call, expect: c.expect }),
+            ),
+            result: digest(canonicalJson({ actual: c.actual, exitCode: c.exitCode })),
+          })
+        : {}),
+      verdict: c.passed ? "pass" : c.actual === null && c.exitCode === null ? "tool_error" : "fail",
       source: `tsr run ${call}`,
       summary: c.passed
         ? `${call}=${c.actual} as expected`
