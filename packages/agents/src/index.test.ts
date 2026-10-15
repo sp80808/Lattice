@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import {
   createOpenCodeAdapter,
   createQwenCodeAdapter,
   promoteVerifiedRun,
+  removeWorktree,
   runIsolatedAgent,
   runParallelAgents,
   verifiedBatchResults,
@@ -85,6 +86,38 @@ test("process agent runs in an isolated worktree and returns a verified diff", a
   assert.equal(original.stdout, "base\n");
 });
 
+
+test("a worker's cwd, writes and git state stay inside its own worktree", async () => {
+  const repo = await createRepo();
+  const head = (await runCommand({ command: "git", args: ["rev-parse", "HEAD"], cwd: repo })).stdout;
+  const adapter = new ProcessAgentAdapter({
+    name: "fixture-agent",
+    command: process.execPath,
+    args: [
+      "-e",
+      // Write relative to cwd, then try to move HEAD from inside the worktree.
+      "const fs=require('fs');fs.writeFileSync('inside.txt',fs.realpathSync(process.cwd()));" +
+        "require('child_process').execFileSync('git',['checkout','-q','--detach','HEAD~0']);",
+    ],
+  });
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "x" },
+    adapter,
+    cleanup: "never",
+  });
+  try {
+    assert.equal(result.execution.exitCode, 0, result.execution.stderr);
+    assert.deepEqual(result.changes.changedFiles, ["inside.txt"]);
+    assert.match(result.changes.diff, new RegExp(realpathSync(result.workspace.path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    const status = await runCommand({ command: "git", args: ["status", "--porcelain"], cwd: repo });
+    assert.equal(status.stdout, "", "main checkout was modified");
+    const after = await runCommand({ command: "git", args: ["rev-parse", "HEAD"], cwd: repo });
+    assert.equal(after.stdout, head, "main checkout HEAD moved");
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
 
 test("Qwen Code and OpenCode presets render current headless CLI shapes", async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
