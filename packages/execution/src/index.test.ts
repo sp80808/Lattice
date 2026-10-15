@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 import {
   buildCommandEnv,
@@ -141,6 +143,66 @@ test("killTree timeout kills descendants holding the output pipe", { skip: !posi
   assert.ok(await waitFor(() => !alive(pid)), `descendant ${pid} survived`);
 });
 
+test("abort before dispatch never starts the command", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-abort-"));
+  const marker = join(dir, "ran");
+  const controller = new AbortController();
+  controller.abort(new Error("user cancelled"));
+  const result = await runCommand({
+    command: process.execPath,
+    args: ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)},'x')`],
+    signal: controller.signal,
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelReason, "user cancelled");
+  assert.equal(result.exitCode, null);
+  await assert.rejects(readFile(marker));
+});
+
+test("abort stops the whole tree once and records the first cause", { skip: !posix }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-abort-"));
+  const pidFile = join(dir, "pid");
+  const controller = new AbortController();
+  const running = runCommand({
+    command: process.execPath,
+    args: [
+      "-e",
+      `const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000);`,
+    ],
+    killTree: true,
+    timeoutMs: 30_000,
+    killGraceMs: 200,
+    signal: controller.signal,
+  });
+  assert.ok(await waitFor(() => existsSync(pidFile)));
+  controller.abort("first");
+  // A second trigger is a no-op, not a second outcome.
+  controller.abort("second");
+  const result = await running;
+  assert.equal(result.cancelled, true);
+  assert.equal(result.cancelReason, "first");
+  assert.equal(result.timedOut, false);
+  const pid = Number(await readFile(pidFile, "utf8"));
+  assert.ok(await waitFor(() => !alive(pid)), `descendant ${pid} survived`);
+});
+
+test("a timeout that fires first stays the cause when abort follows", async () => {
+  const controller = new AbortController();
+  const result = await runCommand({
+    command: process.execPath,
+    args: ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],
+    timeoutMs: 200,
+    killGraceMs: 300,
+    signal: controller.signal,
+  });
+  controller.abort("late");
+  assert.equal(result.timedOut, true);
+  assert.equal(result.cancelled, false);
+  assert.equal(result.cancelReason, undefined);
+  // SIGTERM was ignored, so the bounded stop had to escalate.
+  assert.equal(result.signal, "SIGKILL");
+});
+
 // Red-team: real credential names a developer shell commonly exports.
 const CREDENTIAL_NAMES = [
   "ANTHROPIC_API_KEY",
@@ -216,6 +278,64 @@ test("a timed-out tree leaves no orphan writes behind", { skip: !posix }, async 
   assert.equal(result.timedOut, true);
   await new Promise((r) => setTimeout(r, 2_500));
   await assert.rejects(readFile(late), /ENOENT/);
+});
+
+test("a cancelled tree leaves no orphan writes behind", { skip: !posix }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lattice-orphan-"));
+  const late = join(dir, "late-write");
+  const ready = join(dir, "ready");
+  const controller = new AbortController();
+  const running = runCommand({
+    command: process.execPath,
+    args: [
+      "-e",
+      `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(`setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(late)},'x'),1500)`)}],{stdio:'ignore'});require('fs').writeFileSync(${JSON.stringify(ready)},'');setInterval(()=>{},1000);`,
+    ],
+    killTree: true,
+    timeoutMs: 30_000,
+    killGraceMs: 100,
+    signal: controller.signal,
+  });
+  assert.ok(await waitFor(() => existsSync(ready)));
+  controller.abort("stop");
+  const result = await running;
+  assert.equal(result.cancelled, true);
+  await new Promise((r) => setTimeout(r, 2_500));
+  await assert.rejects(readFile(late), /ENOENT/);
+});
+
+test("cancellation is idempotent across commands and after completion", { skip: !posix }, async () => {
+  const controller = new AbortController();
+  const done = await runCommand({
+    command: process.execPath,
+    args: ["-e", "0"],
+    signal: controller.signal,
+  });
+  // A finished command detaches from the signal: a later abort cannot rewrite it.
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+
+  // One abort stops every command sharing the signal, once each.
+  const hang = ["-e", "setInterval(()=>{},1000)"];
+  const runs = [1, 2].map(() =>
+    runCommand({ command: process.execPath, args: hang, killGraceMs: 100, signal: controller.signal }),
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  controller.abort("shared");
+  controller.abort("ignored");
+  const results = await Promise.all(runs);
+  for (const result of results) {
+    assert.equal(result.cancelled, true);
+    assert.equal(result.cancelReason, "shared");
+    assert.equal(result.timedOut, false);
+  }
+  assert.equal(done.cancelled, false);
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+
+  // Reusing an already-aborted signal never dispatches, with the same reason.
+  const again = await runCommand({ command: process.execPath, args: hang, signal: controller.signal });
+  assert.equal(again.cancelled, true);
+  assert.equal(again.cancelReason, "shared");
+  assert.equal(again.exitCode, null);
 });
 
 test("command identity ignores timing and cwd but not full output or revision", async () => {
