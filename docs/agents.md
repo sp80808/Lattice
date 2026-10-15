@@ -81,6 +81,15 @@ What Lattice enforces today for every process agent:
   of timeout or abort is the recorded cause. A run cancelled during the agent
   stage never starts verification, and the changes captured so far are kept
   as evidence (`cancelled=<stage>:<reason>`, outcome `inconclusive`).
+- **Shared-ref tamper check.** Worktrees share branches and tags with the
+  main checkout, so a worker can move them with `git update-ref` or
+  `git branch -f`. Lattice snapshots `refs/heads` and `refs/tags` before the
+  worker starts and after verification; any pre-existing ref that moved or
+  vanished fails the run (`refTamper`, `ref_tamper=` in evidence) and blocks
+  promotion. New refs are not flagged. The check cannot tell who moved a
+  ref, so a commit you make in the main checkout during a run also fails it.
+  It detects rather than prevents, and does not cover objects, hooks or
+  config in `.git`.
 - **Explicit opt-out.** `trustedHost: true` (config `agent.trustedHost`)
   passes the full parent environment. Use it for local debugging only;
   Lattice never falls back to it on its own.

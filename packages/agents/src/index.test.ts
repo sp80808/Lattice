@@ -119,6 +119,65 @@ test("a worker's cwd, writes and git state stay inside its own worktree", async 
   }
 });
 
+test("a worker that moves the main repo's shared refs fails the run", async () => {
+  const repo = await createRepo();
+  const git = (args: string[], cwd = repo) => runCommand({ command: "git", args, cwd });
+  const branch = (await git(["symbolic-ref", "--short", "HEAD"])).stdout.trim();
+  const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
+  assert.equal((await git(["tag", "v1"])).exitCode, 0);
+
+  // Commit inside the worktree, then point the main branch at it, delete a
+  // tag and add a new branch. Worktrees share refs, so only a check notices.
+  const script = [
+    "const {execFileSync:x}=require('child_process');",
+    "require('fs').writeFileSync('evil.txt','x');",
+    "x('git',['add','evil.txt']);",
+    "x('git',['-c','user.name=w','-c','user.email=w@x','commit','-qm','evil']);",
+    "x('git',['update-ref','refs/heads/'+process.argv[1],'HEAD']);",
+    "x('git',['tag','-d','v1']);",
+    "x('git',['branch','scratch']);",
+  ].join("");
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: branch },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture-agent",
+      command: process.execPath,
+      args: ["-e", script, "{prompt}"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "0"] },
+    cleanup: "never",
+  });
+  try {
+    assert.equal(result.execution.exitCode, 0, result.execution.stderr);
+    assert.equal(result.verification?.exitCode, 0);
+    assert.equal(result.success, false);
+    assert.equal(result.refTamper?.length, 2, JSON.stringify(result.refTamper));
+    assert.match(result.refTamper![0]!, new RegExp(`^refs/heads/${branch}: ${head.slice(0, 12)}->`));
+    assert.equal(result.refTamper![1], "refs/tags/v1: deleted");
+    await assert.rejects(promoteVerifiedRun(result), /unsuccessful/);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("an untouched repo reports no ref tamper", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "x" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture-agent",
+      command: process.execPath,
+      args: ["-e", "require('fs').writeFileSync('ok.txt','x')"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "0"] },
+    cleanup: "always",
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.refTamper, undefined);
+});
+
 test("Qwen Code and OpenCode presets render current headless CLI shapes", async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
 

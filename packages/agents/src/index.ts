@@ -377,6 +377,46 @@ export interface IsolatedAgentRunResult {
   workspaceRetained: boolean;
   /** Set when the run was cancelled; the first cause wins. */
   cancelled?: { reason: string; stage: "agent" | "verify" };
+  /**
+   * Branches or tags of the main repository that moved or vanished while the
+   * worker or its verification ran. Worktrees share refs with the main
+   * checkout, so this is how a worker escaping its worktree through git shows
+   * up. Any entry fails the run. Absent when nothing changed.
+   */
+  refTamper?: string[];
+}
+
+/** Branch and tag tips of a repository, keyed by ref name. */
+export async function snapshotSharedRefs(repoRoot: string): Promise<Map<string, string>> {
+  const result = await gitOrThrow(repoRoot, [
+    "for-each-ref",
+    "--format=%(refname) %(objectname)",
+    "refs/heads",
+    "refs/tags",
+  ]);
+  const refs = new Map<string, string>();
+  for (const line of result.stdout.split("\n")) {
+    const space = line.lastIndexOf(" ");
+    if (space > 0) refs.set(line.slice(0, space), line.slice(space + 1));
+  }
+  return refs;
+}
+
+/**
+ * Pre-existing refs that moved or were deleted. New refs are not reported:
+ * they cannot overwrite anything, and promotion creates its own branch.
+ */
+export function changedSharedRefs(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): string[] {
+  const changed: string[] = [];
+  for (const [ref, oid] of before) {
+    const now = after.get(ref);
+    if (now === undefined) changed.push(`${ref}: deleted`);
+    else if (now !== oid) changed.push(`${ref}: ${oid.slice(0, 12)}->${now.slice(0, 12)}`);
+  }
+  return changed.sort();
 }
 
 export interface ObjectiveVerificationStatus {
@@ -435,6 +475,10 @@ export async function runIsolatedAgent(
     options.repoRoot,
     options.baseRevision,
   );
+  const refsBefore = await snapshotSharedRefs(workspace.repoRoot).catch(async (error) => {
+    await removeWorktree(workspace).catch(() => undefined);
+    throw error;
+  });
 
   let execution: AgentExecution | undefined;
   let verification: CommandResult | undefined;
@@ -478,8 +522,14 @@ export async function runIsolatedAgent(
       cancelled = { reason: abortReasonText(signal), stage: "verify" };
     }
 
+    const refTamper = changedSharedRefs(
+      refsBefore,
+      await snapshotSharedRefs(workspace.repoRoot),
+    );
+
     const success =
       !cancelled &&
+      refTamper.length === 0 &&
       execution.exitCode === 0 &&
       !execution.timedOut &&
       (verifierResult === undefined || verifierResult.passed) &&
@@ -505,6 +555,7 @@ export async function runIsolatedAgent(
       success,
       workspaceRetained: !shouldCleanup,
       ...(cancelled ? { cancelled } : {}),
+      ...(refTamper.length ? { refTamper } : {}),
     };
   } catch (error) {
     if ((options.cleanup ?? "on-failure") !== "never") {
@@ -824,6 +875,7 @@ export function createAgentExperimentExecutor(
             result.cancelled
               ? `cancelled=${result.cancelled.stage}:${result.cancelled.reason}`
               : undefined,
+            result.refTamper ? `ref_tamper=${result.refTamper.join(";")}` : undefined,
           ]
             .filter(Boolean)
             .join(" "),
@@ -866,13 +918,13 @@ export function createAgentExperimentExecutor(
           !result.verification.timedOut;
 
       const verifiedSuccess = verificationPassed && result.execution.exitCode === 0 && !result.execution.timedOut &&
-        result.changes.changedFiles.length > 0;
+        result.changes.changedFiles.length > 0 && !result.refTamper;
 
       return {
         candidateId: candidate.id,
         status: verifiedSuccess
           ? "success"
-          : result.cancelled || result.execution.exitCode === 0
+          : !result.refTamper && (result.cancelled || result.execution.exitCode === 0)
             ? "inconclusive"
             : "failure",
         terminal: verifiedSuccess,
@@ -886,7 +938,10 @@ export function createAgentExperimentExecutor(
               ? `verify_exit=${result.verification.exitCode}`
               : "verify=not_run",
           `worktree=${result.workspace.path}`,
-        ].join(" "),
+          result.refTamper ? `ref_tamper=${result.refTamper.length}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" "),
         evidence: records,
         changes: {
           diff: result.changes.diff,
@@ -896,7 +951,9 @@ export function createAgentExperimentExecutor(
         },
         uncertainties: verifiedSuccess
           ? undefined
-          : result.cancelled
+          : result.refTamper
+            ? [`Worker changed shared repository refs: ${result.refTamper.join(", ")}`]
+            : result.cancelled
             ? [`run cancelled during ${result.cancelled.stage}: ${result.cancelled.reason}`]
             : ["Implementation requires actual changes, a successful agent and passing verification"],
       };
