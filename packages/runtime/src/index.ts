@@ -15,7 +15,15 @@ import {
   cassetteVerifier,
   type CassetteIo,
 } from "./cassette.js";
-import type { DecisionProvider, GeneratorProvider, Verifier } from "@lattice/protocol";
+import {
+  TASK_INTENTS,
+  type DecisionProvider,
+  type GeneratorProvider,
+  type PermissionOutcome,
+  type TaskIntent,
+  type ToolCapability,
+  type Verifier,
+} from "@lattice/protocol";
 import {
   createWitnessVerifier,
   resolveTsr,
@@ -490,11 +498,50 @@ export function createGeneratorProvider(config: LatticeConfig): GeneratorProvide
   return new OpenAICompatibleGeneratorProvider(endpointConfig(model));
 }
 
+const INTENT_GRANTS: Record<TaskIntent, readonly ToolCapability[]> = {
+  auto: ["read", "verify", "search", "agent"],
+  act: ["read", "verify", "search", "agent"],
+  debug: ["read", "verify"],
+  plan: ["read"],
+  review: ["read"],
+};
+
+export function isTaskIntent(value: unknown): value is TaskIntent {
+  return typeof value === "string" && (TASK_INTENTS as readonly string[]).includes(value);
+}
+
+export type Permissions = Record<ToolCapability, PermissionOutcome>;
+
+/**
+ * What a run may do: the intersection of what the intent asks for and what
+ * the config grants. An intent can only narrow the config, never widen it.
+ */
+export function effectivePermissions(
+  config: LatticeConfig,
+  intent: TaskIntent = "auto",
+): Permissions {
+  if (!isTaskIntent(intent)) throw new Error(`unknown intent: ${String(intent)}`);
+  const configGrants: ToolCapability[] =
+    (config.mode ?? "auto") === "observe"
+      ? ["read", "verify"]
+      : ["read", "verify", "search", "agent"];
+  const outcome = (capability: ToolCapability): PermissionOutcome =>
+    INTENT_GRANTS[intent].includes(capability) && configGrants.includes(capability)
+      ? "allow"
+      : "deny";
+  return {
+    read: outcome("read"),
+    verify: outcome("verify"),
+    search: outcome("search"),
+    agent: outcome("agent"),
+  };
+}
+
 export * from "./cassette.js";
 
 export function createRunTaskOptions(
   config: LatticeConfig,
-  hooks: { reviewer?: DecisionReviewer; cassette?: CassetteIo } = {},
+  hooks: { reviewer?: DecisionReviewer; intent?: TaskIntent; cassette?: CassetteIo } = {},
 ): RunTaskOptions {
   const options = buildRunTaskOptions(config, hooks);
   return hooks.cassette ? withCassette(options, hooks.cassette) : options;
@@ -521,8 +568,12 @@ function withCassette(options: RunTaskOptions, io: CassetteIo): RunTaskOptions {
 
 function buildRunTaskOptions(
   config: LatticeConfig,
-  hooks: { reviewer?: DecisionReviewer },
+  hooks: { reviewer?: DecisionReviewer; intent?: TaskIntent },
 ): RunTaskOptions {
+  const intent = hooks.intent ?? "auto";
+  const permissions = effectivePermissions(config, intent);
+  const intentFields = { intent, permissions };
+
   const verify = config.verify;
   const verifier: Verifier | undefined =
     verify && isTesseraVerify(verify) ? createWitnessVerifier(verify.tessera) : undefined;
@@ -536,8 +587,13 @@ function buildRunTaskOptions(
         }
       : undefined;
 
-  if ((config.mode ?? "auto") === "observe") {
-    return { verifyCommand, verifier };
+  // Denied capabilities are never constructed, so nothing downstream (a
+  // prompt, a model reply or a child agent) can reach them.
+  if (permissions.verify === "deny") {
+    return { ...intentFields };
+  }
+  if (permissions.search === "deny" || permissions.agent === "deny") {
+    return { ...intentFields, verifyCommand, verifier };
   }
 
   const decisionModel = config.models?.decision ?? config.model;
@@ -593,6 +649,7 @@ function buildRunTaskOptions(
         });
 
   return {
+    ...intentFields,
     verifyCommand,
     verifier,
     search: {

@@ -33,6 +33,7 @@ DEFAULT_LATTICE_URL = "http://127.0.0.1:4774"
 
 TaskMode = Literal["observe", "configured"]
 ReviewMode = Literal["none", "remote"]
+TaskIntent = Literal["auto", "plan", "act", "debug", "review"]
 ReviewAction = Literal["approve", "replace", "refine", "stop"]
 DecisionProviderName = Literal["configured", "random"]
 
@@ -100,11 +101,14 @@ class LatticeClient:
         *,
         cwd: Optional[str] = None,
         mode: Optional[TaskMode] = None,
+        intent: Optional[TaskIntent] = None,
         config_path: Optional[str] = None,
         review: Optional[ReviewMode] = None,
     ) -> Dict[str, Any]:
         """Run a task. ``mode="observe"`` (daemon default) never launches coding agents."""
-        body = _drop_none({"task": task, "cwd": cwd, "mode": mode, "configPath": config_path, "review": review})
+        body = _drop_none(
+            {"task": task, "cwd": cwd, "mode": mode, "intent": intent, "configPath": config_path, "review": review}
+        )
         return self._request("POST", "/v1/tasks", body=body)
 
     def submit_task(
@@ -113,12 +117,21 @@ class LatticeClient:
         *,
         cwd: Optional[str] = None,
         mode: Optional[TaskMode] = None,
+        intent: Optional[TaskIntent] = None,
         config_path: Optional[str] = None,
         review: Optional[ReviewMode] = None,
     ) -> Dict[str, Any]:
         """Start a task and return as soon as it is running (``{"runId", "status": "running", ...}``)."""
         body = _drop_none(
-            {"task": task, "cwd": cwd, "mode": mode, "configPath": config_path, "review": review, "wait": False}
+            {
+                "task": task,
+                "cwd": cwd,
+                "mode": mode,
+                "intent": intent,
+                "configPath": config_path,
+                "review": review,
+                "wait": False,
+            }
         )
         return self._request("POST", "/v1/tasks", body=body)
 

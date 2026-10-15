@@ -25,9 +25,12 @@ import {
   type RunResult,
   type DecisionProvider,
   type GeneratorProvider,
+  type PermissionOutcome,
   type RunLease,
   type RunLiveness,
   type TapPacket,
+  type TaskIntent,
+  type ToolCapability,
   type Verifier,
 } from "@lattice/protocol";
 
@@ -39,6 +42,10 @@ export interface RunTaskOptions {
   /** Called after each event is durably appended. Listener errors are ignored. */
   onEvent?: (event: RunEvent) => void;
   verifyCommand?: CommandSpec;
+  /** The user's task intent; recorded on `run.started` for replay. */
+  intent?: TaskIntent;
+  /** Effective per-capability grants; recorded on `run.started` for replay. */
+  permissions?: Record<ToolCapability, PermissionOutcome>;
   /** Where this run came from, recorded on `run.started` (e.g. the run it replays). */
   lineage?: { replayOf?: string };
   /** Runs `verifyCommand`; defaults to `runCommand`. Replay swaps in recorded results. */
@@ -272,6 +279,8 @@ export async function runTask(
   await log.append("run.started", {
     task: trimmed,
     cwd,
+    ...(options.intent ? { intent: options.intent } : {}),
+    ...(options.permissions ? { permissions: options.permissions } : {}),
     ...(options.lineage ? { lineage: options.lineage } : {}),
   });
 
