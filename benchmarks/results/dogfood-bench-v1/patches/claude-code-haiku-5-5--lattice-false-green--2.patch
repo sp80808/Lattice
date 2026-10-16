@@ -1,0 +1,367 @@
+diff --git a/examples/demo-repo/package.json b/examples/demo-repo/package.json
+index bfa9241..c9cd0ec 100644
+--- a/examples/demo-repo/package.json
++++ b/examples/demo-repo/package.json
+@@ -3,6 +3,6 @@
+   "private": true,
+   "type": "module",
+   "scripts": {
+-    "test": "node --test test/"
++    "test": "node --test"
+   }
+ }
+diff --git a/examples/demo/run-demo.sh b/examples/demo/run-demo.sh
+old mode 100644
+new mode 100755
+index 62ab28e..4b2aef1
+--- a/examples/demo/run-demo.sh
++++ b/examples/demo/run-demo.sh
+@@ -42,10 +42,10 @@ git -C "$PROJECT" add .lattice
+ git -C "$PROJECT" -c user.name=lattice-demo -c user.email=demo@lattice.invalid commit -qm "lattice: add config"
+ 
+ info "lattice doctor"
+-lattice -C "$PROJECT" doctor --offline || warn "doctor found problems; an auto-mode run may fail"
++lattice -C "$PROJECT" doctor --offline
+ 
+ info "lattice \"fix the failing add test\""
+-lattice -C "$PROJECT" "fix the failing add test" || warn "run failed (see hint above)"
++lattice -C "$PROJECT" "fix the failing add test"
+ 
+ info "lattice runs"
+ lattice -C "$PROJECT" runs
+diff --git a/packages/service/src/index.ts b/packages/service/src/index.ts
+index 26b5b9f..4219c10 100644
+--- a/packages/service/src/index.ts
++++ b/packages/service/src/index.ts
+@@ -219,7 +219,8 @@ export class ReviewBroker {
+           this.pending.delete(id);
+           resolveReview({ action: "stop", note: `no remote review within ${timeoutMs}ms` });
+         }, timeoutMs);
+-        timer.unref?.();
++        // Not unref'd: a pending review must still time out (and settle) even when
++        // nothing else keeps the event loop alive.
+ 
+         this.pending.set(id, {
+           review: {
+diff --git a/packages/service/src/testing.ts b/packages/service/src/testing.ts
+index d742943..e8aaa29 100644
+--- a/packages/service/src/testing.ts
++++ b/packages/service/src/testing.ts
+@@ -57,7 +57,8 @@ export async function createAutoModeFixture(): Promise<{ cwd: string; closeModel
+       autonomy: { mode: "manual" },
+       model: { baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" },
+       agent: { preset: "qwen-code", command: worker },
+-      verify: { command: process.execPath, args: ["--test", "test/"], timeoutMs: 60000 },
++      // No directory argument: Node 22 only accepts file paths or glob patterns here.
++      verify: { command: process.execPath, args: ["--test"], timeoutMs: 60000 },
+       search: { maxRounds: 2, candidatesPerRound: 2 },
+       workspace: { cleanup: "always" },
+     }),
+diff --git a/scripts/check-examples.sh b/scripts/check-examples.sh
+old mode 100644
+new mode 100755
+index 3da19b8..37edd55
+--- a/scripts/check-examples.sh
++++ b/scripts/check-examples.sh
+@@ -1,5 +1,9 @@
+ #!/usr/bin/env bash
+ # Run every offline example and validate every example config. Used by CI.
++#
++# Exit status is the verdict: any failing example makes the whole run fail, and
++# a skipped example also fails unless it is named in LATTICE_EXAMPLES_ALLOW_SKIP
++# (comma-separated, e.g. LATTICE_EXAMPLES_ALLOW_SKIP=python).
+ set -euo pipefail
+ . "$(dirname "$0")/lib.sh"
+ 
+@@ -7,8 +11,51 @@ require_node
+ require_built_cli
+ cd "$LATTICE_ROOT"
+ 
++FAILED=()
++ALLOW_SKIP=",${LATTICE_EXAMPLES_ALLOW_SKIP:-},"
++
++# example LABEL COMMAND...: run one check; its output is shown only on failure.
++example() {
++  local label="$1" out status=0
++  shift
++  info "$label"
++  out="$("$@" 2>&1)" || status=$?
++  if [ "$status" -eq 0 ]; then
++    ok "passed"
++  else
++    printf '%s\n' "$out" >&2
++    printf '  \033[31m✗\033[0m %s exited %s\n' "$label" "$status" >&2
++    FAILED+=("$label")
++  fi
++}
++
++# expect_failure LABEL COMMAND...: a deliberately broken fixture must exit non-zero.
++expect_failure() {
++  local label="$1" status=0
++  shift
++  info "$label (must fail)"
++  "$@" >/dev/null 2>&1 || status=$?
++  if [ "$status" -ne 0 ]; then
++    ok "exited $status, as intended"
++  else
++    printf '  \033[31m✗\033[0m %s unexpectedly passed\n' "$label" >&2
++    FAILED+=("$label")
++  fi
++}
++
++# skip NAME REASON: a skipped check is a failure unless explicitly allow-listed.
++skip() {
++  local name="$1" reason="$2"
++  if [[ "$ALLOW_SKIP" == *",$name,"* ]]; then
++    warn "$name skipped ($reason); allowed by LATTICE_EXAMPLES_ALLOW_SKIP"
++  else
++    printf '  \033[31m✗\033[0m %s skipped (%s); set LATTICE_EXAMPLES_ALLOW_SKIP=%s to allow\n' "$name" "$reason" "$name" >&2
++    FAILED+=("$name (skipped)")
++  fi
++}
++
+ info "Validating examples/configs/*.json"
+-node --input-type=module -e '
++example "example configs parse" node --input-type=module -e '
+   import { readdirSync, readFileSync } from "node:fs";
+   import { parseLatticeConfig } from "@lattice/runtime";
+   for (const name of readdirSync("examples/configs").filter((f) => f.endsWith(".json") && !f.startsWith("."))) {
+@@ -17,26 +64,22 @@ node --input-type=module -e '
+   }
+ '
+ 
+-info "examples/embedded/offline-search-loop.mjs"
+-node examples/embedded/offline-search-loop.mjs >/dev/null && ok "search solved by test evidence"
++expect_failure "examples/demo-repo (intentionally broken: add subtracts)" \
++  npm --prefix examples/demo-repo test
+ 
+-info "examples/sdk/typescript/run-and-inspect.mjs"
+-env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null && ok "TypeScript SDK round-trip"
+-
+-info "examples/review/remote-reviewer.mjs"
+-node examples/review/remote-reviewer.mjs >/dev/null && ok "remote review of an auto-mode run"
+-
+-info "examples/mcp/raw-session.mjs"
+-node examples/mcp/raw-session.mjs >/dev/null && ok "MCP stdio session"
+-
+-info "examples/demo/run-demo.sh"
+-examples/demo/run-demo.sh >/dev/null && ok "CLI walkthrough"
++example "examples/embedded/offline-search-loop.mjs" node examples/embedded/offline-search-loop.mjs
++example "examples/sdk/typescript/run-and-inspect.mjs" env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs
++example "examples/review/remote-reviewer.mjs" node examples/review/remote-reviewer.mjs
++example "examples/mcp/raw-session.mjs" node examples/mcp/raw-session.mjs
++example "examples/demo/run-demo.sh" bash examples/demo/run-demo.sh
+ 
+ if has python3; then
+-  info "examples/sdk/python/run_and_inspect.py"
+-  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null && ok "Python SDK round-trip"
++  example "examples/sdk/python/run_and_inspect.py" env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py
+ else
+-  warn "python3 not found; skipping the Python SDK example"
++  skip python "python3 not found"
+ fi
+ 
++if [ "${#FAILED[@]}" -gt 0 ]; then
++  die "examples failed: $(IFS=', '; echo "${FAILED[*]}")"
++fi
+ info "All examples passed"
+diff --git a/sdks/python/src/lattice_sdk/__pycache__/__init__.cpython-313.pyc b/sdks/python/src/lattice_sdk/__pycache__/__init__.cpython-313.pyc
+new file mode 100644
+index 0000000000000000000000000000000000000000..442ee8dd7af590b9bc8d528bab47181b327b3932
+GIT binary patch
+literal 16256
+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
+E1ELf=>;M1&
+
+literal 0
+HcmV?d00001
+
+diff --git a/sdks/python/tests/test_client.py b/sdks/python/tests/test_client.py
+index 805c6d7..21a1b79 100644
+--- a/sdks/python/tests/test_client.py
++++ b/sdks/python/tests/test_client.py
+@@ -19,8 +19,17 @@ REPO = Path(__file__).resolve().parents[3]
+ CLI = REPO / "apps" / "cli" / "dist" / "index.js"
+ NODE = shutil.which("node")
+ 
++# A missing daemon is a failure, not a silent skip. Opt out explicitly with
++# LATTICE_TESTS_ALLOW_SKIP=daemon (comma-separated list).
++ALLOWED_SKIPS = {name for name in os.environ.get("LATTICE_TESTS_ALLOW_SKIP", "").split(",") if name}
++if not (NODE and CLI.exists()) and "daemon" not in ALLOWED_SKIPS:
++    raise RuntimeError(
++        "node and a built CLI (npm run build) are required; "
++        "set LATTICE_TESTS_ALLOW_SKIP=daemon to skip the daemon integration tests"
++    )
+ 
+-@unittest.skipUnless(NODE and CLI.exists(), "node and a built CLI (npm run build) are required")
++
++@unittest.skipUnless(NODE and CLI.exists(), "node and a built CLI are missing (allow-listed skip)")
+ class DaemonIntegrationTest(unittest.TestCase):
+     @classmethod
+     def setUpClass(cls) -> None:

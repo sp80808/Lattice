@@ -1,0 +1,462 @@
+diff --git a/examples/README.md b/examples/README.md
+index b96d3f1..a394c4f 100644
+--- a/examples/README.md
++++ b/examples/README.md
+@@ -1,7 +1,9 @@
+ # Lattice examples
+ 
+ Everything here runs offline after `npm run build` unless noted. `scripts/check-examples.sh`
+-runs all of them (CI does too).
++runs all of them (CI does too) and exits non-zero if any example fails or is skipped. To
++accept a skip (e.g. no `python3`), allow-list it: `LATTICE_EXAMPLES_ALLOW_SKIP=python-sdk`.
++The Python SDK tests likewise fail without node and a built CLI unless `LATTICE_PYTHON_ALLOW_SKIP=1`.
+ 
+ | Example | What it shows | Run |
+ |---|---|---|
+diff --git a/examples/demo-repo/package.json b/examples/demo-repo/package.json
+index bfa9241..6d6c829 100644
+--- a/examples/demo-repo/package.json
++++ b/examples/demo-repo/package.json
+@@ -3,6 +3,6 @@
+   "private": true,
+   "type": "module",
+   "scripts": {
+-    "test": "node --test test/"
++    "test": "node --test test/*.test.js"
+   }
+ }
+diff --git a/examples/demo/run-demo.sh b/examples/demo/run-demo.sh
+old mode 100644
+new mode 100755
+index 62ab28e..ddfe57b
+--- a/examples/demo/run-demo.sh
++++ b/examples/demo/run-demo.sh
+@@ -42,10 +42,10 @@ git -C "$PROJECT" add .lattice
+ git -C "$PROJECT" -c user.name=lattice-demo -c user.email=demo@lattice.invalid commit -qm "lattice: add config"
+ 
+ info "lattice doctor"
+-lattice -C "$PROJECT" doctor --offline || warn "doctor found problems; an auto-mode run may fail"
++lattice -C "$PROJECT" doctor --offline || die "doctor found problems; fix them before running the demo"
+ 
+ info "lattice \"fix the failing add test\""
+-lattice -C "$PROJECT" "fix the failing add test" || warn "run failed (see hint above)"
++lattice -C "$PROJECT" "fix the failing add test" || die "run failed (see hint above)"
+ 
+ info "lattice runs"
+ lattice -C "$PROJECT" runs
+diff --git a/examples/mcp/raw-session.mjs b/examples/mcp/raw-session.mjs
+index b30b70d..e3d51bf 100644
+--- a/examples/mcp/raw-session.mjs
++++ b/examples/mcp/raw-session.mjs
+@@ -23,6 +23,14 @@ createInterface({ input: server.stdout }).on("line", (line) => {
+   pending.delete(message.id);
+ });
+ 
++// Fail the example (non-zero exit) instead of printing a misleading success.
++function expect(condition, message) {
++  if (!condition) {
++    console.error(`example check failed: ${message}`);
++    process.exitCode = 1;
++  }
++}
++
+ let nextId = 1;
+ function call(method, params) {
+   const id = nextId++;
+@@ -44,14 +52,19 @@ const { result: { tools } } = await call("tools/list");
+ console.log(`← tools: ${tools.map((tool) => tool.name).join(", ")}`);
+ 
+ const run = await call("tools/call", { name: "lattice_run", arguments: { task: "inspect the calculator" } });
++expect(!run.result.isError, `lattice_run failed: ${run.result.content[0].text}`);
+ const payload = JSON.parse(run.result.content[0].text);
+ console.log(`← lattice_run: ${payload.summary} (mode=${payload.mode}, run=${payload.runId.slice(0, 8)})`);
+ 
+ const shown = await call("tools/call", { name: "lattice_show_run", arguments: { id: "latest" } });
+-console.log(`← lattice_show_run: status=${JSON.parse(shown.result.content[0].text).status}`);
++const status = JSON.parse(shown.result.content[0].text).status;
++console.log(`← lattice_show_run: status=${status}`);
++expect(status === "completed", `run status is ${status}, expected completed`);
+ 
+ const failed = await call("tools/call", { name: "lattice_show_run", arguments: { id: "deadbeef" } });
+ console.log(`← tool error (isError=${failed.result.isError}): ${failed.result.content[0].text}`);
++expect(failed.result.isError === true, "lattice_show_run(deadbeef) should have failed");
+ 
+ server.stdin.end();
+-await new Promise((resolve) => server.on("close", resolve));
++const exitCode = await new Promise((resolve) => server.on("close", resolve));
++expect(exitCode === 0, `lattice mcp exited with ${exitCode}`);
+diff --git a/examples/sdk/python/run_and_inspect.py b/examples/sdk/python/run_and_inspect.py
+index aad9afe..b32bc56 100644
+--- a/examples/sdk/python/run_and_inspect.py
++++ b/examples/sdk/python/run_and_inspect.py
+@@ -40,6 +40,14 @@ def start_daemon(project: str) -> tuple[subprocess.Popen, str]:
+ 
+ 
+ def main() -> int:
++    failures: list[str] = []
++
++    def expect(condition: bool, message: str) -> None:
++        # Fail the example (non-zero exit) instead of printing a misleading success.
++        if not condition:
++            print(f"example check failed: {message}", file=sys.stderr)
++            failures.append(message)
++
+     project = tempfile.mkdtemp(prefix="lattice-sdk-py-")
+     shutil.copytree(REPO / "examples" / "demo-repo", project, dirs_exist_ok=True)
+     # Observe-mode config: every run also executes the project's test suite as evidence.
+@@ -66,6 +74,8 @@ def main() -> int:
+             print(f"  {summary['runId'][:8]}  {summary['status']}  {summary['task']}")
+ 
+         detail = client.get_run("latest", cwd=project)
++        expect(detail.get("status") == "completed", f"run status is {detail.get('status')}, expected completed")
++        expect(bool(detail["tap"]["evidence"]), "run recorded no evidence")
+         print("\nTAP evidence:")
+         for item in detail["tap"]["evidence"]:
+             print(f"  {item['kind']}: {' '.join(item['summary'].split())[:80]}")
+@@ -86,11 +96,15 @@ def main() -> int:
+ 
+         accepted = client.submit_task("stream this run", cwd=project, mode="observe")
+         print(f"\nsubmitted {accepted['runId'][:8]} ({accepted['status']}); streaming:")
++        last_event = None
+         for event in client.stream_events(accepted["runId"], cwd=project):
+             print(f"  #{event['seq']} {event['type']}")
++            last_event = event["type"]
++        expect(last_event == "run.completed", f"event stream ended with {last_event}, expected run.completed")
+ 
+         try:
+             client.get_run("deadbeef", cwd=project)
++            expect(False, "get_run(deadbeef) should have failed")
+         except LatticeApiError as error:
+             print(f"\nexpected error: {error.status} {error.code} — {error}")
+     finally:
+@@ -99,7 +113,7 @@ def main() -> int:
+             daemon.wait(timeout=10)
+             daemon.stdout.close()
+         shutil.rmtree(project, ignore_errors=True)
+-    return 0
++    return 1 if failures else 0
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/examples/sdk/typescript/run-and-inspect.mjs b/examples/sdk/typescript/run-and-inspect.mjs
+index 223e7b8..33d7897 100644
+--- a/examples/sdk/typescript/run-and-inspect.mjs
++++ b/examples/sdk/typescript/run-and-inspect.mjs
+@@ -29,6 +29,14 @@ if (!process.env.LATTICE_URL) {
+ }
+ const client = new LatticeClient({ baseUrl: local?.url });
+ 
++// Fail the example (non-zero exit) instead of printing a misleading success.
++function expect(condition, message) {
++  if (!condition) {
++    console.error(`example check failed: ${message}`);
++    process.exitCode = 1;
++  }
++}
++
+ try {
+   const health = await client.waitUntilReady();
+   console.log(`daemon: ${health.service} ${health.version}`);
+@@ -45,6 +53,8 @@ try {
+   }
+ 
+   const detail = await client.getRun("latest", { cwd: project });
++  expect(detail.status === "completed", `run status is ${detail.status}, expected completed`);
++  expect((detail.tap?.evidence ?? []).length > 0, "run recorded no evidence");
+   console.log(`\nTAP evidence for ${detail.runId.slice(0, 8)}:`);
+   for (const item of detail.tap?.evidence ?? []) {
+     console.log(`  ${item.kind}: ${item.summary.replace(/\s+/g, " ").slice(0, 80)}`);
+@@ -67,18 +77,23 @@ try {
+   console.log(`\ndecision (${decision.identity.provider}): ${decision.selected.join(", ")}`);
+ 
+   const doctor = await client.doctor({ cwd: project, network: false });
++  expect(doctor.ok, "doctor reported problems");
+   console.log(`\ndoctor ok=${doctor.ok}: ${doctor.checks.map((c) => `${c.id}=${c.status}`).join(" ")}`);
+ 
+   // Long runs: submit without waiting, then stream events as they happen (SSE).
+   const accepted = await client.submitTask("stream this run", { cwd: project, mode: "observe" });
+   console.log(`\nsubmitted ${accepted.runId.slice(0, 8)} (${accepted.status}); streaming:`);
++  let lastEvent;
+   for await (const event of client.streamEvents(accepted.runId, { cwd: project })) {
+     console.log(`  #${event.seq} ${event.type}`);
++    lastEvent = event.type;
+   }
++  expect(lastEvent === "run.completed", `event stream ended with ${lastEvent}, expected run.completed`);
+ 
+   // Errors carry a stable code.
+   try {
+     await client.getRun("deadbeef", { cwd: project });
++    expect(false, "getRun(deadbeef) should have failed");
+   } catch (error) {
+     if (!(error instanceof LatticeApiError)) throw error;
+     console.log(`\nexpected error: ${error.status} ${error.code} — ${error.message}`);
+diff --git a/package.json b/package.json
+index 4796a2e..6743b3d 100644
+--- a/package.json
++++ b/package.json
+@@ -16,8 +16,8 @@
+     "test": "npm run build && node --test packages/core/dist/index.test.js packages/providers/dist/index.test.js packages/execution/dist/index.test.js packages/search/dist/index.test.js packages/agents/dist/index.test.js packages/runtime/dist/index.test.js packages/ledger/dist/index.test.js packages/analytics/dist/index.test.js packages/mining/dist/index.test.js packages/policy/dist/index.test.js packages/service/dist/index.test.js packages/server/dist/index.test.js packages/mcp/dist/index.test.js apps/cli/dist/index.test.js",
+     "lattice": "node apps/cli/dist/index.js",
+     "test:python": "python3 -m unittest discover -s sdks/python/tests",
+-    "test:examples": "scripts/check-examples.sh",
+-    "bootstrap": "scripts/bootstrap.sh"
++    "test:examples": "bash scripts/check-examples.sh",
++    "bootstrap": "bash scripts/bootstrap.sh"
+   },
+   "devDependencies": {
+     "@types/node": "^24.0.0",
+diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
+index 0af6f37..43f2adb 100644
+--- a/packages/mcp/src/index.ts
++++ b/packages/mcp/src/index.ts
+@@ -318,7 +318,12 @@ export function createMcpHandler(options: McpServerOptions = {}) {
+     }
+   }
+ 
+-  return async function handle(message: unknown): Promise<JsonRpcResponse | undefined> {
++  return Object.assign(handle, {
++    /** Stop pending remote reviews; nobody can answer them once the client is gone. */
++    close: () => reviews.close("MCP client disconnected"),
++  });
++
++  async function handle(message: unknown): Promise<JsonRpcResponse | undefined> {
+     const request = message as Partial<JsonRpcRequest>;
+     if (!request || typeof request !== "object" || request.jsonrpc !== "2.0" || typeof request.method !== "string") {
+       return fail(request?.id ?? null, -32600, "invalid JSON-RPC request");
+@@ -392,5 +397,6 @@ export async function serveMcpStdio(
+       .finally(() => pending.delete(task));
+     pending.add(task);
+   }
++  handle.close();
+   await Promise.all(pending);
+ }
+diff --git a/packages/server/src/index.ts b/packages/server/src/index.ts
+index 80acf1f..97fbea2 100644
+--- a/packages/server/src/index.ts
++++ b/packages/server/src/index.ts
+@@ -377,12 +377,15 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server
+     }
+   }
+ 
+-  return createServer((req, res) => {
++  const server = createServer((req, res) => {
+     route(req, res).catch((error) => {
+       if (!res.headersSent) sendError(res, error);
+       else res.end();
+     });
+   });
++  // Paused runs must not wait out the review timeout once nobody can answer.
++  server.on("close", () => reviews.close("daemon shutting down"));
++  return server;
+ }
+ 
+ export interface StartedLatticeServer {
+diff --git a/packages/service/src/index.test.ts b/packages/service/src/index.test.ts
+index bc167d8..107e573 100644
+--- a/packages/service/src/index.test.ts
++++ b/packages/service/src/index.test.ts
+@@ -339,6 +339,15 @@ test("ReviewBroker stops unanswered reviews after the timeout", async () => {
+   assert.equal(early.action, "stop");
+ });
+ 
++test("ReviewBroker.close stops pending reviews instead of leaving runs paused", async () => {
++  const broker = new ReviewBroker({ timeoutMs: 60_000 });
++  const pending = broker.reviewerFor(() => "abc")(reviewRequest(1));
++  assert.equal(broker.list().length, 1);
++  broker.close("shutting down");
++  assert.deepEqual(await pending, { action: "stop", note: "shutting down" });
++  assert.deepEqual(broker.list(), []);
++});
++
+ test("findExecutable searches PATH and honours PATHEXT on Windows", async () => {
+   const dir = await mkdtemp(join(tmpdir(), "lattice-path-"));
+   await writeFile(join(dir, "tool"), "");
+diff --git a/packages/service/src/index.ts b/packages/service/src/index.ts
+index 26b5b9f..6cb8a16 100644
+--- a/packages/service/src/index.ts
++++ b/packages/service/src/index.ts
+@@ -219,7 +219,8 @@ export class ReviewBroker {
+           this.pending.delete(id);
+           resolveReview({ action: "stop", note: `no remote review within ${timeoutMs}ms` });
+         }, timeoutMs);
+-        timer.unref?.();
++        // Deliberately not unref'd: a paused run must end with a defined
++        // "stop" answer, not vanish because the event loop drained first.
+ 
+         this.pending.set(id, {
+           review: {
+@@ -264,6 +265,11 @@ export class ReviewBroker {
+     return entry.review;
+   }
+ 
++  /** Stop every pending review, e.g. when the process that could answer them shuts down. */
++  close(note = "remote reviewer disconnected"): void {
++    for (const entry of [...this.pending.values()]) entry.settle({ action: "stop", note });
++  }
++
+   private entry(reference: string): PendingEntry {
+     if (reference === "latest") {
+       const [latest] = this.list();
+diff --git a/packages/service/src/testing.ts b/packages/service/src/testing.ts
+index d742943..89d1f19 100644
+--- a/packages/service/src/testing.ts
++++ b/packages/service/src/testing.ts
+@@ -57,7 +57,7 @@ export async function createAutoModeFixture(): Promise<{ cwd: string; closeModel
+       autonomy: { mode: "manual" },
+       model: { baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" },
+       agent: { preset: "qwen-code", command: worker },
+-      verify: { command: process.execPath, args: ["--test", "test/"], timeoutMs: 60000 },
++      verify: { command: process.execPath, args: ["--test", "test/calc.test.js"], timeoutMs: 60000 },
+       search: { maxRounds: 2, candidatesPerRound: 2 },
+       workspace: { cleanup: "always" },
+     }),
+diff --git a/scripts/bootstrap.sh b/scripts/bootstrap.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/check-examples.sh b/scripts/check-examples.sh
+old mode 100644
+new mode 100755
+index 3da19b8..65588b9
+--- a/scripts/check-examples.sh
++++ b/scripts/check-examples.sh
+@@ -1,5 +1,9 @@
+ #!/usr/bin/env bash
+ # Run every offline example and validate every example config. Used by CI.
++#
++# Every example must pass. A skipped example (e.g. python3 missing) is a
++# failure unless its name is listed in LATTICE_EXAMPLES_ALLOW_SKIP
++# (comma-separated, e.g. LATTICE_EXAMPLES_ALLOW_SKIP=python-sdk).
+ set -euo pipefail
+ . "$(dirname "$0")/lib.sh"
+ 
+@@ -7,36 +11,73 @@ require_node
+ require_built_cli
+ cd "$LATTICE_ROOT"
+ 
+-info "Validating examples/configs/*.json"
+-node --input-type=module -e '
+-  import { readdirSync, readFileSync } from "node:fs";
+-  import { parseLatticeConfig } from "@lattice/runtime";
+-  for (const name of readdirSync("examples/configs").filter((f) => f.endsWith(".json") && !f.startsWith("."))) {
+-    parseLatticeConfig(JSON.parse(readFileSync(`examples/configs/${name}`, "utf8")));
+-    console.log(`  ✓ ${name}`);
+-  }
+-'
++FAILED=() SKIPPED=()
+ 
+-info "examples/embedded/offline-search-loop.mjs"
+-node examples/embedded/offline-search-loop.mjs >/dev/null && ok "search solved by test evidence"
++# check <name> <success message> <command...>: run one example, record the outcome.
++check() {
++  local name="$1" message="$2" status=0
++  shift 2
++  info "$name"
++  "$@" >/dev/null || status=$?
++  if [ "$status" -eq 0 ]; then
++    ok "$message"
++  else
++    printf '  \033[31m✗\033[0m %s (exit %s)\n' "$name" "$status" >&2
++    FAILED+=("$name")
++  fi
++}
+ 
+-info "examples/sdk/typescript/run-and-inspect.mjs"
+-env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs >/dev/null && ok "TypeScript SDK round-trip"
++# skip <id> <reason>: only acceptable when explicitly allow-listed.
++skip() {
++  local id="$1" reason="$2"
++  case ",${LATTICE_EXAMPLES_ALLOW_SKIP:-}," in
++    *",$id,"*) warn "skipping $id (allow-listed): $reason"; SKIPPED+=("$id") ;;
++    *)
++      printf '  \033[31m✗\033[0m %s skipped: %s (set LATTICE_EXAMPLES_ALLOW_SKIP=%s to allow)\n' "$id" "$reason" "$id" >&2
++      FAILED+=("$id (skipped)")
++      ;;
++  esac
++}
+ 
+-info "examples/review/remote-reviewer.mjs"
+-node examples/review/remote-reviewer.mjs >/dev/null && ok "remote review of an auto-mode run"
++validate_configs() {
++  node --input-type=module -e '
++    import { readdirSync, readFileSync } from "node:fs";
++    import { parseLatticeConfig } from "@lattice/runtime";
++    const names = readdirSync("examples/configs").filter((f) => f.endsWith(".json") && !f.startsWith("."));
++    if (names.length === 0) throw new Error("no example configs found");
++    for (const name of names) {
++      parseLatticeConfig(JSON.parse(readFileSync(`examples/configs/${name}`, "utf8")));
++      console.error(`  ✓ ${name}`);
++    }
++  '
++}
+ 
+-info "examples/mcp/raw-session.mjs"
+-node examples/mcp/raw-session.mjs >/dev/null && ok "MCP stdio session"
+-
+-info "examples/demo/run-demo.sh"
+-examples/demo/run-demo.sh >/dev/null && ok "CLI walkthrough"
++check "examples/configs/*.json" "all example configs parse" validate_configs
++check examples/embedded/offline-search-loop.mjs "search solved by test evidence" \
++  node examples/embedded/offline-search-loop.mjs
++check examples/sdk/typescript/run-and-inspect.mjs "TypeScript SDK round-trip" \
++  env -u LATTICE_URL node examples/sdk/typescript/run-and-inspect.mjs
++check examples/review/remote-reviewer.mjs "remote review of an auto-mode run" \
++  node examples/review/remote-reviewer.mjs
++check examples/mcp/raw-session.mjs "MCP stdio session" \
++  node examples/mcp/raw-session.mjs
++check examples/demo/run-demo.sh "CLI walkthrough" \
++  bash examples/demo/run-demo.sh
+ 
+ if has python3; then
+-  info "examples/sdk/python/run_and_inspect.py"
+-  env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py >/dev/null && ok "Python SDK round-trip"
++  check examples/sdk/python/run_and_inspect.py "Python SDK round-trip" \
++    env -u LATTICE_URL python3 examples/sdk/python/run_and_inspect.py
+ else
+-  warn "python3 not found; skipping the Python SDK example"
++  skip python-sdk "python3 not found"
+ fi
+ 
+-info "All examples passed"
++if [ "${#FAILED[@]}" -gt 0 ]; then
++  printf '\033[31merror:\033[0m %s example check(s) failed:\n' "${#FAILED[@]}" >&2
++  printf '  - %s\n' "${FAILED[@]}" >&2
++  exit 1
++fi
++if [ "${#SKIPPED[@]}" -gt 0 ]; then
++  info "All examples passed (allow-listed skips: ${SKIPPED[*]})"
++else
++  info "All examples passed"
++fi
+diff --git a/scripts/lib.sh b/scripts/lib.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/setup-agents.sh b/scripts/setup-agents.sh
+old mode 100644
+new mode 100755
+diff --git a/scripts/setup-provider.sh b/scripts/setup-provider.sh
+old mode 100644
+new mode 100755
+diff --git a/sdks/python/tests/test_client.py b/sdks/python/tests/test_client.py
+index 805c6d7..6b63489 100644
+--- a/sdks/python/tests/test_client.py
++++ b/sdks/python/tests/test_client.py
+@@ -18,12 +18,18 @@ from lattice_sdk import LatticeApiError, LatticeClient  # noqa: E402
+ REPO = Path(__file__).resolve().parents[3]
+ CLI = REPO / "apps" / "cli" / "dist" / "index.js"
+ NODE = shutil.which("node")
++# Missing prerequisites fail the suite; skipping must be opted into explicitly
++# so CI can never go green with the daemon tests silently not run.
++ALLOW_SKIP = os.environ.get("LATTICE_PYTHON_ALLOW_SKIP") == "1"
++PREREQUISITES_MESSAGE = "node and a built CLI (npm run build) are required"
+ 
+ 
+-@unittest.skipUnless(NODE and CLI.exists(), "node and a built CLI (npm run build) are required")
++@unittest.skipUnless(NODE and CLI.exists() or not ALLOW_SKIP, PREREQUISITES_MESSAGE)
+ class DaemonIntegrationTest(unittest.TestCase):
+     @classmethod
+     def setUpClass(cls) -> None:
++        if not (NODE and CLI.exists()):
++            raise RuntimeError(f"{PREREQUISITES_MESSAGE} (set LATTICE_PYTHON_ALLOW_SKIP=1 to skip)")
+         cls.project = tempfile.mkdtemp(prefix="lattice-py-")
+         env = {**os.environ, "LATTICE_DAEMON_TOKEN": "py-token", "LATTICE_CONFIG": ""}
+         cls.daemon = subprocess.Popen(

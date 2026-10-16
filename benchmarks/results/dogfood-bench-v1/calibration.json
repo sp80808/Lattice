@@ -1,0 +1,16 @@
+[
+  {
+    "case": "lattice-false-green",
+    "version": 1,
+    "verdict": "discriminating",
+    "reason": "base fails and gold fix passes",
+    "logPath": "/home/claude/Lattice/.lattice/dogfood-bench/dogfood-bench-v1/logs/dogfood-lattice-false-green-calibrate-9ce0519b.jsonl"
+  },
+  {
+    "case": "tessera-tcap-binder",
+    "version": 1,
+    "verdict": "discriminating",
+    "reason": "base fails and gold fix passes",
+    "logPath": "/home/claude/Lattice/.lattice/dogfood-bench/dogfood-bench-v1/logs/dogfood-tessera-tcap-binder-calibrate-cd21d22b.jsonl"
+  }
+]

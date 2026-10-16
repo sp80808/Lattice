@@ -52,6 +52,16 @@
           "items": { "type": "string" },
           "minItems": 1
         },
+        "setup": {
+          "description": "Commands run in the workspace before acceptance (install, build). A setup failure makes a run inconclusive, never a pass or a discriminating failure.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "held_out_from_gold": {
+          "description": "Repository paths copied from reference.gold_fix_sha into the workspace after the candidate change and before setup, so held-out tests judge it without being visible to the agent.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "must_fail_on_broken_base": { "type": "boolean" },
         "must_pass_on_fixed_sha": { "type": "boolean" },
         "notes": { "type": "string" }
