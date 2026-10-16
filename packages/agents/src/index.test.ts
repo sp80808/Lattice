@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runCommand } from "@lattice/execution";
 import {
+  QWEN_CODE_ENV,
   ProcessAgentAdapter,
+  createAgentExperimentExecutor,
   createOpenCodeAdapter,
   createQwenCodeAdapter,
   promoteVerifiedRun,
+  removeWorktree,
   runIsolatedAgent,
   runParallelAgents,
   verifiedBatchResults,
   workspaceExists,
   objectiveVerification,
-  createAgentExperimentExecutor,
 } from "./index.js";
 
 async function createRepo(): Promise<string> {
@@ -83,6 +86,97 @@ test("process agent runs in an isolated worktree and returns a verified diff", a
   assert.equal(original.stdout, "base\n");
 });
 
+
+test("a worker's cwd, writes and git state stay inside its own worktree", async () => {
+  const repo = await createRepo();
+  const head = (await runCommand({ command: "git", args: ["rev-parse", "HEAD"], cwd: repo })).stdout;
+  const adapter = new ProcessAgentAdapter({
+    name: "fixture-agent",
+    command: process.execPath,
+    args: [
+      "-e",
+      // Write relative to cwd, then try to move HEAD from inside the worktree.
+      "const fs=require('fs');fs.writeFileSync('inside.txt',fs.realpathSync(process.cwd()));" +
+        "require('child_process').execFileSync('git',['checkout','-q','--detach','HEAD~0']);",
+    ],
+  });
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "x" },
+    adapter,
+    cleanup: "never",
+  });
+  try {
+    assert.equal(result.execution.exitCode, 0, result.execution.stderr);
+    assert.deepEqual(result.changes.changedFiles, ["inside.txt"]);
+    assert.match(result.changes.diff, new RegExp(realpathSync(result.workspace.path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    const status = await runCommand({ command: "git", args: ["status", "--porcelain"], cwd: repo });
+    assert.equal(status.stdout, "", "main checkout was modified");
+    const after = await runCommand({ command: "git", args: ["rev-parse", "HEAD"], cwd: repo });
+    assert.equal(after.stdout, head, "main checkout HEAD moved");
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("a worker that moves the main repo's shared refs fails the run", async () => {
+  const repo = await createRepo();
+  const git = (args: string[], cwd = repo) => runCommand({ command: "git", args, cwd });
+  const branch = (await git(["symbolic-ref", "--short", "HEAD"])).stdout.trim();
+  const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
+  assert.equal((await git(["tag", "v1"])).exitCode, 0);
+
+  // Commit inside the worktree, then point the main branch at it, delete a
+  // tag and add a new branch. Worktrees share refs, so only a check notices.
+  const script = [
+    "const {execFileSync:x}=require('child_process');",
+    "require('fs').writeFileSync('evil.txt','x');",
+    "x('git',['add','evil.txt']);",
+    "x('git',['-c','user.name=w','-c','user.email=w@x','commit','-qm','evil']);",
+    "x('git',['update-ref','refs/heads/'+process.argv[1],'HEAD']);",
+    "x('git',['tag','-d','v1']);",
+    "x('git',['branch','scratch']);",
+  ].join("");
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: branch },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture-agent",
+      command: process.execPath,
+      args: ["-e", script, "{prompt}"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "0"] },
+    cleanup: "never",
+  });
+  try {
+    assert.equal(result.execution.exitCode, 0, result.execution.stderr);
+    assert.equal(result.verification?.exitCode, 0);
+    assert.equal(result.success, false);
+    assert.equal(result.refTamper?.length, 2, JSON.stringify(result.refTamper));
+    assert.match(result.refTamper![0]!, new RegExp(`^refs/heads/${branch}: ${head.slice(0, 12)}->`));
+    assert.equal(result.refTamper![1], "refs/tags/v1: deleted");
+    await assert.rejects(promoteVerifiedRun(result), /unsuccessful/);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("an untouched repo reports no ref tamper", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "x" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture-agent",
+      command: process.execPath,
+      args: ["-e", "require('fs').writeFileSync('ok.txt','x')"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "0"] },
+    cleanup: "always",
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.refTamper, undefined);
+});
 
 test("Qwen Code and OpenCode presets render current headless CLI shapes", async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
@@ -301,6 +395,67 @@ test("a structured verifier gates success and is mutually exclusive with verifyC
     cleanup: "always",
   });
   assert.equal(accepted.success, true);
+});
+
+test("agent workers do not inherit unrelated parent secrets", async () => {
+  const repo = await createRepo();
+  process.env.LATTICE_AGENT_TEST_SECRET = "do-not-leak";
+  process.env.LATTICE_AGENT_TEST_KEY = "granted";
+  const script =
+    "process.stdout.write(JSON.stringify({s:process.env.LATTICE_AGENT_TEST_SECRET??null,k:process.env.LATTICE_AGENT_TEST_KEY??null}))";
+  try {
+    const restricted = await new ProcessAgentAdapter({
+      name: "restricted",
+      command: process.execPath,
+      args: ["-e", script],
+      allowEnv: ["LATTICE_AGENT_TEST_KEY"],
+    }).run({ prompt: "x" }, repo);
+    assert.deepEqual(JSON.parse(restricted.stdout), { s: null, k: "granted" });
+    assert.equal(restricted.environment?.policy, "minimal");
+    assert.ok(restricted.environment?.names.includes("LATTICE_AGENT_TEST_KEY"));
+
+    const trusted = await new ProcessAgentAdapter({
+      name: "trusted",
+      command: process.execPath,
+      args: ["-e", script],
+      trustedHost: true,
+    }).run({ prompt: "x" }, repo);
+    assert.deepEqual(JSON.parse(trusted.stdout), { s: "do-not-leak", k: "granted" });
+    assert.equal(trusted.environment?.policy, "inherit");
+  } finally {
+    delete process.env.LATTICE_AGENT_TEST_SECRET;
+    delete process.env.LATTICE_AGENT_TEST_KEY;
+  }
+});
+
+test("presets declare the environment their CLI needs", () => {
+  assert.ok(QWEN_CODE_ENV.includes("OPENAI_API_KEY"));
+  assert.ok(QWEN_CODE_ENV.includes("HOME"));
+});
+
+test("experiment evidence records the worker env policy and names", async () => {
+  const repo = await createRepo();
+  const revision = await runCommand({ command: "git", args: ["rev-parse", "HEAD"], cwd: repo });
+  const executor = createAgentExperimentExecutor({
+    adapter: new ProcessAgentAdapter({
+      name: "fixture-agent",
+      command: process.execPath,
+      args: ["-e", "0"],
+    }),
+    cleanup: "always",
+  });
+  const outcome = await executor.execute(
+    { id: "c1", label: "noop", action: "noop", expectedEvidence: "none" } as never,
+    {
+      task: "noop",
+      repo: { root: repo, revision: revision.stdout.trim() },
+      context: [],
+    } as never,
+  );
+  const model = outcome.evidence.find((record) => record.kind === "model");
+  assert.ok(model, "missing model evidence");
+  assert.match(JSON.stringify(model), /env=minimal:[^"]*PATH/);
+  assert.doesNotMatch(JSON.stringify(model), /undefined/);
 });
 
 test("parallel agents correctly handle both command and structured verifiers", async () => {

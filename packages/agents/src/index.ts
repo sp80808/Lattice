@@ -34,6 +34,8 @@ export interface AgentExecution {
   stderr: string;
   durationMs: number;
   timedOut: boolean;
+  /** Environment the worker ran with: policy and variable names, never values. */
+  environment?: { policy: "minimal" | "inherit"; names: string[] };
 }
 
 export interface AgentAdapter {
@@ -47,7 +49,18 @@ export interface ProcessAgentConfig {
   args?: string[];
   promptMode?: "template" | "stdin";
   timeoutMs?: number;
+  /** Explicit values set for the worker; always passed. */
   env?: Record<string, string | undefined>;
+  /**
+   * Parent variable names the worker may read, e.g. its provider API key.
+   * Everything else in the Lattice process environment is withheld.
+   */
+  allowEnv?: string[];
+  /**
+   * Opt in to passing the full parent environment. For local debugging only:
+   * the worker can then read every secret Lattice can.
+   */
+  trustedHost?: boolean;
 }
 
 function render(value: string, task: AgentTask, workspace: string): string {
@@ -74,12 +87,16 @@ export class ProcessAgentAdapter implements AgentAdapter {
         ? [task.prompt, ...(task.context ?? [])].join("\n\n")
         : undefined;
 
+    const envPolicy = this.config.trustedHost ? "inherit" : "minimal";
     const result = await runCommand({
       command: this.config.command,
       args,
       cwd: workspace,
       stdin,
       env: this.config.env,
+      envPolicy,
+      allowEnv: this.config.allowEnv,
+      killTree: true,
       timeoutMs: task.timeoutMs ?? this.config.timeoutMs ?? 10 * 60_000,
       maxOutputBytes: 1_000_000,
     });
@@ -91,6 +108,7 @@ export class ProcessAgentAdapter implements AgentAdapter {
       stderr: result.stderr,
       durationMs: result.durationMs,
       timedOut: result.timedOut,
+      environment: { policy: envPolicy, names: result.envNames ?? [] },
     };
   }
 }
@@ -103,8 +121,37 @@ export interface QwenCodePresetOptions {
   outputFormat?: "json" | "stream-json" | "text";
   extraArgs?: string[];
   env?: Record<string, string | undefined>;
+  /** Replaces {@link QWEN_CODE_ENV}; the names the worker may read. */
+  allowEnv?: string[];
+  trustedHost?: boolean;
   timeoutMs?: number;
 }
+
+/**
+ * Login state lives under HOME/XDG dirs for both CLIs, so they are declared
+ * here rather than added to every worker's base environment.
+ */
+const CLI_HOME_ENV = ["HOME", "USER", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"];
+
+/** Variables Qwen Code reads for its model endpoint and login state. */
+export const QWEN_CODE_ENV: readonly string[] = [
+  ...CLI_HOME_ENV,
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_MODEL",
+  "DASHSCOPE_API_KEY",
+];
+
+/** Variables OpenCode reads for common providers and its own config. */
+export const OPENCODE_ENV: readonly string[] = [
+  ...CLI_HOME_ENV,
+  "OPENCODE_CONFIG",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+];
 
 export function createQwenCodeAdapter(
   options: QwenCodePresetOptions = {},
@@ -128,6 +175,8 @@ export function createQwenCodeAdapter(
     args,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    allowEnv: options.allowEnv ?? [...QWEN_CODE_ENV],
+    trustedHost: options.trustedHost,
   });
 }
 
@@ -139,6 +188,9 @@ export interface OpenCodePresetOptions {
   format?: "default" | "json";
   extraArgs?: string[];
   env?: Record<string, string | undefined>;
+  /** Replaces {@link OPENCODE_ENV}; the names the worker may read. */
+  allowEnv?: string[];
+  trustedHost?: boolean;
   timeoutMs?: number;
 }
 
@@ -160,6 +212,8 @@ export function createOpenCodeAdapter(
     args,
     timeoutMs: options.timeoutMs,
     env: options.env,
+    allowEnv: options.allowEnv ?? [...OPENCODE_ENV],
+    trustedHost: options.trustedHost,
   });
 }
 
@@ -310,6 +364,46 @@ export interface IsolatedAgentRunResult {
   verifierResult?: VerificationRecord;
   success: boolean;
   workspaceRetained: boolean;
+  /**
+   * Branches or tags of the main repository that moved or vanished while the
+   * worker or its verification ran. Worktrees share refs with the main
+   * checkout, so this is how a worker escaping its worktree through git shows
+   * up. Any entry fails the run. Absent when nothing changed.
+   */
+  refTamper?: string[];
+}
+
+/** Branch and tag tips of a repository, keyed by ref name. */
+export async function snapshotSharedRefs(repoRoot: string): Promise<Map<string, string>> {
+  const result = await gitOrThrow(repoRoot, [
+    "for-each-ref",
+    "--format=%(refname) %(objectname)",
+    "refs/heads",
+    "refs/tags",
+  ]);
+  const refs = new Map<string, string>();
+  for (const line of result.stdout.split("\n")) {
+    const space = line.lastIndexOf(" ");
+    if (space > 0) refs.set(line.slice(0, space), line.slice(space + 1));
+  }
+  return refs;
+}
+
+/**
+ * Pre-existing refs that moved or were deleted. New refs are not reported:
+ * they cannot overwrite anything, and promotion creates its own branch.
+ */
+export function changedSharedRefs(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): string[] {
+  const changed: string[] = [];
+  for (const [ref, oid] of before) {
+    const now = after.get(ref);
+    if (now === undefined) changed.push(`${ref}: deleted`);
+    else if (now !== oid) changed.push(`${ref}: ${oid.slice(0, 12)}->${now.slice(0, 12)}`);
+  }
+  return changed.sort();
 }
 
 export interface ObjectiveVerificationStatus {
@@ -368,6 +462,10 @@ export async function runIsolatedAgent(
     options.repoRoot,
     options.baseRevision,
   );
+  const refsBefore = await snapshotSharedRefs(workspace.repoRoot).catch(async (error) => {
+    await removeWorktree(workspace).catch(() => undefined);
+    throw error;
+  });
 
   let execution: AgentExecution | undefined;
   let verification: CommandResult | undefined;
@@ -386,12 +484,19 @@ export async function runIsolatedAgent(
       verifierResult = await options.verifier.verify(workspace.path);
     } else if (options.verifyCommand) {
       verification = await runCommand({
+        killTree: true,
         ...options.verifyCommand,
         cwd: workspace.path,
       });
     }
 
+    const refTamper = changedSharedRefs(
+      refsBefore,
+      await snapshotSharedRefs(workspace.repoRoot),
+    );
+
     const success =
+      refTamper.length === 0 &&
       execution.exitCode === 0 &&
       !execution.timedOut &&
       (verifierResult === undefined || verifierResult.passed) &&
@@ -416,6 +521,7 @@ export async function runIsolatedAgent(
       verifierResult,
       success,
       workspaceRetained: !shouldCleanup,
+      ...(refTamper.length ? { refTamper } : {}),
     };
   } catch (error) {
     if ((options.cleanup ?? "on-failure") !== "never") {
@@ -677,6 +783,15 @@ export interface AgentExperimentOptions {
   cleanup?: CleanupPolicy;
 }
 
+function envSummary(environment: AgentExecution["environment"]): string | undefined {
+  if (!environment) return undefined;
+  // Under inherit the name list is the whole host environment; the policy is
+  // the fact worth recording.
+  return environment.policy === "inherit"
+    ? "env=inherit"
+    : `env=minimal:${environment.names.join(",") || "none"}`;
+}
+
 export function createAgentExperimentExecutor(
   options: AgentExperimentOptions,
 ): ExperimentExecutor {
@@ -719,7 +834,11 @@ export function createAgentExperimentExecutor(
             `exit=${result.execution.exitCode}`,
             `changed=${result.changes.changedFiles.join(",") || "none"}`,
             `workspace_retained=${result.workspaceRetained}`,
-          ].join(" "),
+            envSummary(result.execution.environment),
+            result.refTamper ? `ref_tamper=${result.refTamper.join(";")}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(" "),
           false,
         ),
       ];
@@ -759,13 +878,13 @@ export function createAgentExperimentExecutor(
           !result.verification.timedOut;
 
       const verifiedSuccess = verificationPassed && result.execution.exitCode === 0 && !result.execution.timedOut &&
-        result.changes.changedFiles.length > 0;
+        result.changes.changedFiles.length > 0 && !result.refTamper;
 
       return {
         candidateId: candidate.id,
         status: verifiedSuccess
           ? "success"
-          : result.execution.exitCode === 0
+          : result.execution.exitCode === 0 && !result.refTamper
             ? "inconclusive"
             : "failure",
         terminal: verifiedSuccess,
@@ -779,7 +898,10 @@ export function createAgentExperimentExecutor(
               ? `verify_exit=${result.verification.exitCode}`
               : "verify=not_run",
           `worktree=${result.workspace.path}`,
-        ].join(" "),
+          result.refTamper ? `ref_tamper=${result.refTamper.length}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" "),
         evidence: records,
         changes: {
           diff: result.changes.diff,
@@ -789,7 +911,9 @@ export function createAgentExperimentExecutor(
         },
         uncertainties: verifiedSuccess
           ? undefined
-          : ["Implementation requires actual changes, a successful agent and passing verification"],
+          : result.refTamper
+            ? [`Worker changed shared repository refs: ${result.refTamper.join(", ")}`]
+            : ["Implementation requires actual changes, a successful agent and passing verification"],
       };
     },
   };
