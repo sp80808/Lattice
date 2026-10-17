@@ -236,7 +236,7 @@ export const App: React.FC<AppProps> = ({ globals = [] }) => {
       const patches = selected === "plan" ? [] : await getRunChanges(result.runId, cwd);
       const verified = !cancelled && result.search?.status === "solved" && patches.some(patch => patch.changedFiles.length > 0);
       const status = cancelled ? "CANCELLED" : selected === "plan" ? "PLANNED" : verified ? "VERIFIED PATCH" : result.search?.status === "blocked" ? "BLOCKED" : "NEEDS REVIEW";
-      const patchInfo = patches.map(patch => `${patch.changedFiles.join(", ") || "No changes"} · ${patch.retained ? `retained at ${patch.workspace}` : "worktree cleaned; patch recorded"}`).join("\n");
+      const patchInfo = patches.map(patch => `${patch.changedFiles.join(", ") || "No changes"} · ${patch.retained ? `retained at ${patch.workspace}` : "worktree cleaned; patch recorded"}${patch.changeSetDigest ? ` · change-set ${patch.changeSetDigest.slice(0, 12)}` : ""}`).join("\n");
       addFeedItem({ type: "result", tone: verified ? "success" : selected === "plan" ? "muted" : "warning", title: `${status} (${result.runId.slice(0, 8)})`, text: `${result.summary}\nEvidence: ${result.tap.evidence.length}\n${patchInfo}${selected === "plan" ? "\nDraft only; no implementation or checks ran." : "\nIsolated changes require review; /diff latest inspects recorded patches."}` });
     } catch (error) {
       addFeedItem({ type: error instanceof LatticeServiceError ? "info" : "error", tone: "warning", title: error instanceof LatticeServiceError ? "BLOCKED · setup required" : controller.current.signal.aborted ? "CANCELLED" : "FAILED", text: error instanceof Error ? error.message : String(error) });
