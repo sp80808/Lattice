@@ -121,6 +121,32 @@ test("models.decision provider random is a seeded baseline", async () => {
   );
 });
 
+test("workspace.changes validates candidate policy", () => {
+  const parsed = parseLatticeConfig({
+    mode: "observe",
+    workspace: {
+      cleanup: "never",
+      changes: { symlinks: "allow", maxEntries: 50 },
+    },
+  });
+  assert.deepEqual(parsed.workspace?.changes, {
+    symlinks: "allow",
+    maxEntries: 50,
+  });
+  assert.throws(
+    () => parseLatticeConfig({ workspace: { changes: { symlinks: "yes" } } }),
+    /workspace\.changes\.symlinks/,
+  );
+  assert.throws(
+    () => parseLatticeConfig({ workspace: { changes: { maxFileBytes: 0 } } }),
+    /workspace\.changes\.maxFileBytes/,
+  );
+  assert.throws(
+    () => parseLatticeConfig({ workspace: { changes: [] } }),
+    /workspace\.changes must be an object/,
+  );
+});
+
 test("agent.allowEnv and agent.trustedHost are validated", () => {
   const base = { mode: "auto", agent: { preset: "qwen-code" } };
   const ok = parseLatticeConfig({

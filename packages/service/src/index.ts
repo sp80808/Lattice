@@ -255,10 +255,23 @@ export async function executeWorkflow(task: string, options: Omit<ExecuteTaskOpt
   return planTask(task, { ...options, cwd, files });
 }
 
-/** Read recorded patches without depending on retained worktree files. */
+/**
+ * Read recorded patches without depending on retained worktree files. The
+ * change-set digest is the verified candidate's identity; older runs predate
+ * it and legitimately omit the field.
+ */
 export async function getRunChanges(id = "latest", cwd = process.cwd()) {
   const events = await getRunEvents(id, cwd);
-  const changes: Array<{ diff: string; changedFiles: string[]; workspace: string; retained: boolean }> = [];
+  const changes: Array<{
+    diff: string;
+    changedFiles: string[];
+    untrackedFiles?: string[];
+    workspace: string;
+    retained: boolean;
+    changeSetDigest?: string;
+    policyViolations?: string[];
+    verificationTrusted?: boolean;
+  }> = [];
   for (const event of events) {
     if (event.type !== "tool.completed" || !isObject(event.payload)) continue;
     const outcome = event.payload.outcome;
@@ -266,7 +279,20 @@ export async function getRunChanges(id = "latest", cwd = process.cwd()) {
     const patch = outcome.changes;
     if (typeof patch.diff !== "string" || !Array.isArray(patch.changedFiles) ||
         !patch.changedFiles.every(file => typeof file === "string") || typeof patch.workspace !== "string" || typeof patch.retained !== "boolean") continue;
-    changes.push({ diff: patch.diff, changedFiles: patch.changedFiles, workspace: patch.workspace, retained: patch.retained });
+    changes.push({
+      diff: patch.diff,
+      changedFiles: patch.changedFiles,
+      ...(Array.isArray(patch.untrackedFiles) && patch.untrackedFiles.every(file => typeof file === "string")
+        ? { untrackedFiles: patch.untrackedFiles }
+        : {}),
+      workspace: patch.workspace,
+      retained: patch.retained,
+      ...(typeof patch.changeSetDigest === "string" ? { changeSetDigest: patch.changeSetDigest } : {}),
+      ...(Array.isArray(patch.policyViolations) && patch.policyViolations.every(code => typeof code === "string")
+        ? { policyViolations: patch.policyViolations }
+        : {}),
+      ...(typeof patch.verificationTrusted === "boolean" ? { verificationTrusted: patch.verificationTrusted } : {}),
+    });
   }
   return changes;
 }

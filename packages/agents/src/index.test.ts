@@ -747,3 +747,482 @@ test("new files with spaces in a new directory have a recorded patch", async () 
   assert.ok(result.changes.changedFiles.includes("new dir/new file.txt"));
   assert.match(result.changes.diff, /\+cloth mesh/);
 });
+
+
+test("verification that mutates the candidate is not trusted", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').appendFileSync('base.txt','agent\\n')"],
+    }),
+    verifyCommand: {
+      command: process.execPath,
+      args: [
+        "-e",
+        "require('fs').appendFileSync('base.txt','verifier\\n');process.exit(0)",
+      ],
+    },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.verification?.exitCode, 0, "the command itself passed");
+    assert.equal(result.success, false);
+    assert.equal(result.verificationIntegrity?.trusted, false);
+    assert.deepEqual(result.verificationIntegrity?.drift?.modified, ["base.txt"]);
+    assert.equal(objectiveVerification(result).passed, false);
+    assert.match(objectiveVerification(result).reason ?? "", /verification changed the workspace/);
+    await assert.rejects(promoteVerifiedRun(result), /unsuccessful/);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("a file created by the verifier is drift, not a promotion artifact", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').appendFileSync('base.txt','agent\\n')"],
+    }),
+    verifyCommand: {
+      command: process.execPath,
+      args: ["-e", "require('fs').writeFileSync('coverage.out','built\\n')"],
+    },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.verification?.exitCode, 0);
+    assert.equal(result.success, false);
+    assert.deepEqual(result.verificationIntegrity?.drift?.added, ["coverage.out"]);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("a late edit after verification refuses promotion", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').appendFileSync('base.txt','agent\\n')"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    assert.ok(result.changeSet.changeSetDigest);
+    await writeFile(join(result.workspace.path, "base.txt"), "late edit\n");
+    await assert.rejects(
+      promoteVerifiedRun(result),
+      /workspace changed after verification.*base\.txt/,
+    );
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("a file added after verification refuses promotion", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').appendFileSync('base.txt','agent\\n')"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    await writeFile(join(result.workspace.path, "late.txt"), "late\n");
+    await assert.rejects(
+      promoteVerifiedRun(result),
+      /workspace changed after verification.*added: late\.txt/,
+    );
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("promotion commits only the verified paths, not a staged phantom", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: [
+        "-e",
+        [
+          "const fs=require('fs'),cp=require('child_process');",
+          "fs.writeFileSync('ghost.txt','ghost\\n');",
+          "cp.execFileSync('git',['add','ghost.txt']);",
+          "fs.unlinkSync('ghost.txt');",
+          "fs.appendFileSync('base.txt','real change\\n');",
+        ].join(""),
+      ],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    assert.deepEqual(result.changeSet.entries.map((entry) => entry.path), ["base.txt"]);
+    const promoted = await promoteVerifiedRun(result, { branchName: "lattice/test-exact" });
+    assert.equal(promoted.changeSetDigest, result.changeSet.changeSetDigest);
+
+    const ghost = await runCommand({
+      command: "git",
+      args: ["cat-file", "-e", `lattice/test-exact:ghost.txt`],
+      cwd: repo,
+    });
+    assert.notEqual(ghost.exitCode, 0, "a path outside the verified manifest was committed");
+
+    const content = await runCommand({
+      command: "git",
+      args: ["show", "lattice/test-exact:base.txt"],
+      cwd: repo,
+    });
+    assert.equal(content.stdout, "base\nreal change\n");
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("structured verifier successes can be promoted", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').writeFileSync('base.txt','verified\\n')"],
+    }),
+    verifier: {
+      tool: "fixture.verifier",
+      describe: () => ({}),
+      async verify() {
+        return {
+          tool: "fixture.verifier",
+          passed: true,
+          summary: "ok",
+          evidence: [],
+          record: {},
+        };
+      },
+    },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    const promoted = await promoteVerifiedRun(result, { branchName: "lattice/test-structured" });
+    assert.match(promoted.commit, /^[0-9a-f]{40}$/);
+    const content = await runCommand({
+      command: "git",
+      args: ["show", "lattice/test-structured:base.txt"],
+      cwd: repo,
+    });
+    assert.equal(content.stdout, "verified\n");
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("a worker that commits cannot be promoted", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "change" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: [
+        "-e",
+        [
+          "const fs=require('fs'),cp=require('child_process');",
+          "fs.writeFileSync('base.txt','committed\\n');",
+          "cp.execFileSync('git',['add','base.txt']);",
+          "cp.execFileSync('git',['-c','user.name=w','-c','user.email=w@x','commit','-qm','worker']);",
+        ].join(""),
+      ],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.execution.exitCode, 0, result.execution.stderr);
+    assert.ok(result.verification, "verification still runs to record evidence");
+    assert.equal(result.headMoved?.baseRevision, result.changeSet.baseRevision);
+    assert.equal(result.success, false);
+    assert.match(objectiveVerification(result).reason ?? "", /moved HEAD/);
+    await assert.rejects(promoteVerifiedRun(result), /unsuccessful/);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("symlink candidates are denied by default and promotable when allowed", async () => {
+  const repo = await createRepo();
+  const adapter = new ProcessAgentAdapter({
+    name: "fixture",
+    command: process.execPath,
+    args: ["-e", "require('fs').symlinkSync('base.txt','link.txt')"],
+  });
+  const verifyCommand = { command: process.execPath, args: ["-e", "process.exit(0)"] };
+
+  const denied = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "link" },
+    adapter,
+    verifyCommand,
+    cleanup: "never",
+  });
+  try {
+    assert.equal(denied.success, false);
+    assert.deepEqual(
+      denied.policyViolations?.map((violation) => violation.code),
+      ["symlink"],
+    );
+    await assert.rejects(promoteVerifiedRun(denied), /unsuccessful/);
+  } finally {
+    await removeWorktree(denied.workspace);
+  }
+
+  const allowed = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "link" },
+    adapter,
+    verifyCommand,
+    changesPolicy: { symlinks: "allow" },
+    cleanup: "never",
+  });
+  try {
+    assert.equal(allowed.success, true);
+    assert.equal(allowed.changeSet.entries[0]?.kind, "symlink");
+    assert.equal(allowed.changeSet.entries[0]?.symlinkTarget, "base.txt");
+    await promoteVerifiedRun(allowed, { branchName: "lattice/test-symlink" });
+    const target = await runCommand({
+      command: "git",
+      args: ["cat-file", "-p", "lattice/test-symlink:link.txt"],
+      cwd: repo,
+    });
+    assert.equal(target.stdout, "base.txt");
+    const mode = await runCommand({
+      command: "git",
+      args: ["ls-tree", "lattice/test-symlink", "link.txt"],
+      cwd: repo,
+    });
+    assert.match(mode.stdout, /^120000 blob /);
+  } finally {
+    await removeWorktree(allowed.workspace);
+  }
+});
+
+test("rewriting the worktree .git file stops capture and verification", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "tamper" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').writeFileSync('.git','gitdir: /tmp/not-this-worktree\\n')"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.execution.exitCode, 0, result.execution.stderr);
+    assert.ok(result.gitMetadataTamper?.length);
+    assert.ok(result.captureError);
+    assert.ok(result.verificationSkipped);
+    assert.equal(result.verification, undefined, "no verifier runs over an unidentified state");
+    assert.equal(result.success, false);
+    await assert.rejects(promoteVerifiedRun(result), /unsuccessful/);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("untracked binary files are promoted byte-for-byte", async () => {
+  const repo = await createRepo();
+  const bytes = [0, 1, 2, 3, 255, 10];
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "binary" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: [
+        "-e",
+        "require('fs').writeFileSync('blob.bin',Buffer.from([0,1,2,3,255,10]))",
+      ],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    const blob = result.changeSet.entries.find((entry) => entry.path === "blob.bin");
+    assert.equal(blob?.binary, true);
+    assert.equal(blob?.size, bytes.length);
+
+    const localOid = await runCommand({
+      command: "git",
+      args: ["hash-object", "blob.bin"],
+      cwd: result.workspace.path,
+    });
+    await promoteVerifiedRun(result, { branchName: "lattice/test-binary" });
+    const committedOid = await runCommand({
+      command: "git",
+      args: ["rev-parse", "lattice/test-binary:blob.bin"],
+      cwd: repo,
+    });
+    assert.equal(committedOid.stdout.trim(), localOid.stdout.trim());
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+
+test("a rename is promoted as exactly one delete and one add", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "rename" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').renameSync('base.txt','renamed ünï file.txt')"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    // A filesystem rename is captured as a delete plus an add: Git cannot see
+    // the new path until it is staged.
+    const added = result.changeSet.entries.find(
+      (entry) => entry.path === "renamed ünï file.txt",
+    );
+    const deleted = result.changeSet.entries.find(
+      (entry) => entry.path === "base.txt",
+    );
+    assert.equal(added?.status, "added");
+    assert.equal(deleted?.status, "deleted");
+
+    await promoteVerifiedRun(result, { branchName: "lattice/test-rename" });
+    const tree = await runCommand({
+      command: "git",
+      args: ["ls-tree", "-z", "--name-only", "lattice/test-rename"],
+      cwd: repo,
+    });
+    assert.deepEqual(tree.stdout.split("\0").filter(Boolean), ["renamed ünï file.txt"]);
+    const content = await runCommand({
+      command: "git",
+      args: ["show", "lattice/test-rename:renamed ünï file.txt"],
+      cwd: repo,
+    });
+    assert.equal(content.stdout, "base\n");
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+test("an executable-bit change is captured and committed", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "chmod" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: ["-e", "require('fs').chmodSync('base.txt',0o755)"],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    const entry = result.changeSet.entries.find((item) => item.path === "base.txt");
+    assert.equal(entry?.modeBefore, "100644");
+    assert.equal(entry?.modeAfter, "100755");
+
+    await promoteVerifiedRun(result, { branchName: "lattice/test-mode" });
+    const tree = await runCommand({
+      command: "git",
+      args: ["ls-tree", "lattice/test-mode", "base.txt"],
+      cwd: repo,
+    });
+    assert.match(tree.stdout, /^100755 blob /);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
+
+
+test("a git mv is promoted as one delete and one add", async () => {
+  const repo = await createRepo();
+  const result = await runIsolatedAgent({
+    repoRoot: repo,
+    task: { prompt: "git rename" },
+    adapter: new ProcessAgentAdapter({
+      name: "fixture",
+      command: process.execPath,
+      args: [
+        "-e",
+        "require('child_process').execFileSync('git',['mv','base.txt','renamed ünï file.txt'])",
+      ],
+    }),
+    verifyCommand: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+    cleanup: "never",
+  });
+
+  try {
+    assert.equal(result.success, true);
+    const added = result.changeSet.entries.find(
+      (entry) => entry.path === "renamed ünï file.txt",
+    );
+    const deleted = result.changeSet.entries.find(
+      (entry) => entry.path === "base.txt",
+    );
+    assert.equal(added?.status, "added");
+    assert.equal(deleted?.status, "deleted");
+
+    await promoteVerifiedRun(result, { branchName: "lattice/test-git-rename" });
+    const tree = await runCommand({
+      command: "git",
+      args: ["ls-tree", "-z", "--name-only", "lattice/test-git-rename"],
+      cwd: repo,
+    });
+    assert.deepEqual(tree.stdout.split("\0").filter(Boolean), ["renamed ünï file.txt"]);
+  } finally {
+    await removeWorktree(result.workspace);
+  }
+});
