@@ -3,6 +3,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  abortReasonText,
   digest,
   runCommand,
   type CommandResult,
@@ -25,6 +26,8 @@ export interface AgentTask {
   prompt: string;
   context?: string[];
   timeoutMs?: number;
+  /** Cancels the worker and every process it started. */
+  signal?: AbortSignal;
 }
 
 export interface AgentExecution {
@@ -34,6 +37,8 @@ export interface AgentExecution {
   stderr: string;
   durationMs: number;
   timedOut: boolean;
+  cancelled?: boolean;
+  cancelReason?: string;
   /** Environment the worker ran with: policy and variable names, never values. */
   environment?: { policy: "minimal" | "inherit"; names: string[] };
 }
@@ -97,6 +102,7 @@ export class ProcessAgentAdapter implements AgentAdapter {
       envPolicy,
       allowEnv: this.config.allowEnv,
       killTree: true,
+      signal: task.signal,
       timeoutMs: task.timeoutMs ?? this.config.timeoutMs ?? 10 * 60_000,
       maxOutputBytes: 1_000_000,
     });
@@ -108,6 +114,9 @@ export class ProcessAgentAdapter implements AgentAdapter {
       stderr: result.stderr,
       durationMs: result.durationMs,
       timedOut: result.timedOut,
+      ...(result.cancelled
+        ? { cancelled: true, cancelReason: result.cancelReason }
+        : {}),
       environment: { policy: envPolicy, names: result.envNames ?? [] },
     };
   }
@@ -354,6 +363,8 @@ export interface IsolatedAgentRunOptions {
   /** Structured verifier; when set it replaces `verifyCommand`. */
   verifier?: Verifier;
   cleanup?: CleanupPolicy;
+  /** Cancels the worker and its verification; evidence gathered so far is kept. */
+  signal?: AbortSignal;
 }
 
 export interface IsolatedAgentRunResult {
@@ -364,6 +375,8 @@ export interface IsolatedAgentRunResult {
   verifierResult?: VerificationRecord;
   success: boolean;
   workspaceRetained: boolean;
+  /** Set when the run was cancelled; the first cause wins. */
+  cancelled?: { reason: string; stage: "agent" | "verify" };
   /**
    * Branches or tags of the main repository that moved or vanished while the
    * worker or its verification ran. Worktrees share refs with the main
@@ -477,17 +490,36 @@ export async function runIsolatedAgent(
   };
 
   try {
-    execution = await options.adapter.run(options.task, workspace.path);
+    const signal = options.signal;
+    execution = await options.adapter.run(
+      signal ? { ...options.task, signal } : options.task,
+      workspace.path,
+    );
     changes = await captureWorkspaceChanges(workspace.path);
 
-    if (options.verifier) {
+    let cancelled: IsolatedAgentRunResult["cancelled"];
+    if (execution.cancelled || signal?.aborted) {
+      // Do not start verification for a cancelled run: a pass would be
+      // evidence for a patch the worker never finished.
+      cancelled = {
+        reason: execution.cancelReason ?? abortReasonText(signal!),
+        stage: "agent",
+      };
+    } else if (options.verifier) {
       verifierResult = await options.verifier.verify(workspace.path);
     } else if (options.verifyCommand) {
       verification = await runCommand({
         killTree: true,
         ...options.verifyCommand,
         cwd: workspace.path,
+        signal,
       });
+      if (verification.cancelled) {
+        cancelled = { reason: verification.cancelReason ?? "aborted", stage: "verify" };
+      }
+    }
+    if (!cancelled && signal?.aborted) {
+      cancelled = { reason: abortReasonText(signal), stage: "verify" };
     }
 
     const refTamper = changedSharedRefs(
@@ -496,6 +528,7 @@ export async function runIsolatedAgent(
     );
 
     const success =
+      !cancelled &&
       refTamper.length === 0 &&
       execution.exitCode === 0 &&
       !execution.timedOut &&
@@ -521,6 +554,7 @@ export async function runIsolatedAgent(
       verifierResult,
       success,
       workspaceRetained: !shouldCleanup,
+      ...(cancelled ? { cancelled } : {}),
       ...(refTamper.length ? { refTamper } : {}),
     };
   } catch (error) {
@@ -781,6 +815,8 @@ export interface AgentExperimentOptions {
   verifyCommand?: CommandSpec;
   verifier?: Verifier;
   cleanup?: CleanupPolicy;
+  /** Run-level cancellation shared by every experiment this executor starts. */
+  signal?: AbortSignal;
 }
 
 function envSummary(environment: AgentExecution["environment"]): string | undefined {
@@ -824,6 +860,7 @@ export function createAgentExperimentExecutor(
         verifyCommand: options.verifyCommand,
         verifier: options.verifier,
         cleanup: options.cleanup,
+        signal: options.signal,
       });
 
       const records: EvidenceRef[] = [
@@ -835,6 +872,9 @@ export function createAgentExperimentExecutor(
             `changed=${result.changes.changedFiles.join(",") || "none"}`,
             `workspace_retained=${result.workspaceRetained}`,
             envSummary(result.execution.environment),
+            result.cancelled
+              ? `cancelled=${result.cancelled.stage}:${result.cancelled.reason}`
+              : undefined,
             result.refTamper ? `ref_tamper=${result.refTamper.join(";")}` : undefined,
           ]
             .filter(Boolean)
@@ -884,7 +924,7 @@ export function createAgentExperimentExecutor(
         candidateId: candidate.id,
         status: verifiedSuccess
           ? "success"
-          : result.execution.exitCode === 0 && !result.refTamper
+          : !result.refTamper && (result.cancelled || result.execution.exitCode === 0)
             ? "inconclusive"
             : "failure",
         terminal: verifiedSuccess,
@@ -913,6 +953,8 @@ export function createAgentExperimentExecutor(
           ? undefined
           : result.refTamper
             ? [`Worker changed shared repository refs: ${result.refTamper.join(", ")}`]
+            : result.cancelled
+            ? [`run cancelled during ${result.cancelled.stage}: ${result.cancelled.reason}`]
             : ["Implementation requires actual changes, a successful agent and passing verification"],
       };
     },
