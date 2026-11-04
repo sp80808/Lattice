@@ -1047,7 +1047,7 @@ export async function promoteVerifiedRun(
   const pathspecs = [...new Set(expected.keys())].sort();
   const staged = await runCommand({
     command: "git",
-    args: ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+    args: ["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
     cwd: workspace,
     stdin: `${pathspecs.join("\0")}\0`,
     timeoutMs: 60_000,
