@@ -39,7 +39,19 @@ export interface ExperimentOutcome {
   /** Raw tool records (e.g. witness documents) kept verbatim in the run log for replay. */
   records?: unknown[];
   /** Actual isolated worker changes, persisted with the experiment event. */
-  changes?: { diff: string; changedFiles: string[]; workspace: string; retained: boolean };
+  changes?: {
+    diff: string;
+    changedFiles: string[];
+    untrackedFiles?: string[];
+    workspace: string;
+    retained: boolean;
+    /** Identity of the complete candidate the verifier checked. */
+    changeSetDigest?: string;
+    /** Policy failures that made the candidate ineligible. */
+    policyViolations?: string[];
+    /** False when verification changed the workspace or could not be recaptured. */
+    verificationTrusted?: boolean;
+  };
 }
 
 export interface ExperimentExecutor {

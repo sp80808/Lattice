@@ -685,6 +685,10 @@ test("BUILD reviews decisions; AUTO runs the configured isolated agent and recor
       assert.equal(await readFile(join(fixture.cwd, "src", "calc.js"), "utf8"), "export const add = (a, b) => a - b;\n");
       const changes = await getRunChanges(result.runId, fixture.cwd);
       assert.ok(changes.some(change => change.changedFiles.includes("src/calc.js") && change.diff.includes("a + b")));
+      assert.ok(
+        changes.some(change => /^[0-9a-f]{64}$/.test(change.changeSetDigest ?? "")),
+        "the verified change-set identity is persisted with the experiment",
+      );
       assert.ok(events.includes("decision.completed") && events.includes("tool.completed"));
     } finally { await fixture.closeModel(); }
   }

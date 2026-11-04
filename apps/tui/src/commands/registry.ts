@@ -256,7 +256,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       try {
         const detail = await getRun(id, ctx.cwd);
         const changes = await getRunChanges(id, ctx.cwd);
-        const patch = changes.map(change => `# ${change.changedFiles.join(", ")}\n# workspace: ${change.workspace} (${change.retained ? "retained" : "cleaned"})\n${change.diff}`).join("\n");
+        const patch = changes.map(change => `# ${change.changedFiles.join(", ")}\n# workspace: ${change.workspace} (${change.retained ? "retained" : "cleaned"})${change.changeSetDigest ? `\n# change-set: ${change.changeSetDigest}` : ""}\n${change.diff}`).join("\n");
 
         if (!patch) {
           ctx.addFeedItem({

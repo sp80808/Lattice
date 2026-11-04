@@ -80,6 +80,36 @@ shell command and stores its `tessera.witness/v0` JSON in the run log:
   `replayRunLog()` in `@lattice/tessera` re-derives every stored verdict from a
   run log without running `tsr`. See [evidence.md](evidence.md#tessera-witness).
 
+## Workspace change policy
+
+Candidate workers are conservative by default. Use `workspace.changes` to
+opt into entries a repository genuinely needs:
+
+```json
+{
+  "workspace": {
+    "cleanup": "on-failure",
+    "changes": {
+      "symlinks": "allow",
+      "submodules": "allow",
+      "maxFileBytes": 67108864,
+      "maxEntries": 2000
+    }
+  }
+}
+```
+
+- `symlinks` and `submodules` are `"deny"` unless set to `"allow"`.
+- A symlink target must still resolve inside the worktree; external targets
+  are rejected even when symlinks are allowed.
+- `maxFileBytes` (default 64 MiB) and `maxEntries` (default 2000) bound
+  capture work. A candidate that exceeds either is ineligible for promotion.
+- Unmerged paths and paths whose parents resolve outside the worktree are
+  always rejected.
+
+The manifest, drift and promotion rules are described in
+[agents.md](agents.md#verified-change-sets).
+
 ## Random decision baseline
 
 `models.decision: { "provider": "random", "seed": 1 }` keeps the configured

@@ -194,6 +194,16 @@ export interface LatticeConfig {
   };
   workspace?: {
     cleanup?: CleanupPolicy;
+    /**
+     * What a candidate worker may change. Symlinks and submodules are denied
+     * by default; enable them only for repositories that need them.
+     */
+    changes?: {
+      symlinks?: "deny" | "allow";
+      submodules?: "deny" | "allow";
+      maxFileBytes?: number;
+      maxEntries?: number;
+    };
   };
 }
 
@@ -386,6 +396,25 @@ function finishParse(
 
   if (value.workspace !== undefined) {
     if (!isObject(value.workspace)) throw new Error("workspace must be an object");
+    const changes = value.workspace.changes;
+    if (changes !== undefined) {
+      if (!isObject(changes)) throw new Error("workspace.changes must be an object");
+      for (const field of ["symlinks", "submodules"] as const) {
+        const setting = changes[field];
+        if (setting !== undefined && setting !== "deny" && setting !== "allow") {
+          throw new Error(`workspace.changes.${field} must be 'deny' or 'allow'`);
+        }
+      }
+      for (const field of ["maxFileBytes", "maxEntries"] as const) {
+        const setting = changes[field];
+        if (
+          setting !== undefined &&
+          (!Number.isSafeInteger(setting) || (setting as number) <= 0)
+        ) {
+          throw new Error(`workspace.changes.${field} must be a positive integer`);
+        }
+      }
+    }
     config.workspace = value.workspace as LatticeConfig["workspace"];
   }
 
@@ -660,6 +689,7 @@ function buildRunTaskOptions(
         verifyCommand,
         verifier,
         cleanup: config.workspace?.cleanup ?? "on-failure",
+        changesPolicy: config.workspace?.changes,
       }),
       maxRounds: config.search?.maxRounds,
       candidatesPerRound: config.search?.candidatesPerRound,
