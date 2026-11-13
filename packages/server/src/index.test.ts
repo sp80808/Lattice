@@ -194,6 +194,18 @@ test("async submission still rejects bad input up front; unknown streams are 404
   });
 });
 
+test("SSE remains open through request completion until a slow task finishes", async () => {
+  await withServer({}, async (url, cwd) => {
+    await slowObserveConfig(cwd);
+    const client = new LatticeClient({ baseUrl: url });
+    const accepted = await client.submitTask("observe slow SSE lifetime");
+    const types: string[] = [];
+    for await (const event of client.streamEvents(accepted.runId)) types.push(event.type);
+    assert.equal(types[0], "run.started");
+    assert.equal(types.at(-1), "run.completed", "request completion is not a streaming disconnect");
+  });
+});
+
 test("closing an SSE stream early does not break the server", async () => {
   await withServer({}, async (url, cwd) => {
     await slowObserveConfig(cwd);

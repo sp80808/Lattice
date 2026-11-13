@@ -172,21 +172,31 @@ export function createLatticeServer(options: LatticeServerOptions = {}): Server 
     }
 
     const controller = new AbortController();
-    req.on("close", () => controller.abort());
+    // IncomingMessage.close can fire when the request body is complete, *not*
+    // when the streaming response disconnects. The response owns SSE lifetime.
+    const abort = () => controller.abort();
+    res.once("close", abort);
+    req.once("aborted", abort);
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-store",
       connection: "keep-alive",
     });
     res.write(": lattice run events\n\n");
-    const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+    const heartbeat = setInterval(() => {
+      if (!res.destroyed && !res.writableEnded) res.write(": keepalive\n\n");
+    }, 15_000);
+    heartbeat.unref();
     try {
       for await (const event of followRunEvents(runId, cwd, { after, signal: controller.signal })) {
+        if (controller.signal.aborted || res.destroyed) break;
         res.write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`);
       }
     } finally {
       clearInterval(heartbeat);
-      res.end();
+      res.off("close", abort);
+      req.off("aborted", abort);
+      if (!res.destroyed && !res.writableEnded) res.end();
     }
   }
 
